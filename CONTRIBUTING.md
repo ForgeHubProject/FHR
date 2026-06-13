@@ -1,81 +1,104 @@
 # Contributing a Handler to FHR
 
-This is the official Forge Handler Repository. Each package under `packages/`
-is one format handler — a backend diff/merge implementation and a frontend
-react renderer, versioned and published together.
+## Architecture principle
+
+Forge and FHR are the foundation. ForgeHub builds on top of them.
+
+```
+Forge CLI  ──(subprocess JSON protocol)──▶  your handler binary (any language)
+ForgeHub   ──(@fhr/types)────────────────▶  your handler (TS import or WASM)
+                                            your renderer (always React/TS)
+```
+
+A handler can be used from the Forge CLI without ForgeHub. ForgeHub is a
+consumer of the FHR contract — it does not own it.
+
+## Two backend paths
+
+### Path A — TypeScript (direct import)
+
+Use `packages/example-handler-ts` as your starting point.
+
+ForgeHub API imports your handler directly as a Node module. Simplest path
+for handlers whose logic is naturally TypeScript (e.g. JSON, Markdown, SVG).
+
+### Path B — Native / any language (subprocess protocol)
+
+Use `packages/example-handler-native` as your starting point.
+
+Your handler is a standalone binary (`forge-handler-<name>`) that speaks JSON
+over stdin/stdout. Forge CLI calls it as a subprocess. ForgeHub API runs it
+as a WASM module. The language is completely up to you.
+
+Both paths produce the same `StructuredDiff` output. The frontend renderer
+consumes that output — it doesn't know or care which path the backend used.
+
+## The frontend renderer (always TypeScript + React)
+
+The renderer runs in the browser. It must be a React component bundle.
+Your backend can be in Rust; your renderer will still be `.tsx`.
+
+Import all types from `@fhr/types` — that is the single source of truth
+for the handler and renderer contracts.
 
 ## Workflow
 
-### 1. Fork and scaffold
-
-Fork this repo, then copy the example package:
+### 1. Scaffold
 
 ```bash
-cp -r packages/example-handler packages/handler-myformat
+# TypeScript handler
+cp -r packages/example-handler-ts  packages/handler-myformat
+
+# Or native handler (any language)
+cp -r packages/example-handler-native  packages/handler-myformat
 ```
 
-Rename everything from `example` to your format name.
+### 2. Implement
 
-### 2. Implement the backend handler
+**Backend** — implement these in your chosen language:
+- `match <filepath>` → `"true"` or `"false"`
+- `diff` → `StructuredDiff` JSON
+- `merge` → `{ blob, conflicts }` JSON *(optional)*
+- `info` → `{ id, version, formats, protocol }` JSON
 
-Edit `packages/handler-myformat/src/handler.ts`. Implement:
-
-- `matchesPath(path)` — return `true` for your file extensions
-- `ingestFromUtf8Text(input)` — parse the raw file into your canonical IR
-- `diff(base, head)` — return a `StructuredDiff` describing semantic changes
-- `merge(base, ours, theirs)` *(optional)* — attempt a 3-way merge
-
-All types are in `@fhr/types`. See `SPEC.md` for the full contract.
-
-### 3. Implement the frontend renderer
-
-Edit `packages/handler-myformat/src/renderer.tsx`. Implement the three
-React components and export a valid `FHRManifest` as the default export:
-
+**Frontend** — implement these React components in `renderer.tsx`:
 - `SnapshotRenderer` — single-file viewer (blob/commit page)
-- `DiffRenderer` — side-by-side or inline diff (compare/PR page)
+- `DiffRenderer` — diff view (compare/PR page)
 - `MergeResolver` — conflict resolution UI (PR merge page)
 
-### 4. Open a pull request
+Export an `FHRManifest` as the default export.
 
-Open a PR to this repo. The review checklist:
+### 3. Open a pull request
 
-- [ ] `handler.id` matches the package directory name
-- [ ] `manifest.handlerId` matches `handler.id`
+Review checklist:
+
+- [ ] `handler.id` / `info.id` matches the package directory name
+- [ ] `manifest.handlerId` matches the handler id
 - [ ] `matchesPath` covers all extensions listed in the PR description
-- [ ] `diff()` returns a valid `StructuredDiff` (version `"1.0"`)
-- [ ] Both `SnapshotRenderer` and `DiffRenderer` are implemented (non-empty)
-- [ ] `MergeResolver` is implemented (may show a "not supported" message if `merge()` is absent)
-- [ ] `npm run typecheck` passes
+- [ ] `diff` returns a valid `StructuredDiff` (version `"1.0"`)
+- [ ] All three renderer components are implemented (non-empty)
+- [ ] `npm run typecheck` passes on the renderer
+- [ ] For native handlers: binary builds cleanly for at least one platform
 
-### 5. After merge
+### 4. After merge
 
-Once merged, the maintainers will:
+Maintainers will:
+1. Publish a versioned release with binaries + `renderer.js`
+2. Add format entries to `manifest.toml`
+3. Update `[assets]` with download URLs
 
-1. Publish the handler and renderer to a versioned release
-2. Add the format entries to `manifest.toml`
-3. Update `[assets]` with the download URLs
-
-Users can then pull your handler with:
-
+Users then get your handler with:
 ```bash
 forge source update
 forge formats add .myformat
 ```
 
-## Local development
-
-```bash
-npm install
-npm run build        # build all packages
-npm run typecheck    # type-check all packages
-```
-
-## Package naming conventions
+## Naming conventions
 
 | Thing | Convention | Example |
 |-------|------------|---------|
 | Package dir | `packages/handler-<format>` | `packages/handler-gltf-scene` |
-| npm package name | `@fhr/handler-<format>` | `@fhr/handler-gltf-scene` |
-| `handler.id` | `<format>` (kebab) | `gltf-scene` |
-| `manifest.toml` key | same as `handler.id` | `[formats.".gltf"]` |
+| npm name | `@fhr/handler-<format>` | `@fhr/handler-gltf-scene` |
+| `handler.id` / `info.id` | `<format>` (kebab) | `gltf-scene` |
+| Binary name | `forge-handler-<format>_<os>-<arch>` | `forge-handler-gltf-scene_linux-amd64` |
+| `manifest.toml` key | same as handler id | `".gltf" = { handler = "gltf-scene" }` |
