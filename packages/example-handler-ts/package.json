@@ -1,0 +1,21 @@
+{
+  "name": "@fhr/example-handler-ts",
+  "version": "0.0.1",
+  "description": "Skeleton FHR package (TypeScript direct-import path) — fork this to implement a new handler in TypeScript",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fhr/types": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/react": "^18.0.0",
+    "@types/node": "^20.0.0"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}
