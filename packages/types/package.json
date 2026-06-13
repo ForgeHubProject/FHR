@@ -1,0 +1,25 @@
+{
+  "name": "@fhr/types",
+  "version": "1.0.0",
+  "description": "Shared TypeScript types for the Forge Handler Repository ecosystem",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/react": "^18.0.0"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}
