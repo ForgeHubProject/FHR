@@ -2,38 +2,51 @@
 
 > The official registry of format handlers for the Forge ecosystem.
 
-## Dependency direction
+## The pipeline
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Forge CLI  ────────────────────────────────────────────┐   │
-│  (git, but for everything)    subprocess JSON protocol  │   │
-│                                                         ▼   │
-│                                                    ┌──────┐ │
-│                                                    │  FHR │ │
-│                                                    │      │ │
-│  ForgeHub  ─────────────────────────── @fhr/types ─▶      │ │
-│  (GitHub, but for hardware)                        └──────┘ │
-└─────────────────────────────────────────────────────────────┘
+FHR  ────────────────────▶  Forge  ────────────────────▶  ForgeHub
+(package registry)        (git-like VCS,             (web showcase,
+                           pulls + runs FHR            displays what
+                           handlers)                   Forge produced)
 ```
 
-**Forge and FHR are the foundation. ForgeHub builds on top of them — not the other way around.**
+**FHR** defines what a format *is* — how to diff it, merge it, and render it.
 
-- `@fhr/types` is the single source of truth for the handler and renderer contracts
-- ForgeHub imports from `@fhr/types`; it does not define its own handler types
-- The Forge CLI speaks the FHR subprocess protocol; it does not depend on ForgeHub
-- A handler can exist and be used from the Forge CLI without ForgeHub existing at all
+**Forge** is the tunnel: it pulls handlers from FHR and makes their knowledge
+operational inside version control. `forge diff model.glb` works because Forge
+fetched the `gltf-scene` handler from FHR and ran it.
+
+**ForgeHub** is the showcase: it presents the repos and diffs that Forge produced.
+It pulls only the *frontend renderers* from FHR — to display a `StructuredDiff`
+in the browser. The diff computation itself already happened inside Forge.
+
+## Dependency arrows
+
+```
+FHR
+ │
+ ├── Forge CLI pulls handler binaries/WASM from FHR, runs them as subprocesses
+ │       forge diff model.glb  →  forge-handler-gltf-scene  →  StructuredDiff
+ │
+ └── ForgeHub web pulls renderer bundles from FHR, mounts them as React components
+         /pr/42/diff  →  GltfDiffRenderer(diffResult)  →  3D diff in browser
+```
+
+Neither Forge nor ForgeHub defines its own handler types.
+`@fhr/types` is the single source of truth for the contract both consume.
 
 ## What lives here
 
 ```
 fhr/
-├── manifest.toml                  # live registry index (forge source add <url>)
+├── manifest.toml                    # registry index (forge source add <url>)
 ├── packages/
-│   ├── types/                     # @fhr/types — the shared contract
-│   ├── example-handler-ts/        # skeleton: TypeScript direct-import handler
-│   └── example-handler-native/   # skeleton: language-agnostic subprocess handler
-└── CONTRIBUTING.md
+│   ├── types/                       # @fhr/types — the shared contract
+│   ├── example-handler-ts/          # skeleton: TypeScript handler (direct import)
+│   └── example-handler-native/      # skeleton: any-language handler (subprocess)
+├── CONTRIBUTING.md
+└── SPEC.md
 ```
 
 ## How a handler reaches users
@@ -42,20 +55,30 @@ fhr/
 1. Author implements ArtifactHandler (any language) + FHRManifest (React)
 2. Author opens a PR to this repo
 3. Maintainers review, merge, publish a release
-4. manifest.toml is updated with the new format entry
-5. User runs:
+4. manifest.toml is updated with the new format entry + asset URLs
+5. Users pick it up:
      forge source update
      forge formats add .myformat
 ```
 
-## Two backend paths — same contract
+From that point on, `forge diff file.myformat` produces a semantic diff,
+and ForgeHub renders it in the browser using the matching renderer bundle.
 
-| Path | Used by | Language |
-|------|---------|----------|
-| Direct TypeScript import | ForgeHub API | TypeScript |
-| Subprocess JSON protocol | Forge CLI | **Any** |
-| WASM module | ForgeHub API (sandboxed) | **Any** (compile to WASM) |
+## Backend: language agnostic
 
-The frontend renderer (`renderer.tsx`) must be a React component — it runs in the browser. The backend diff/merge logic can be written in any language.
+The handler backend (diff/merge logic) can be written in any language.
+Forge speaks to it over the subprocess JSON protocol — stdin/stdout JSON.
+ForgeHub runs it as a WASM module server-side.
+
+| Path | Used by | Language constraint |
+|------|---------|--------------------|
+| Subprocess binary | Forge CLI | None — any language |
+| WASM module | ForgeHub API | None — compile anything to WASM |
+| TypeScript direct import | ForgeHub API | TypeScript only |
+
+## Frontend: always TypeScript + React
+
+The renderer runs in the browser. It must be a React component bundle.
+Your backend can be Rust; your renderer will still be `.tsx`.
 
 See [SPEC.md](./SPEC.md) for the full contract and [CONTRIBUTING.md](./CONTRIBUTING.md) for the submission workflow.
