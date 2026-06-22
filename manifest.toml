@@ -9,29 +9,26 @@ maintainer  = "ForgeHub Project"
 
 # ── Formats ───────────────────────────────────────────────────────────────────
 # Each key is a file extension mapped directly to a handler name and version.
-# There are no domain groupings — extensions are flat.
-#
 # plain-text extensions (.txt, .md, etc.) are handled by Forge's built-in
 # text handler and do not appear here.
 
 [formats]
-# Handlers will be listed here as packages are published and released.
-# Example (once gltf-scene is published):
-# ".gltf" = { handler = "gltf-scene", version = "1.0.0" }
-# ".glb"  = { handler = "gltf-scene", version = "1.0.0" }
+".gltf" = { handler = "gltf-scene", version = "1.0.0" }
+".glb"  = { handler = "gltf-scene", version = "1.0.0" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Download paths for handler binaries and renderer bundles.
 # Forge constructs the full URL as: {url}/{path}
 #
-# [assets.handlers."gltf-scene"."1.0.0"]
-# "linux-amd64"   = "handlers/gltf-scene/1.0.0/forge-handler-gltf-scene_linux-amd64"
-# "darwin-arm64"  = "handlers/gltf-scene/1.0.0/forge-handler-gltf-scene_darwin-arm64"
-# "windows-amd64" = "handlers/gltf-scene/1.0.0/forge-handler-gltf-scene_windows-amd64.exe"
-# "wasm"          = "handlers/gltf-scene/1.0.0/forge-handler-gltf-scene.wasm"
-#
-# [assets.renderers."gltf-scene"."1.0.0"]
-# "esm" = "renderers/gltf-scene/1.0.0/renderer.js"
+# Binaries are published as GitHub release assets once a tag is cut.
+# Update these paths after each release.
 
-[assets]
-# Will be populated as handler packages publish releases.
+[assets.handlers."gltf-scene"."1.0.0"]
+"linux-amd64"   = "releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_linux-amd64"
+"darwin-amd64"  = "releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_darwin-amd64"
+"darwin-arm64"  = "releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_darwin-arm64"
+"windows-amd64" = "releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_windows-amd64.exe"
+"wasm"          = "releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene.wasm"
+
+[assets.renderers."gltf-scene"."1.0.0"]
+"esm" = "releases/download/gltf-scene-v1.0.0/renderer.js"
