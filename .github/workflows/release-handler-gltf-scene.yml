@@ -1,0 +1,70 @@
+name: Release gltf-scene handler
+
+on:
+  push:
+    tags:
+      - 'gltf-scene-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            asset: forge-handler-gltf-scene_linux-amd64
+          - goos: linux
+            goarch: arm64
+            asset: forge-handler-gltf-scene_linux-arm64
+          - goos: darwin
+            goarch: amd64
+            asset: forge-handler-gltf-scene_darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            asset: forge-handler-gltf-scene_darwin-arm64
+          - goos: windows
+            goarch: amd64
+            asset: forge-handler-gltf-scene_windows-amd64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/handler-gltf-scene/go.mod
+
+      - name: Build
+        working-directory: packages/handler-gltf-scene
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -mod=mod -trimpath -ldflags="-s -w" -o ${{ matrix.asset }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: packages/handler-gltf-scene/${{ matrix.asset }}
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*

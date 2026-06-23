@@ -1,4 +1,4 @@
-module github.com/yakupatahanov/fhr/handler-gltf-scene
+module github.com/forgehubproject/fhr/handler-gltf-scene
 
 go 1.22.0
 

@@ -1,8 +1,8 @@
 # FHR Official Source Manifest
-# Fetched by: forge source add https://raw.githubusercontent.com/yakupatahanov/fhr/main/manifest.toml
+# Fetched by: forge source add https://raw.githubusercontent.com/forgehubproject/fhr/main/manifest.toml
 
 name        = "fhr-official"
-url         = "https://github.com/yakupatahanov/fhr"
+url         = "https://github.com/forgehubproject/fhr"
 version     = "1.0"
 description = "Official Forge Handler Repository"
 maintainer  = "ForgeHub Project"
@@ -21,11 +21,12 @@ maintainer  = "ForgeHub Project"
 # These point to GitHub release assets; update after each release tag is cut.
 
 [assets.handlers."gltf-scene"."1.0.0"]
-"linux-amd64"   = "https://github.com/yakupatahanov/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_linux-amd64"
-"darwin-amd64"  = "https://github.com/yakupatahanov/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_darwin-amd64"
-"darwin-arm64"  = "https://github.com/yakupatahanov/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_darwin-arm64"
-"windows-amd64" = "https://github.com/yakupatahanov/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_windows-amd64.exe"
-"wasm"          = "https://github.com/yakupatahanov/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene.wasm"
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene.wasm"
 
 [assets.renderers."gltf-scene"."1.0.0"]
-"esm" = "https://github.com/yakupatahanov/fhr/releases/download/gltf-scene-v1.0.0/renderer.js"
+"esm" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/renderer.js"
