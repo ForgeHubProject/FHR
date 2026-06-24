@@ -1,0 +1,1233 @@
+// Package main provides a format-aware handler for .gltf and .glb files,
+// exposed as a standalone binary implementing the FHR subprocess protocol.
+//
+// Migrated from forgehubproject/forge internal/handler/gltf/gltf.go.
+// The diff and merge logic is unchanged; the forge-internal types have been
+// replaced with the local wire types in types.go.
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"math"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/qmuntal/gltf"
+)
+
+// Handler is the glTF/GLB format handler.
+type Handler struct{}
+
+// Match returns true for .gltf and .glb files.
+func (h *Handler) Match(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".gltf" || ext == ".glb"
+}
+
+// Merge performs a 3-way semantic merge of glTF/GLB blobs.
+//
+// The algorithm mirrors what git does for text at the line level, but operates
+// on named scene-graph units instead:
+//
+//	only ours changed a property  → take ours  (already in result)
+//	only theirs changed a property → take theirs (applied to result)
+//	both changed to the same value → take either (no conflict)
+//	both changed to different values → keep ours, record conflict
+//
+// Added/removed elements follow the same logic at the element level.
+func (h *Handler) Merge(base, ours, theirs Blob) (Blob, *ConflictInfo, error) {
+	if len(base) == 0 {
+		ci := &ConflictInfo{
+			Conflicts: []SemanticConflict{{
+				Path: "file", Ours: "created", Theirs: "created",
+			}},
+		}
+		return ours, ci, nil
+	}
+
+	docBase, err := parseDoc(base)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing base: %w", err)
+	}
+	docOurs, err := parseDoc(ours)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing ours: %w", err)
+	}
+	docTheirs, err := parseDoc(theirs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing theirs: %w", err)
+	}
+
+	var conflicts []SemanticConflict
+
+	docOurs.Nodes = mergeNodeList(docBase.Nodes, docOurs.Nodes, docTheirs.Nodes, &conflicts)
+	docOurs.Materials = mergeMaterialList(docBase.Materials, docOurs.Materials, docTheirs.Materials, &conflicts)
+	docOurs.Meshes = mergeMeshList(docBase.Meshes, docOurs.Meshes, docTheirs.Meshes, &conflicts)
+	docOurs.Animations = mergeAnimationList(docBase.Animations, docOurs.Animations, docTheirs.Animations, &conflicts)
+
+	nMeshes := len(docOurs.Meshes)
+	for _, n := range docOurs.Nodes {
+		if n.Mesh != nil && int(*n.Mesh) >= nMeshes {
+			n.Mesh = nil
+		}
+	}
+
+	result, err := encodeBlob(docOurs, isGLB(ours))
+	if err != nil {
+		return nil, nil, fmt.Errorf("encoding merged glTF: %w", err)
+	}
+
+	var ci *ConflictInfo
+	if len(conflicts) > 0 {
+		ci = &ConflictInfo{Conflicts: conflicts}
+	}
+	return result, ci, nil
+}
+
+// ── merge: nodes ──────────────────────────────────────────────────────────────
+
+func mergeNodeList(base, ours, theirs []*gltf.Node, conflicts *[]SemanticConflict) []*gltf.Node {
+	baseMap, _ := nodeMap(base)
+	oursMap, _ := nodeMap(ours)
+	theirsMap, theirsOrder := nodeMap(theirs)
+
+	seen := make(map[string]bool)
+	var names []string
+	for i, n := range ours {
+		k := nodeName(n, i)
+		names = append(names, k)
+		seen[k] = true
+	}
+	for i, n := range theirs {
+		k := nodeName(n, i)
+		if !seen[k] {
+			names = append(names, k)
+			seen[k] = true
+		}
+	}
+	_ = theirsOrder
+
+	var result []*gltf.Node
+	for _, name := range names {
+		bn := baseMap[name]
+		on, inOurs := oursMap[name]
+		tn, inTheirs := theirsMap[name]
+
+		switch {
+		case inOurs && inTheirs:
+			result = append(result, merge3Node(bn, on, tn, name, conflicts))
+
+		case inOurs && !inTheirs:
+			if bn != nil {
+				*conflicts = append(*conflicts, SemanticConflict{
+					Path: "nodes/" + name, Ours: "kept", Theirs: "removed",
+				})
+			}
+			result = append(result, on)
+
+		case !inOurs && inTheirs:
+			if bn != nil {
+				*conflicts = append(*conflicts, SemanticConflict{
+					Path: "nodes/" + name, Ours: "removed", Theirs: "kept",
+				})
+			} else {
+				result = append(result, tn)
+			}
+		}
+	}
+	return result
+}
+
+func merge3Node(bn, on, tn *gltf.Node, name string, conflicts *[]SemanticConflict) *gltf.Node {
+	out := cloneNode(on)
+
+	var baseTr, baseSc [3]float64
+	var baseRotQ [4]float64
+	if bn != nil {
+		baseTr = bn.TranslationOrDefault()
+		baseRotQ = bn.RotationOrDefault()
+		baseSc = bn.ScaleOrDefault()
+	} else {
+		baseRotQ = gltf.DefaultRotation
+		baseSc = gltf.DefaultScale
+	}
+
+	ourTr, theirTr := on.TranslationOrDefault(), tn.TranslationOrDefault()
+	if !nearEq3(ourTr, baseTr) && !nearEq3(theirTr, baseTr) {
+		if nearEq3(ourTr, theirTr) {
+			out.Translation = ourTr
+		} else {
+			*conflicts = append(*conflicts, SemanticConflict{
+				Path:   "nodes/" + name + "/translation",
+				Ours:   fmtVec3(blenderTranslation(ourTr)),
+				Theirs: fmtVec3(blenderTranslation(theirTr)),
+			})
+		}
+	} else if nearEq3(ourTr, baseTr) && !nearEq3(theirTr, baseTr) {
+		out.Translation = theirTr
+	}
+
+	ourRot, theirRot := on.RotationOrDefault(), tn.RotationOrDefault()
+	if !nearEq4(ourRot, baseRotQ) && !nearEq4(theirRot, baseRotQ) {
+		if nearEq4(ourRot, theirRot) {
+			out.Rotation = ourRot
+		} else {
+			*conflicts = append(*conflicts, SemanticConflict{
+				Path:   "nodes/" + name + "/rotation",
+				Ours:   fmtRot(ourRot),
+				Theirs: fmtRot(theirRot),
+			})
+		}
+	} else if nearEq4(ourRot, baseRotQ) && !nearEq4(theirRot, baseRotQ) {
+		out.Rotation = theirRot
+	}
+
+	ourSc, theirSc := on.ScaleOrDefault(), tn.ScaleOrDefault()
+	if !nearEq3(ourSc, baseSc) && !nearEq3(theirSc, baseSc) {
+		if nearEq3(ourSc, theirSc) {
+			out.Scale = ourSc
+		} else {
+			*conflicts = append(*conflicts, SemanticConflict{
+				Path:   "nodes/" + name + "/scale",
+				Ours:   fmtVec3(blenderScale(ourSc)),
+				Theirs: fmtVec3(blenderScale(theirSc)),
+			})
+		}
+	} else if nearEq3(ourSc, baseSc) && !nearEq3(theirSc, baseSc) {
+		out.Scale = theirSc
+	}
+
+	baseMesh := ptrLabel(func() *int {
+		if bn != nil {
+			return bn.Mesh
+		}
+		return nil
+	}(), "mesh")
+	ourMesh, theirMesh := ptrLabel(on.Mesh, "mesh"), ptrLabel(tn.Mesh, "mesh")
+	if ourMesh == baseMesh && theirMesh != baseMesh {
+		out.Mesh = tn.Mesh
+	} else if ourMesh != baseMesh && theirMesh != baseMesh && ourMesh != theirMesh {
+		*conflicts = append(*conflicts, SemanticConflict{
+			Path: "nodes/" + name + "/mesh",
+			Ours: ourMesh, Theirs: theirMesh,
+		})
+	}
+
+	return out
+}
+
+func cloneNode(n *gltf.Node) *gltf.Node {
+	c := *n
+	if n.Mesh != nil {
+		m := *n.Mesh
+		c.Mesh = &m
+	}
+	if n.Skin != nil {
+		s := *n.Skin
+		c.Skin = &s
+	}
+	if len(n.Children) > 0 {
+		c.Children = make([]int, len(n.Children))
+		copy(c.Children, n.Children)
+	}
+	return &c
+}
+
+// ── merge: materials ──────────────────────────────────────────────────────────
+
+func mergeMaterialList(base, ours, theirs []*gltf.Material, conflicts *[]SemanticConflict) []*gltf.Material {
+	baseMap, _ := materialMap(base)
+	oursMap, _ := materialMap(ours)
+	theirsMap, _ := materialMap(theirs)
+
+	seen := make(map[string]bool)
+	var names []string
+	for i, m := range ours {
+		k := materialName(m, i)
+		names = append(names, k)
+		seen[k] = true
+	}
+	for i, m := range theirs {
+		k := materialName(m, i)
+		if !seen[k] {
+			names = append(names, k)
+			seen[k] = true
+		}
+	}
+
+	var result []*gltf.Material
+	for _, name := range names {
+		bm := baseMap[name]
+		om, inOurs := oursMap[name]
+		tm, inTheirs := theirsMap[name]
+
+		switch {
+		case inOurs && inTheirs:
+			result = append(result, merge3Material(bm, om, tm, name, conflicts))
+		case inOurs && !inTheirs:
+			if bm != nil {
+				*conflicts = append(*conflicts, SemanticConflict{
+					Path: "materials/" + name, Ours: "kept", Theirs: "removed",
+				})
+			}
+			result = append(result, om)
+		case !inOurs && inTheirs:
+			if bm != nil {
+				*conflicts = append(*conflicts, SemanticConflict{
+					Path: "materials/" + name, Ours: "removed", Theirs: "kept",
+				})
+			} else {
+				result = append(result, tm)
+			}
+		}
+	}
+	return result
+}
+
+func merge3Material(bm, om, tm *gltf.Material, name string, conflicts *[]SemanticConflict) *gltf.Material {
+	out := cloneMaterial(om)
+
+	bPBR := pbrOrDefault(func() *gltf.Material {
+		if bm != nil {
+			return bm
+		}
+		return &gltf.Material{}
+	}())
+	oPBR := pbrOrDefault(om)
+	tPBR := pbrOrDefault(tm)
+
+	baseBC := bPBR.BaseColorFactorOrDefault()
+	ourBC, theirBC := oPBR.BaseColorFactorOrDefault(), tPBR.BaseColorFactorOrDefault()
+	if ourBC == baseBC && theirBC != baseBC {
+		setBaseColor(out, theirBC)
+	} else if ourBC != baseBC && theirBC != baseBC && ourBC != theirBC {
+		*conflicts = append(*conflicts, SemanticConflict{
+			Path: "materials/" + name + "/baseColorFactor",
+			Ours: fmtVec4(ourBC), Theirs: fmtVec4(theirBC),
+		})
+	}
+
+	baseMet := bPBR.MetallicFactorOrDefault()
+	ourMet, theirMet := oPBR.MetallicFactorOrDefault(), tPBR.MetallicFactorOrDefault()
+	if nearEq(ourMet, baseMet) && !nearEq(theirMet, baseMet) {
+		setMetallic(out, theirMet)
+	} else if !nearEq(ourMet, baseMet) && !nearEq(theirMet, baseMet) && !nearEq(ourMet, theirMet) {
+		*conflicts = append(*conflicts, SemanticConflict{
+			Path: "materials/" + name + "/metallicFactor",
+			Ours: fmtF(ourMet), Theirs: fmtF(theirMet),
+		})
+	}
+
+	baseRough := bPBR.RoughnessFactorOrDefault()
+	ourRough, theirRough := oPBR.RoughnessFactorOrDefault(), tPBR.RoughnessFactorOrDefault()
+	if nearEq(ourRough, baseRough) && !nearEq(theirRough, baseRough) {
+		setRoughness(out, theirRough)
+	} else if !nearEq(ourRough, baseRough) && !nearEq(theirRough, baseRough) && !nearEq(ourRough, theirRough) {
+		*conflicts = append(*conflicts, SemanticConflict{
+			Path: "materials/" + name + "/roughnessFactor",
+			Ours: fmtF(ourRough), Theirs: fmtF(theirRough),
+		})
+	}
+
+	var baseAlpha gltf.AlphaMode
+	if bm != nil {
+		baseAlpha = bm.AlphaMode
+	}
+	if om.AlphaMode == baseAlpha && tm.AlphaMode != baseAlpha {
+		out.AlphaMode = tm.AlphaMode
+	} else if om.AlphaMode != baseAlpha && tm.AlphaMode != baseAlpha && om.AlphaMode != tm.AlphaMode {
+		*conflicts = append(*conflicts, SemanticConflict{
+			Path: "materials/" + name + "/alphaMode",
+			Ours: string(om.AlphaMode), Theirs: string(tm.AlphaMode),
+		})
+	}
+
+	var baseDS bool
+	if bm != nil {
+		baseDS = bm.DoubleSided
+	}
+	if om.DoubleSided == baseDS && tm.DoubleSided != baseDS {
+		out.DoubleSided = tm.DoubleSided
+	} else if om.DoubleSided != baseDS && tm.DoubleSided != baseDS && om.DoubleSided != tm.DoubleSided {
+		*conflicts = append(*conflicts, SemanticConflict{
+			Path:   "materials/" + name + "/doubleSided",
+			Ours:   fmt.Sprintf("%v", om.DoubleSided),
+			Theirs: fmt.Sprintf("%v", tm.DoubleSided),
+		})
+	}
+
+	return out
+}
+
+func cloneMaterial(m *gltf.Material) *gltf.Material {
+	c := *m
+	if m.PBRMetallicRoughness != nil {
+		pbr := *m.PBRMetallicRoughness
+		if pbr.BaseColorFactor != nil {
+			bc := *pbr.BaseColorFactor
+			pbr.BaseColorFactor = &bc
+		}
+		if pbr.MetallicFactor != nil {
+			mf := *pbr.MetallicFactor
+			pbr.MetallicFactor = &mf
+		}
+		if pbr.RoughnessFactor != nil {
+			rf := *pbr.RoughnessFactor
+			pbr.RoughnessFactor = &rf
+		}
+		c.PBRMetallicRoughness = &pbr
+	}
+	return &c
+}
+
+func setBaseColor(m *gltf.Material, v [4]float64) {
+	if m.PBRMetallicRoughness == nil {
+		m.PBRMetallicRoughness = &gltf.PBRMetallicRoughness{}
+	}
+	m.PBRMetallicRoughness.BaseColorFactor = &v
+}
+
+func setMetallic(m *gltf.Material, v float64) {
+	if m.PBRMetallicRoughness == nil {
+		m.PBRMetallicRoughness = &gltf.PBRMetallicRoughness{}
+	}
+	m.PBRMetallicRoughness.MetallicFactor = &v
+}
+
+func setRoughness(m *gltf.Material, v float64) {
+	if m.PBRMetallicRoughness == nil {
+		m.PBRMetallicRoughness = &gltf.PBRMetallicRoughness{}
+	}
+	m.PBRMetallicRoughness.RoughnessFactor = &v
+}
+
+// ── merge: meshes ─────────────────────────────────────────────────────────────
+
+// mergeMeshList detects 3-way conflicts on mesh arrays but always returns ours
+// unchanged. Meshes reference accessors/bufferViews/buffers by integer index;
+// copying a mesh from theirs would produce dangling index references.
+// Full index-remapping is deferred to a future release.
+func mergeMeshList(base, ours, theirs []*gltf.Mesh, conflicts *[]SemanticConflict) []*gltf.Mesh {
+	baseMap, _ := meshMap(base)
+	oursMap, _ := meshMap(ours)
+	theirsMap, _ := meshMap(theirs)
+
+	for i, om := range ours {
+		name := meshName(om, i)
+		bm := baseMap[name]
+		tm, inTheirs := theirsMap[name]
+		if !inTheirs {
+			if bm != nil {
+				*conflicts = append(*conflicts, SemanticConflict{
+					Path: "meshes/" + name, Ours: "kept", Theirs: "removed",
+				})
+			}
+			continue
+		}
+		ourChanged := !jsonEqual(bm, om)
+		theirChanged := !jsonEqual(bm, tm)
+		if ourChanged && theirChanged && !jsonEqual(om, tm) {
+			*conflicts = append(*conflicts, SemanticConflict{
+				Path:   "meshes/" + name,
+				Ours:   fmt.Sprintf("%d primitives", len(om.Primitives)),
+				Theirs: fmt.Sprintf("%d primitives", len(tm.Primitives)),
+			})
+		}
+	}
+	for i, tm := range theirs {
+		name := meshName(tm, i)
+		if _, inOurs := oursMap[name]; inOurs {
+			continue
+		}
+		if baseMap[name] != nil {
+			*conflicts = append(*conflicts, SemanticConflict{
+				Path: "meshes/" + name, Ours: "removed", Theirs: "kept",
+			})
+		}
+	}
+	return ours
+}
+
+// ── merge: animations ─────────────────────────────────────────────────────────
+
+// mergeAnimationList detects 3-way conflicts on animation arrays but always
+// returns ours unchanged. Same accessor-index constraint as mergeMeshList.
+func mergeAnimationList(base, ours, theirs []*gltf.Animation, conflicts *[]SemanticConflict) []*gltf.Animation {
+	baseMap, _ := animMap(base)
+	oursMap, _ := animMap(ours)
+	theirsMap, _ := animMap(theirs)
+
+	for i, oa := range ours {
+		name := animName(oa, i)
+		ba := baseMap[name]
+		ta, inTheirs := theirsMap[name]
+		if !inTheirs {
+			if ba != nil {
+				*conflicts = append(*conflicts, SemanticConflict{
+					Path: "animations/" + name, Ours: "kept", Theirs: "removed",
+				})
+			}
+			continue
+		}
+		ourChanged := !jsonEqual(ba, oa)
+		theirChanged := !jsonEqual(ba, ta)
+		if ourChanged && theirChanged && !jsonEqual(oa, ta) {
+			*conflicts = append(*conflicts, SemanticConflict{
+				Path:   "animations/" + name,
+				Ours:   fmt.Sprintf("%d channels", len(oa.Channels)),
+				Theirs: fmt.Sprintf("%d channels", len(ta.Channels)),
+			})
+		}
+	}
+	for i, ta := range theirs {
+		name := animName(ta, i)
+		if _, inOurs := oursMap[name]; inOurs {
+			continue
+		}
+		if baseMap[name] != nil {
+			*conflicts = append(*conflicts, SemanticConflict{
+				Path: "animations/" + name, Ours: "removed", Theirs: "kept",
+			})
+		}
+	}
+	return ours
+}
+
+func jsonEqual(a, b any) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	aj, _ := json.Marshal(a)
+	bj, _ := json.Marshal(b)
+	return bytes.Equal(aj, bj)
+}
+
+// ── conflict resolution ───────────────────────────────────────────────────────
+
+// ApplyChoices patches merged (which holds "ours" for every conflict) by
+// replacing values at takePaths with corresponding values from theirs.
+func (h *Handler) ApplyChoices(merged, theirs Blob, takePaths []string) (Blob, error) {
+	if len(takePaths) == 0 {
+		return merged, nil
+	}
+	for _, p := range takePaths {
+		if p == "file" {
+			return theirs, nil
+		}
+	}
+	docM, err := parseDoc(merged)
+	if err != nil {
+		return nil, fmt.Errorf("parsing merged: %w", err)
+	}
+	docT, err := parseDoc(theirs)
+	if err != nil {
+		return nil, fmt.Errorf("parsing theirs: %w", err)
+	}
+	for _, path := range takePaths {
+		applyChoice(docM, docT, path)
+	}
+	return encodeBlob(docM, isGLB(merged))
+}
+
+func applyChoice(docM, docT *gltf.Document, path string) {
+	parts := strings.SplitN(path, "/", 3)
+	if len(parts) < 2 {
+		return
+	}
+	name := parts[1]
+
+	switch parts[0] {
+	case "nodes":
+		tn := nodeByName(docT.Nodes, name)
+		mn := nodeByName(docM.Nodes, name)
+		if len(parts) == 2 {
+			if tn != nil && mn == nil {
+				docM.Nodes = append(docM.Nodes, tn)
+			} else if tn == nil && mn != nil {
+				docM.Nodes = removeNode(docM.Nodes, name)
+			}
+			return
+		}
+		if mn == nil || tn == nil {
+			return
+		}
+		switch parts[2] {
+		case "translation":
+			mn.Translation = tn.TranslationOrDefault()
+		case "rotation":
+			mn.Rotation = tn.RotationOrDefault()
+		case "scale":
+			mn.Scale = tn.ScaleOrDefault()
+		case "mesh":
+			mn.Mesh = tn.Mesh
+		}
+
+	case "materials":
+		tm := materialByName(docT.Materials, name)
+		mm := materialByName(docM.Materials, name)
+		if len(parts) == 2 {
+			if tm != nil && mm == nil {
+				docM.Materials = append(docM.Materials, tm)
+			} else if tm == nil && mm != nil {
+				docM.Materials = removeMaterial(docM.Materials, name)
+			}
+			return
+		}
+		if mm == nil || tm == nil {
+			return
+		}
+		tPBR := pbrOrDefault(tm)
+		switch parts[2] {
+		case "baseColorFactor":
+			setBaseColor(mm, tPBR.BaseColorFactorOrDefault())
+		case "metallicFactor":
+			setMetallic(mm, tPBR.MetallicFactorOrDefault())
+		case "roughnessFactor":
+			setRoughness(mm, tPBR.RoughnessFactorOrDefault())
+		case "alphaMode":
+			mm.AlphaMode = tm.AlphaMode
+		case "doubleSided":
+			mm.DoubleSided = tm.DoubleSided
+		}
+	}
+}
+
+func nodeByName(nodes []*gltf.Node, name string) *gltf.Node {
+	for i, n := range nodes {
+		if nodeName(n, i) == name {
+			return n
+		}
+	}
+	return nil
+}
+
+func removeNode(nodes []*gltf.Node, name string) []*gltf.Node {
+	out := nodes[:0:0]
+	for i, n := range nodes {
+		if nodeName(n, i) != name {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func materialByName(mats []*gltf.Material, name string) *gltf.Material {
+	for i, m := range mats {
+		if materialName(m, i) == name {
+			return m
+		}
+	}
+	return nil
+}
+
+func removeMaterial(mats []*gltf.Material, name string) []*gltf.Material {
+	out := mats[:0:0]
+	for i, m := range mats {
+		if materialName(m, i) != name {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// ── serialisation ─────────────────────────────────────────────────────────────
+
+func isGLB(blob Blob) bool {
+	return len(blob) >= 4 && string(blob[:4]) == "glTF"
+}
+
+func encodeBlob(doc *gltf.Document, binary bool) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := gltf.NewEncoder(&buf)
+	enc.AsBinary = binary
+	if err := enc.Encode(doc); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// Diff produces a hierarchical semantic diff of two glTF/GLB blobs.
+func (h *Handler) Diff(base, head Blob) (StructuredDiff, error) {
+	if len(base) == 0 {
+		return StructuredDiff{}, nil
+	}
+	docA, err := parseDoc(base)
+	if err != nil {
+		return StructuredDiff{}, fmt.Errorf("parsing base: %w", err)
+	}
+	docB, err := parseDoc(head)
+	if err != nil {
+		return StructuredDiff{}, fmt.Errorf("parsing head: %w", err)
+	}
+
+	var changes []DiffChange
+	if c := diffNodes(docA, docB); c != nil {
+		changes = append(changes, *c)
+	}
+	if c := diffMaterials(docA, docB); c != nil {
+		changes = append(changes, *c)
+	}
+	if c := diffMeshes(docA, docB); c != nil {
+		changes = append(changes, *c)
+	}
+	if c := diffAnimations(docA, docB); c != nil {
+		changes = append(changes, *c)
+	}
+
+	return StructuredDiff{Version: "1.0", Format: "gltf-scene", Changes: changes}, nil
+}
+
+func parseDoc(blob Blob) (*gltf.Document, error) {
+	doc := new(gltf.Document)
+	err := gltf.NewDecoder(bytes.NewReader(blob)).Decode(doc)
+	if err != nil && doc.Asset.Version == "" {
+		return nil, fmt.Errorf("failed to parse glTF: %w", err)
+	}
+	return doc, nil
+}
+
+// ── nodes ─────────────────────────────────────────────────────────────────────
+
+func diffNodes(a, b *gltf.Document) *DiffChange {
+	aMap, aOrder := nodeMap(a.Nodes)
+	bMap, _ := nodeMap(b.Nodes)
+
+	seen := make(map[string]bool)
+	names := make([]string, 0, len(a.Nodes)+len(b.Nodes))
+	for _, k := range aOrder {
+		names = append(names, k)
+		seen[k] = true
+	}
+	for i, n := range b.Nodes {
+		k := nodeName(n, i)
+		if !seen[k] {
+			names = append(names, k)
+		}
+	}
+
+	var children []DiffChange
+	for _, name := range names {
+		an, inA := aMap[name]
+		bn, inB := bMap[name]
+
+		switch {
+		case !inA:
+			c := DiffChange{
+				Path: "nodes." + name, Label: name,
+				Kind: Added, After: "node",
+			}
+			if props := nodePropsOneSide(bn, Added); len(props) > 0 {
+				c.Children = props
+			}
+			children = append(children, c)
+		case !inB:
+			c := DiffChange{
+				Path: "nodes." + name, Label: name,
+				Kind: Removed, Before: "node",
+			}
+			if props := nodePropsOneSide(an, Removed); len(props) > 0 {
+				c.Children = props
+			}
+			children = append(children, c)
+		default:
+			if props := diffNodeProps(an, bn); len(props) > 0 {
+				children = append(children, DiffChange{
+					Path:     "nodes." + name,
+					Label:    name,
+					Kind:     Modified,
+					Children: props,
+				})
+			}
+		}
+	}
+
+	if len(children) == 0 {
+		return nil
+	}
+	return &DiffChange{
+		Path: "nodes", Label: "nodes",
+		Kind:     Modified,
+		Children: children,
+	}
+}
+
+func nodeMap(nodes []*gltf.Node) (map[string]*gltf.Node, []string) {
+	m := make(map[string]*gltf.Node, len(nodes))
+	order := make([]string, 0, len(nodes))
+	for i, n := range nodes {
+		k := nodeName(n, i)
+		if _, dup := m[k]; !dup {
+			m[k] = n
+			order = append(order, k)
+		}
+	}
+	return m, order
+}
+
+func nodeName(n *gltf.Node, i int) string {
+	if n.Name != "" {
+		return n.Name
+	}
+	return fmt.Sprintf("node[%d]", i)
+}
+
+func diffNodeProps(a, b *gltf.Node) []DiffChange {
+	var changes []DiffChange
+
+	if ta, tb := a.TranslationOrDefault(), b.TranslationOrDefault(); !nearEq3(ta, tb) {
+		changes = append(changes, DiffChange{
+			Path: "translation", Label: "translation",
+			Kind: Modified, Before: fmtVec3(blenderTranslation(ta)), After: fmtVec3(blenderTranslation(tb)),
+		})
+	}
+	if ra, rb := a.RotationOrDefault(), b.RotationOrDefault(); !nearEq4(ra, rb) {
+		changes = append(changes, DiffChange{
+			Path: "rotation", Label: "rotation",
+			Kind: Modified, Before: fmtRot(ra), After: fmtRot(rb),
+		})
+	}
+	if sa, sb := a.ScaleOrDefault(), b.ScaleOrDefault(); !nearEq3(sa, sb) {
+		changes = append(changes, DiffChange{
+			Path: "scale", Label: "scale",
+			Kind: Modified, Before: fmtVec3(blenderScale(sa)), After: fmtVec3(blenderScale(sb)),
+		})
+	}
+	meshA, meshB := ptrLabel(a.Mesh, "mesh"), ptrLabel(b.Mesh, "mesh")
+	if meshA != meshB {
+		changes = append(changes, DiffChange{
+			Path: "mesh", Label: "mesh",
+			Kind: Modified, Before: meshA, After: meshB,
+		})
+	}
+	return changes
+}
+
+func nodePropsOneSide(n *gltf.Node, kind ChangeKind) []DiffChange {
+	var changes []DiffChange
+	if t := n.TranslationOrDefault(); !nearEq3(t, gltf.DefaultTranslation) {
+		v := fmtVec3(blenderTranslation(t))
+		c := DiffChange{Path: "translation", Label: "translation", Kind: kind}
+		if kind == Added {
+			c.After = v
+		} else {
+			c.Before = v
+		}
+		changes = append(changes, c)
+	}
+	if r := n.RotationOrDefault(); !nearEq4(r, gltf.DefaultRotation) {
+		v := fmtRot(r)
+		c := DiffChange{Path: "rotation", Label: "rotation", Kind: kind}
+		if kind == Added {
+			c.After = v
+		} else {
+			c.Before = v
+		}
+		changes = append(changes, c)
+	}
+	if s := n.ScaleOrDefault(); !nearEq3(s, gltf.DefaultScale) {
+		v := fmtVec3(blenderScale(s))
+		c := DiffChange{Path: "scale", Label: "scale", Kind: kind}
+		if kind == Added {
+			c.After = v
+		} else {
+			c.Before = v
+		}
+		changes = append(changes, c)
+	}
+	if m := ptrLabel(n.Mesh, "mesh"); m != "" {
+		c := DiffChange{Path: "mesh", Label: "mesh", Kind: kind}
+		if kind == Added {
+			c.After = m
+		} else {
+			c.Before = m
+		}
+		changes = append(changes, c)
+	}
+	return changes
+}
+
+// ── materials ─────────────────────────────────────────────────────────────────
+
+func diffMaterials(a, b *gltf.Document) *DiffChange {
+	aMap, aOrder := materialMap(a.Materials)
+	bMap, _ := materialMap(b.Materials)
+
+	seen := make(map[string]bool)
+	names := make([]string, 0, len(a.Materials)+len(b.Materials))
+	for _, k := range aOrder {
+		names = append(names, k)
+		seen[k] = true
+	}
+	for i, m := range b.Materials {
+		k := materialName(m, i)
+		if !seen[k] {
+			names = append(names, k)
+		}
+	}
+
+	var children []DiffChange
+	for _, name := range names {
+		am, inA := aMap[name]
+		bm, inB := bMap[name]
+		switch {
+		case !inA:
+			children = append(children, DiffChange{
+				Path: "materials." + name, Label: name,
+				Kind: Added, After: "material",
+			})
+		case !inB:
+			children = append(children, DiffChange{
+				Path: "materials." + name, Label: name,
+				Kind: Removed, Before: "material",
+			})
+		default:
+			if props := diffMaterialProps(am, bm); len(props) > 0 {
+				children = append(children, DiffChange{
+					Path: "materials." + name, Label: name,
+					Kind: Modified, Children: props,
+				})
+			}
+		}
+	}
+	if len(children) == 0 {
+		return nil
+	}
+	return &DiffChange{
+		Path: "materials", Label: "materials",
+		Kind: Modified, Children: children,
+	}
+}
+
+func materialMap(mats []*gltf.Material) (map[string]*gltf.Material, []string) {
+	m := make(map[string]*gltf.Material, len(mats))
+	order := make([]string, 0, len(mats))
+	for i, mat := range mats {
+		k := materialName(mat, i)
+		if _, dup := m[k]; !dup {
+			m[k] = mat
+			order = append(order, k)
+		}
+	}
+	return m, order
+}
+
+func materialName(m *gltf.Material, i int) string {
+	if m.Name != "" {
+		return m.Name
+	}
+	return fmt.Sprintf("material[%d]", i)
+}
+
+func diffMaterialProps(a, b *gltf.Material) []DiffChange {
+	var changes []DiffChange
+	aPBR := pbrOrDefault(a)
+	bPBR := pbrOrDefault(b)
+	if ca, cb := aPBR.BaseColorFactorOrDefault(), bPBR.BaseColorFactorOrDefault(); ca != cb {
+		changes = append(changes, DiffChange{
+			Path: "baseColorFactor", Label: "baseColorFactor",
+			Kind: Modified, Before: fmtVec4(ca), After: fmtVec4(cb),
+		})
+	}
+	if ma, mb := aPBR.MetallicFactorOrDefault(), bPBR.MetallicFactorOrDefault(); !nearEq(ma, mb) {
+		changes = append(changes, DiffChange{
+			Path: "metallicFactor", Label: "metallicFactor",
+			Kind: Modified, Before: fmtF(ma), After: fmtF(mb),
+		})
+	}
+	if ra, rb := aPBR.RoughnessFactorOrDefault(), bPBR.RoughnessFactorOrDefault(); !nearEq(ra, rb) {
+		changes = append(changes, DiffChange{
+			Path: "roughnessFactor", Label: "roughnessFactor",
+			Kind: Modified, Before: fmtF(ra), After: fmtF(rb),
+		})
+	}
+	if a.EmissiveFactor != b.EmissiveFactor {
+		changes = append(changes, DiffChange{
+			Path: "emissiveFactor", Label: "emissiveFactor",
+			Kind: Modified, Before: fmtVec3(a.EmissiveFactor), After: fmtVec3(b.EmissiveFactor),
+		})
+	}
+	if a.AlphaMode != b.AlphaMode {
+		changes = append(changes, DiffChange{
+			Path: "alphaMode", Label: "alphaMode",
+			Kind: Modified, Before: string(a.AlphaMode), After: string(b.AlphaMode),
+		})
+	}
+	if a.DoubleSided != b.DoubleSided {
+		changes = append(changes, DiffChange{
+			Path: "doubleSided", Label: "doubleSided",
+			Kind: Modified, Before: fmt.Sprintf("%v", a.DoubleSided), After: fmt.Sprintf("%v", b.DoubleSided),
+		})
+	}
+	return changes
+}
+
+func pbrOrDefault(m *gltf.Material) *gltf.PBRMetallicRoughness {
+	if m.PBRMetallicRoughness != nil {
+		return m.PBRMetallicRoughness
+	}
+	return &gltf.PBRMetallicRoughness{}
+}
+
+// ── meshes ────────────────────────────────────────────────────────────────────
+
+func diffMeshes(a, b *gltf.Document) *DiffChange {
+	aMap, aOrder := meshMap(a.Meshes)
+	bMap, _ := meshMap(b.Meshes)
+
+	seen := make(map[string]bool)
+	names := make([]string, 0, len(a.Meshes)+len(b.Meshes))
+	for _, k := range aOrder {
+		names = append(names, k)
+		seen[k] = true
+	}
+	for i, m := range b.Meshes {
+		k := meshName(m, i)
+		if !seen[k] {
+			names = append(names, k)
+		}
+	}
+
+	var children []DiffChange
+	for _, name := range names {
+		am, inA := aMap[name]
+		bm, inB := bMap[name]
+		switch {
+		case !inA:
+			children = append(children, DiffChange{
+				Path: "meshes." + name, Label: name,
+				Kind: Added, After: fmt.Sprintf("%d primitives", len(bm.Primitives)),
+			})
+		case !inB:
+			children = append(children, DiffChange{
+				Path: "meshes." + name, Label: name,
+				Kind: Removed, Before: fmt.Sprintf("%d primitives", len(am.Primitives)),
+			})
+		default:
+			if len(am.Primitives) != len(bm.Primitives) {
+				children = append(children, DiffChange{
+					Path: "meshes." + name, Label: name, Kind: Modified,
+					Children: []DiffChange{{
+						Path: "primitives", Label: "primitives", Kind: Modified,
+						Before: fmt.Sprintf("%d", len(am.Primitives)),
+						After:  fmt.Sprintf("%d", len(bm.Primitives)),
+					}},
+				})
+			}
+		}
+	}
+	if len(children) == 0 {
+		return nil
+	}
+	return &DiffChange{
+		Path: "meshes", Label: "meshes",
+		Kind: Modified, Children: children,
+	}
+}
+
+func meshMap(meshes []*gltf.Mesh) (map[string]*gltf.Mesh, []string) {
+	m := make(map[string]*gltf.Mesh, len(meshes))
+	order := make([]string, 0, len(meshes))
+	for i, mesh := range meshes {
+		k := meshName(mesh, i)
+		if _, dup := m[k]; !dup {
+			m[k] = mesh
+			order = append(order, k)
+		}
+	}
+	return m, order
+}
+
+func meshName(m *gltf.Mesh, i int) string {
+	if m.Name != "" {
+		return m.Name
+	}
+	return fmt.Sprintf("mesh[%d]", i)
+}
+
+// ── animations ────────────────────────────────────────────────────────────────
+
+func diffAnimations(a, b *gltf.Document) *DiffChange {
+	aMap, aOrder := animMap(a.Animations)
+	bMap, _ := animMap(b.Animations)
+
+	seen := make(map[string]bool)
+	names := make([]string, 0, len(a.Animations)+len(b.Animations))
+	for _, k := range aOrder {
+		names = append(names, k)
+		seen[k] = true
+	}
+	for i, an := range b.Animations {
+		k := animName(an, i)
+		if !seen[k] {
+			names = append(names, k)
+		}
+	}
+
+	var children []DiffChange
+	for _, name := range names {
+		aa, inA := aMap[name]
+		ba, inB := bMap[name]
+		switch {
+		case !inA:
+			children = append(children, DiffChange{
+				Path: "animations." + name, Label: name,
+				Kind: Added, After: fmt.Sprintf("%d channels", len(ba.Channels)),
+			})
+		case !inB:
+			children = append(children, DiffChange{
+				Path: "animations." + name, Label: name,
+				Kind: Removed, Before: fmt.Sprintf("%d channels", len(aa.Channels)),
+			})
+		default:
+			if len(aa.Channels) != len(ba.Channels) {
+				children = append(children, DiffChange{
+					Path: "animations." + name, Label: name, Kind: Modified,
+					Children: []DiffChange{{
+						Path: "channels", Label: "channels", Kind: Modified,
+						Before: fmt.Sprintf("%d", len(aa.Channels)),
+						After:  fmt.Sprintf("%d", len(ba.Channels)),
+					}},
+				})
+			}
+		}
+	}
+	if len(children) == 0 {
+		return nil
+	}
+	return &DiffChange{
+		Path: "animations", Label: "animations",
+		Kind: Modified, Children: children,
+	}
+}
+
+func animMap(anims []*gltf.Animation) (map[string]*gltf.Animation, []string) {
+	m := make(map[string]*gltf.Animation, len(anims))
+	order := make([]string, 0, len(anims))
+	for i, a := range anims {
+		k := animName(a, i)
+		if _, dup := m[k]; !dup {
+			m[k] = a
+			order = append(order, k)
+		}
+	}
+	return m, order
+}
+
+func animName(a *gltf.Animation, i int) string {
+	if a.Name != "" {
+		return a.Name
+	}
+	return fmt.Sprintf("anim[%d]", i)
+}
+
+// ── math / formatting helpers ─────────────────────────────────────────────────
+
+const eps = 1e-5
+
+func nearEq(a, b float64) bool { return math.Abs(a-b) < eps }
+func nearEq3(a, b [3]float64) bool {
+	return nearEq(a[0], b[0]) && nearEq(a[1], b[1]) && nearEq(a[2], b[2])
+}
+func nearEq4(a, b [4]float64) bool {
+	return nearEq(a[0], b[0]) && nearEq(a[1], b[1]) && nearEq(a[2], b[2]) && nearEq(a[3], b[3])
+}
+
+// blenderTranslation converts glTF XYZ to Blender coordinate space.
+// Blender X = glTF X,  Blender Y = −glTF Z,  Blender Z = glTF Y
+func blenderTranslation(v [3]float64) [3]float64 {
+	y := -v[2]
+	if y == 0 {
+		y = 0
+	}
+	return [3]float64{v[0], y, v[1]}
+}
+
+// blenderScale converts glTF XYZ scale to Blender coordinate space.
+// Blender X = glTF X,  Blender Y = glTF Z,  Blender Z = glTF Y
+func blenderScale(v [3]float64) [3]float64 { return [3]float64{v[0], v[2], v[1]} }
+
+// fmtRot formats a quaternion as Euler degrees in Blender space.
+func fmtRot(q [4]float64) string {
+	e := quatToBlenderEulerDeg(q)
+	return fmt.Sprintf("(%.2f° %.2f° %.2f°)", e[0], e[1], e[2])
+}
+
+func quatToBlenderEulerDeg(q [4]float64) [3]float64 {
+	m := quatToMatrix(q)
+	rb2g := [3][3]float64{{1, 0, 0}, {0, 0, 1}, {0, -1, 0}}
+	rg2b := [3][3]float64{{1, 0, 0}, {0, 0, -1}, {0, 1, 0}}
+	mb := mat3Mul(mat3Mul(rg2b, m), rb2g)
+	e := mat3ToEulerXYZ(mb)
+	const toDeg = 180.0 / math.Pi
+	return [3]float64{e[0] * toDeg, e[1] * toDeg, e[2] * toDeg}
+}
+
+func quatToMatrix(q [4]float64) [3][3]float64 {
+	x, y, z, w := q[0], q[1], q[2], q[3]
+	return [3][3]float64{
+		{1 - 2*(y*y+z*z), 2*(x*y - w*z), 2*(x*z + w*y)},
+		{2*(x*y + w*z), 1 - 2*(x*x+z*z), 2*(y*z - w*x)},
+		{2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x+y*y)},
+	}
+}
+
+func mat3Mul(a, b [3][3]float64) [3][3]float64 {
+	var c [3][3]float64
+	for i := range 3 {
+		for j := range 3 {
+			for k := range 3 {
+				c[i][j] += a[i][k] * b[k][j]
+			}
+		}
+	}
+	return c
+}
+
+func mat3ToEulerXYZ(m [3][3]float64) [3]float64 {
+	beta := math.Asin(-clampF(m[2][0], -1, 1))
+	cosBeta := math.Cos(beta)
+	var alpha, gamma float64
+	if math.Abs(cosBeta) > 1e-6 {
+		alpha = math.Atan2(m[2][1], m[2][2])
+		gamma = math.Atan2(m[1][0], m[0][0])
+	} else {
+		alpha = math.Atan2(-m[1][2], m[1][1])
+		gamma = 0
+	}
+	return [3]float64{alpha, beta, gamma}
+}
+
+func clampF(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func fmtF(v float64) string {
+	return strconv.FormatFloat(v, 'f', 2, 32)
+}
+
+func fmtVec3(v [3]float64) string {
+	return fmt.Sprintf("[%s %s %s]", fmtF(v[0]), fmtF(v[1]), fmtF(v[2]))
+}
+
+func fmtVec4(v [4]float64) string {
+	return fmt.Sprintf("[%s %s %s %s]", fmtF(v[0]), fmtF(v[1]), fmtF(v[2]), fmtF(v[3]))
+}
+
+func ptrLabel(p *int, prefix string) string {
+	if p == nil {
+		return "<none>"
+	}
+	return fmt.Sprintf("%s[%d]", prefix, *p)
+}
