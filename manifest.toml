@@ -1,47 +1,32 @@
 # FHR Official Source Manifest
-# Fetched by: forge source add https://raw.githubusercontent.com/yakupatahanov/fhr/main/manifest.toml
+# Fetched by: forge source add https://raw.githubusercontent.com/forgehubproject/fhr/main/manifest.toml
 
 name        = "fhr-official"
-url         = "https://raw.githubusercontent.com/yakupatahanov/fhr/main"
+url         = "https://github.com/forgehubproject/fhr"
 version     = "1.0"
 description = "Official Forge Handler Repository"
 maintainer  = "ForgeHub Project"
 
 # ── Formats ───────────────────────────────────────────────────────────────────
-# Each entry maps a file extension to the handler that owns it.
-# Handler packages live in packages/handler-<name>/.
-#
-# [formats]
-# ".gltf" = { handler = "gltf-scene", version = "1.0.0" }
-# ".glb"  = { handler = "gltf-scene", version = "1.0.0" }
-# ".txt"  = { handler = "plain-text", version = "1.0.0" }
-# ".md"   = { handler = "plain-text", version = "1.0.0" }
+# Each key is a file extension mapped directly to a handler name and version.
+# plain-text extensions (.txt, .md, etc.) are handled by Forge's built-in
+# text handler and do not appear here.
 
 [formats]
-# Handlers will be listed here as packages are published.
-
-# ── Domains ───────────────────────────────────────────────────────────────────
-# Named shorthand groups. 'forge formats add domain:3d' expands to all
-# extensions listed under that domain key.
-
-[domains]
-"3d"    = [".gltf", ".glb", ".obj", ".blend", ".fbx", ".usd"]
-"image" = [".png", ".jpg", ".jpeg", ".exr", ".hdr", ".tif"]
-"text"  = [".txt", ".md", ".rst", ".yaml", ".json", ".toml"]
-"cad"   = [".step", ".stp", ".iges", ".igs", ".f3d"]
+".gltf" = { handler = "gltf-scene", version = "1.0.0" }
+".glb"  = { handler = "gltf-scene", version = "1.0.0" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
-# Download paths for handler binaries and renderer bundles.
-# Forge constructs: {url}/{assets.handlers.{name}.{version}.{platform}}
-#
-# [assets.handlers."gltf-scene"."1.0.0"]
-# "linux-amd64"   = "releases/gltf-scene/1.0.0/forge-handler-gltf-scene_linux-amd64"
-# "darwin-arm64"  = "releases/gltf-scene/1.0.0/forge-handler-gltf-scene_darwin-arm64"
-# "windows-amd64" = "releases/gltf-scene/1.0.0/forge-handler-gltf-scene_windows-amd64.exe"
-# "wasm"          = "releases/gltf-scene/1.0.0/forge-handler-gltf-scene.wasm"
-#
-# [assets.renderers."gltf-scene"."1.0.0"]
-# "esm" = "releases/gltf-scene/1.0.0/renderer.js"
+# Full download URLs for handler binaries and renderer bundles.
+# These point to GitHub release assets; update after each release tag is cut.
 
-[assets]
-# Will be populated as handler packages publish releases.
+[assets.handlers."gltf-scene"."1.0.0"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene.wasm"
+
+[assets.renderers."gltf-scene"."1.0.0"]
+"esm" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/renderer.js"
