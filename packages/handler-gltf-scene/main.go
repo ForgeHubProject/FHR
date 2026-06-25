@@ -8,12 +8,11 @@ import (
 )
 
 const (
-	handlerID      = "gltf-scene"
-	handlerVersion = "1.0.0"
-	protocolVer    = "1.0"
+	handlerID   = "gltf-scene"
+	protocolVer = "1.0"
 )
 
-// ── stdin/stdout message shapes ───────────────────────────────────────────────
+// ── stdin/stdout message shapes ────────────────────────────────────────────
 
 type diffInput struct {
 	Base string `json:"base"` // base64-encoded blob
@@ -33,12 +32,11 @@ type mergeOutput struct {
 
 type infoOutput struct {
 	ID       string   `json:"id"`
-	Version  string   `json:"version"`
 	Formats  []string `json:"formats"`
 	Protocol string   `json:"protocol"`
 }
 
-// ── main: subprocess protocol dispatch ───────────────────────────────────────
+// ── main: subprocess protocol dispatch ─────────────────────────────────────
 
 func main() {
 	if len(os.Args) < 2 {
@@ -109,7 +107,6 @@ func main() {
 	case "info":
 		mustEncode(infoOutput{
 			ID:       handlerID,
-			Version:  handlerVersion,
 			Formats:  []string{".gltf", ".glb"},
 			Protocol: protocolVer,
 		})
