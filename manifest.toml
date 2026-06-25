@@ -3,30 +3,27 @@
 
 name        = "fhr-official"
 url         = "https://github.com/forgehubproject/fhr"
-version     = "1.0"
 description = "Official Forge Handler Repository"
 maintainer  = "ForgeHub Project"
 
 # ── Formats ───────────────────────────────────────────────────────────────────
-# Each key is a file extension mapped directly to a handler name and version.
-# plain-text extensions (.txt, .md, etc.) are handled by Forge's built-in
-# text handler and do not appear here.
+# Each key is a file extension mapped to a handler name and the short commit
+# SHA (build) at which that handler was last published. forge formats update
+# compares this build field against the locally-recorded build to decide
+# whether a re-download is needed.
 
 [formats]
-".gltf" = { handler = "gltf-scene", version = "1.0.0" }
-".glb"  = { handler = "gltf-scene", version = "1.0.0" }
+".gltf" = { handler = "gltf-scene", build = "0000000" }
+".glb"  = { handler = "gltf-scene", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
-# Full download URLs for handler binaries and renderer bundles.
-# These point to GitHub release assets; update after each release tag is cut.
+# Full download URLs for handler binaries.
+# The release tag `gltf-scene-latest` is a rolling release overwritten on each
+# push to main that touches packages/handler-gltf-scene/.
 
-[assets.handlers."gltf-scene"."1.0.0"]
-"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_linux-amd64"
-"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_linux-arm64"
-"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_darwin-amd64"
-"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_darwin-arm64"
-"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene_windows-amd64.exe"
-"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/forge-handler-gltf-scene.wasm"
-
-[assets.renderers."gltf-scene"."1.0.0"]
-"esm" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-v1.0.0/renderer.js"
+[assets.handlers."gltf-scene"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene_windows-amd64.exe"
