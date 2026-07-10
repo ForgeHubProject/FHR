@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  node:
+    name: Types, SDK & renderer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Build in dependency order first: typecheck resolves @fhr/types and
+      # @fhr/renderer-sdk through their built .d.ts, and this also proves the
+      # renderer bundle still bundles.
+      - name: Build (types → sdk → renderer)
+        run: |
+          npm run build --workspace @fhr/types
+          npm run build --workspace @fhr/renderer-sdk
+          npm run build --workspace @fhr/renderer-gltf-scene
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+  go:
+    name: Handler (native + wasm)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/handler-gltf-scene
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/handler-gltf-scene/go.mod
+
+      - name: Vet
+        run: go vet -mod=mod ./...
+
+      - name: Build (native)
+        run: go build -mod=mod ./...
+
+      - name: Build (wasm — Tier B)
+        env:
+          GOOS: js
+          GOARCH: wasm
+        run: go build -mod=mod -o /tmp/handler-gltf-scene.wasm .
