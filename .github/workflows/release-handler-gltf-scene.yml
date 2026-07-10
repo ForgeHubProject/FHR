@@ -3,7 +3,11 @@ name: Release gltf-scene handler
 on:
   push:
     branches: [main]
-    paths: ['packages/handler-gltf-scene/**']
+    paths:
+      - 'packages/handler-gltf-scene/**'
+      - 'packages/renderer-gltf-scene/**'
+      - 'packages/renderer-sdk/**'
+      - 'packages/types/**'
 
 permissions:
   contents: write
@@ -30,6 +34,11 @@ jobs:
           - goos: windows
             goarch: amd64
             asset: forge-handler-gltf-scene_windows-amd64.exe
+          # Browser build for client-side (Tier B) diff/merge. Standard Go wasm;
+          # revisit TinyGo if bundle size becomes a problem (SPEC-RENDERING §8 q2).
+          - goos: js
+            goarch: wasm
+            asset: forge-handler-gltf-scene.wasm
 
     steps:
       - uses: actions/checkout@v4
@@ -52,9 +61,37 @@ jobs:
           name: ${{ matrix.asset }}
           path: packages/handler-gltf-scene/${{ matrix.asset }}
 
+  build-renderer:
+    name: Build renderer bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install workspace deps
+        run: npm ci
+
+      - name: Build renderer (types → sdk → renderer)
+        env:
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          npm run build --workspace @fhr/types
+          npm run build --workspace @fhr/renderer-sdk
+          BUILD_SHA="$(git rev-parse --short HEAD)" npm run build --workspace @fhr/renderer-gltf-scene
+          cp packages/renderer-gltf-scene/dist/renderer.js renderer-gltf-scene.js
+
+      - name: Upload renderer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderer-gltf-scene.js
+          path: renderer-gltf-scene.js
+
   release:
     name: Publish rolling release
-    needs: build
+    needs: [build, build-renderer]
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.sha.outputs.short }}
@@ -82,7 +119,7 @@ jobs:
         with:
           tag_name: gltf-scene-latest
           name: "gltf-scene (latest)"
-          body: "Rolling release — always points to the latest build from main."
+          body: "Rolling release — always points to the latest build from main. Includes native binaries, the wasm build, and the renderer bundle."
           files: dist/*
 
   update-manifest:
@@ -105,5 +142,5 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add manifest.toml
-          git commit -m "chore: update gltf-scene build SHA to ${{ needs.release.outputs.sha }}"
+          git diff --cached --quiet || git commit -m "chore: update gltf-scene build SHA to ${{ needs.release.outputs.sha }}"
           git push

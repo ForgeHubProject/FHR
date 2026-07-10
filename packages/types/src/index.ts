@@ -151,3 +151,63 @@ export interface FHRManifest {
   /** Optional extended pages (ceiling). Omit if not needed. */
   routes?: ExtendedRoute[];
 }
+
+// ─── Renderer mount() contract (framework-agnostic bundle boundary) ───────────
+// See SPEC-RENDERING.md §2. Where FHRManifest above is the *authoring* floor
+// (React components), a built renderer.js bundle's default export is a
+// RendererBundle: consumers (ForgeHub web, forge's local `--web` shell) call
+// mount() without needing to know the bundle uses React — or anything — inside.
+//
+// The key difference from the FHRManifest floor: mount() consumes a
+// StructuredDiff plus raw blob references, which are available in *every*
+// compute tier (server, in-browser WASM, or local forge). The floor's
+// Snapshot-shaped props assume server-side ingestion and stay ForgeHub-only.
+
+export type RendererMode = "view" | "diff" | "merge";
+
+/** A blob the consumer serves (same-origin URL) plus its byte size, so a host
+ *  can show honest download costs before choosing a client-side tier. */
+export type BlobRef = { url: string; size: number };
+
+export type RendererBlobs = {
+  base?: BlobRef;
+  head?: BlobRef;
+  ours?: BlobRef;
+  theirs?: BlobRef;
+};
+
+/** Events a renderer emits back to its host. */
+export type RendererEvent =
+  | { type: "select"; changePath: string | null }
+  /** A merge resolution the renderer produced, as a base64-encoded blob. */
+  | { type: "resolved"; blobBase64: string }
+  | { type: "error"; message: string };
+
+export type MountProps = {
+  mode: RendererMode;
+  /** The semantic diff — produced by any tier; the renderer does not care which. */
+  diff?: StructuredDiff;
+  /** Raw blob references, served same-origin by the consumer. */
+  blobs?: RendererBlobs;
+  theme?: "light" | "dark";
+  /** Host callback for renderer-emitted events (selection, resolution, error). */
+  onEvent?: (e: RendererEvent) => void;
+};
+
+/** Live handle returned by mount(); lets the host push new props or tear down. */
+export type RendererInstance = {
+  update(props: MountProps): void;
+  unmount(): void;
+};
+
+/** The default export of every built renderer.js bundle. */
+export interface RendererBundle {
+  /** Contract version this bundle targets. Bump on breaking mount() changes. */
+  readonly fhrVersion: 1;
+  /** Must match ArtifactHandler.id and the handler name in manifest.toml. */
+  readonly handlerId: string;
+  readonly extensions: string[];
+  /** Content-hash build this bundle was released under (matches binary + wasm). */
+  readonly build?: string;
+  mount(el: HTMLElement, props: MountProps): RendererInstance;
+}

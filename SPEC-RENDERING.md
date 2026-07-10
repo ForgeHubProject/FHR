@@ -198,10 +198,14 @@ Invariants:
 
 ## 7. Phasing
 
-1. **P1 — Contract + first artifacts:** finalize `mount()` wrapper types in
-   `@fhr/types`; release workflow additionally builds + attaches
-   `renderer-gltf-scene.js` (port of ForgeHub's viewer) and the `wasm` build;
-   manifest gains §2c keys.
+1. **P1 — Contract + first artifacts (landed):** `mount()` contract types in
+   `@fhr/types`; `@fhr/renderer-sdk`; a reference `renderer-gltf-scene` bundle
+   shipping the lite DOM change-tree view; a `wasm` build of the handler
+   (`syscall/js`, exposing `diff`/`merge`/`info`); manifest §2c keys; release
+   workflow builds + attaches the wasm build and renderer bundle. **Deferred
+   within P1:** the interactive three.js viewport (`view` mode) — ported from
+   ForgeHub's `GltfSceneView` — drops in behind the same `mount()` contract
+   later without a contract change.
 2. **P2 — forge:** `forge formats add` installs renderers; `forge diff --web`.
 3. **P3 — ForgeHub adoption:** web app loads FHR bundles instead of
    hardcoded viewers (Tier S unchanged otherwise).
@@ -211,11 +215,17 @@ Invariants:
 
 ## 8. Open questions
 
-1. `mount()` wrapper generation: hand-written per package vs. a small
-   `@fhr/renderer-sdk` build helper (recommended: SDK helper, keeps the floor
-   authoring experience identical to SPEC.md §8).
-2. Go `wasm` binary size (js/wasm runtime is multi-MB): acceptable, or does
-   TinyGo become a requirement for Tier B viability?
+1. ~~`mount()` wrapper generation: hand-written per package vs. a small
+   `@fhr/renderer-sdk` build helper.~~ **Resolved:** shipped `@fhr/renderer-sdk`
+   with `defineRenderer({ handlerId, extensions, render })`. The `render`
+   callback is `(container, props) => cleanup?` — framework-agnostic, so a
+   pure-DOM renderer and a React renderer (`createRoot(container).render(…)`
+   returning `() => root.unmount()`) are both wrapped by the same SDK. The SDK
+   also provides pure helpers (`flattenDiff`, `diffSummary`, `formatValue`) and
+   a self-contained `renderDiffTree` DOM view.
+2. Go `wasm` binary size: the standard-Go build of `handler-gltf-scene` is
+   ~3.7 MB uncompressed (~1 MB gzipped over the wire). Acceptable for P1;
+   revisit TinyGo only if Tier B adoption makes the download a real cost.
 3. Blob-size ceiling for offering Tier B at all (proposal: hide above
    200 MB combined).
 4. Deep-link protocol (`forge://…`) vs. copyable command for "Open in forge"
