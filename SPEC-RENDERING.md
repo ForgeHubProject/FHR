@@ -164,6 +164,9 @@ Invariants:
 - **Tier availability is capability-detected**, never assumed: Tier B
   requires a `wasm` asset in the manifest and acceptable blob sizes; Tier L
   requires a local clone.
+- **Which tier is even *allowed* is trust-gated (§7):** the server (Tier S)
+  runs *official* handlers only; *community* handlers are never computed
+  server-side and must fall to a sandboxed client tier.
 
 ## 5. Mode selection UX (ForgeHub)
 
@@ -193,10 +196,113 @@ Invariants:
   loopback and sets a CSP that blocks all external requests, so a bundle
   cannot exfiltrate blob data.
 - ForgeHub executing *official* bundles is equivalent to today's vendored
-  viewers. Community bundles need the iframe/postMessage sandbox already
-  listed as SPEC.md open question 5 — unchanged by this document.
+  viewers. Community bundles run only client-side, sandboxed and consented —
+  the full model is §7, which also promotes SPEC.md open question 5 (the
+  iframe/postMessage sandbox) from an open question to a concrete requirement.
 
-## 7. Phasing
+## 7. Trust & execution model
+
+The organizing principle: **who executes a handler is decided by who bears the
+risk, and the marker of trust is a *signature*, not a *location*.** This is the
+security backbone under the compute tiers (§4) — the tier a handler is allowed
+to run in follows directly from whether it is trusted.
+
+### 7a. The invariant
+
+- **Official (signed) handler → the server runs it**, in-origin, no per-user
+  consent. ForgeHub vouches for it.
+- **Community (unsigned) handler → the client runs it**, in a sandboxed,
+  consented browser context (§7e) or locally via forge. The server never
+  fetches or executes it.
+- The signature *is* the boundary: one bit — signed or not — decides
+  server-vs-client execution. Everything else follows.
+
+### 7b. "Official" is a property, not a place
+
+- **Bootstrap (shipped, ForgeHubProject/ForgeHub#59):** official = an explicit
+  format→handler map plus a pinned official release base URL. A *location*
+  allowlist. Correct and shippable as v0.
+- **Target:** official = the build carries a **signature that verifies against
+  a key ForgeHub trusts**. Location-independent — a signed handler can live in
+  any repo, release, or third-party registry and still be server-runnable. FHR
+  becomes a *trust index* (signing keys + attested hashes), not necessarily the
+  *host*; registry federation falls out for free.
+- **What is signed: the content hash of the wasm build** — the exact bytes that
+  execute, not just a manifest line. This reuses forge's content-hash-per-build
+  model (forge#21/#23): a new build is a new hash is a new signature, i.e.
+  re-vetting per build, which is the correct granularity. It also hardens the
+  #59 bootstrap, which today trusts "whatever the release URL serves" — with a
+  signature the server runs the wasm only if `sha256(bytes)` matches the
+  attested, signed hash, defeating a compromised host or MITM swap.
+- **Revocable:** the trust list (keys / attested hashes) is updatable; a handler
+  that turns out malicious loses trust with no code change.
+
+### 7c. Promotion lifecycle
+
+```
+community  ──published──▶  client-sandboxed + consented
+    │
+    └── vetted by maintainers ──▶ signed ──▶ official (server-run, no consent)
+```
+
+Same artifact throughout; the signature is the graduation certificate.
+Demotion is just revoking the signature/hash from the trust list. This gives
+the ecosystem a healthy path: anyone can ship a handler (client-only), and the
+good ones graduate to first-class server execution.
+
+### 7d. Server-side execution (official only)
+
+- Verify **signature + content hash** before instantiating a handler's wasm.
+  (#59 shipped the wasm runner and the location-map bootstrap; signature
+  verification *replaces* the map.)
+- Run sandboxed — wasm with a minimal fs stub, no host filesystem/network —
+  and size-capped. Hardening targets: **worker-thread isolation + an execution
+  timeout** (a synchronous wasm call cannot be interrupted from JS, so even a
+  trusted handler on crafted input is a DoS risk).
+- **Never** read a repo's `.forge/handlers` source URLs or any
+  `~/.forge/sources.list`. The repo declares *which extensions* it wants
+  handled (`.forge/formats`); the server maps those to *official* handlers
+  only. A repo cannot redirect the server to a community source.
+
+### 7e. Client-side execution (community — sandboxed + consented)
+
+The concrete form of the iframe sandbox previously left open (SPEC.md open
+question 5).
+
+- **Isolation:** the community handler's wasm (compute) and renderer bundle
+  (display) run inside an **iframe on a separate origin** (a sandboxed
+  subdomain, or a `sandbox`-attributed frame with a null origin) — never
+  ForgeHub's main origin. Untrusted code at the main origin could read the
+  viewer's session token and act as them (XSS-class); a separate origin denies
+  it ForgeHub's cookies and storage.
+- **Protocol:** the host passes `{ mode, diff?, blobs }` in and receives
+  rendered output / a `resolved` blob back over `postMessage`. Inside the
+  frame, CSP is `connect-src 'none'` — the frame gets the repo's own blob bytes
+  from the host and can reach nothing else (no auth token, no network).
+- **Consent:** first use of a community handler for a repo prompts the viewer —
+  *"This repo uses community handler X from source Y. Run it in your browser?"*
+  — a sticky, revocable, per-source decision. This mirrors forge's local model,
+  where the user themselves chose to `forge source add`.
+- **No server involvement:** the server neither fetches nor proxies community
+  handlers/renderers; the client fetches them from the community source and
+  runs them sandboxed. The official `/renderers` proxy and the server wasm
+  runner stay official-only, permanently.
+- **Optional local path:** a viewer who already installed the handler via forge
+  can "Open in forge" (Tier L) instead — zero in-browser execution. A
+  power-user shortcut, not a requirement.
+
+### 7f. Key management (the hard part, design before building)
+
+Signature systems live or die on key handling: who holds the signing key, how
+it reaches self-hosted instances, rotation, revocation. Prior art to borrow:
+**Sigstore** (keyless, OIDC-identity signing + a transparency log) and **TUF**
+(signed, role-separated, revocable trust roots). Design targets: a self-hosted
+instance ships with the fhr-official trust root and may add its own trusted
+signers; per-build signatures over wasm content hashes; a published revocation
+list. This is the piece to design deliberately first — the #59 map bootstrap
+lets ForgeHub deliver value while it is designed.
+
+## 8. Phasing
 
 1. **P1 — Contract + first artifacts (landed):** `mount()` contract types in
    `@fhr/types`; `@fhr/renderer-sdk`; a reference `renderer-gltf-scene` bundle
@@ -206,14 +312,23 @@ Invariants:
    within P1:** the interactive three.js viewport (`view` mode) — ported from
    ForgeHub's `GltfSceneView` — drops in behind the same `mount()` contract
    later without a contract change.
-2. **P2 — forge:** `forge formats add` installs renderers; `forge diff --web`.
-3. **P3 — ForgeHub adoption:** web app loads FHR bundles instead of
-   hardcoded viewers (Tier S unchanged otherwise).
-4. **P4 — Tier B:** in-browser WASM compute behind the §5 toggle.
-5. **P5 — Merge:** `forge mergetool --web` and ForgeHub client-side merge
+2. **P2 — forge (landed):** `forge formats add` installs renderers;
+   `forge diff --web`.
+3. **P3 — ForgeHub adoption (landed):** web app loads FHR bundles instead of
+   hardcoded viewers; server computes diffs with the official wasm handler
+   (ForgeHubProject/ForgeHub#59, the location-map bootstrap of §7b).
+4. **P4 — Signature trust (§7b, §7f):** sign per-build wasm hashes + a trust
+   root/revocation list in FHR; ForgeHub verifies signature + hash before
+   server execution, replacing the #59 location map. Hardening: worker-thread
+   isolation + timeout for the server wasm.
+5. **P5 — Community sandbox (§7e):** the consented, cross-origin iframe for
+   client-side community handler compute + render; per-source consent UI.
+6. **P6 — Tier B (official):** in-browser WASM compute for official handlers
+   behind the §5 toggle (perf/cost, not trust).
+7. **P7 — Merge:** `forge mergetool --web` and ForgeHub client-side merge
    resolution.
 
-## 8. Open questions
+## 9. Open questions
 
 1. ~~`mount()` wrapper generation: hand-written per package vs. a small
    `@fhr/renderer-sdk` build helper.~~ **Resolved:** shipped `@fhr/renderer-sdk`
@@ -230,6 +345,14 @@ Invariants:
    200 MB combined).
 4. Deep-link protocol (`forge://…`) vs. copyable command for "Open in forge"
    (proposal: copyable command first; protocol handlers are per-OS pain).
-5. Does ForgeHub server ever adopt the WASM builds itself (ForgeHub#59
-   Option B via WASM instead of subprocesses)? Out of scope here, but the
-   `wasm` asset makes it possible without new FHR work.
+5. ~~Does ForgeHub server ever adopt the WASM builds itself (ForgeHub#59
+   Option B)?~~ **Resolved:** yes — shipped. ForgeHub runs the official wasm
+   handler server-side (the location-map bootstrap of §7b); the diff now
+   matches forge's output exactly.
+6. **Signing scheme specifics (§7f):** Sigstore-style keyless vs. a static TUF
+   trust root for self-hosted instances; what identity signs fhr-official
+   builds. Design item for P4.
+7. **Community sandbox origin (§7e):** dedicated sandbox subdomain vs. a
+   `sandbox`-attributed null-origin frame — the former needs deploy/DNS
+   support, the latter is self-contained but more restricted. Design item for
+   P5.
