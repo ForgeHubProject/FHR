@@ -27,3 +27,15 @@ maintainer  = "ForgeHub Project"
 "darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene_darwin-amd64"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene_windows-amd64.exe"
+# WASM build of the same handler — lets ForgeHub / forge --web compute diffs in
+# the browser (SPEC-RENDERING.md §2c, §4 Tier B). Same content-hash build as the
+# native binaries above.
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene.wasm"
+
+# ── Renderers ─────────────────────────────────────────────────────────────────
+# Self-contained ESM bundles (one per handler, not platform-keyed) that render a
+# StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
+# `--web` shell via the mount() contract. See SPEC-RENDERING.md §2.
+
+[assets.renderers]
+"gltf-scene" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/renderer-gltf-scene.js"

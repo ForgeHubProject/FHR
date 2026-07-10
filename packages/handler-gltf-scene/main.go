@@ -1,3 +1,5 @@
+//go:build !js
+
 package main
 
 import (
@@ -5,11 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-)
-
-const (
-	handlerID   = "gltf-scene"
-	protocolVer = "1.0"
 )
 
 // ── stdin/stdout message shapes ────────────────────────────────────────────
