@@ -419,6 +419,11 @@ Blobs are base64-encoded to keep the transport pure JSON. The same binary works 
 
 ## 8. Frontend Renderer Contract
 
+> **See also:** [SPEC-RENDERING.md](./SPEC-RENDERING.md) (draft) extends this
+> section with the distribution model (self-contained ESM bundles with a
+> framework-agnostic `mount()` wrapper), WASM handler builds, local serving
+> via `forge diff --web`, and the server/browser/local compute-tier model.
+
 Every FHR renderer must implement three React components (the **floor**). Always TypeScript + React regardless of the backend language.
 
 ### Supporting types
