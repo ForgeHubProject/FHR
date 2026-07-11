@@ -6,7 +6,8 @@
   "private": true,
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@fhr/renderer-sdk": "*",
@@ -14,6 +15,7 @@
   },
   "devDependencies": {
     "esbuild": "^0.24.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^2.1.0"
   }
 }
