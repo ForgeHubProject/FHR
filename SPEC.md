@@ -641,4 +641,4 @@ forge formats add .myext --source my-org
 
 4. **Semantic merge correctness** — for complex formats (skeletal animation, shader graphs), what is the canonical correct merge when both sides modify the same property? Handler authors define their own strategies; Forge falls back to blob-pick.
 
-5. **iframe postMessage protocol** — the typed message contract between ForgeHub and sandboxed community renderers is not yet specified.
+5. **iframe postMessage protocol** — the typed message contract between ForgeHub and sandboxed community renderers. Now specified in principle by [SPEC-RENDERING.md §7e](./SPEC-RENDERING.md) (the trust & execution model: official→server, community→consented cross-origin iframe); the exact message schema is the remaining detail, tracked for the P5 community-sandbox phase.
