@@ -652,21 +652,23 @@ func encodeBlob(doc *gltf.Document, binary bool) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Diff produces a hierarchical semantic diff of two glTF/GLB blobs.
+// Diff produces a hierarchical semantic diff of two glTF/GLB blobs. An empty
+// blob on either side is treated as an empty document, so an added file (no
+// base) diffs as all-added and a deleted file (no head) as all-removed —
+// matching git's whole-file add/delete semantics rather than showing nothing.
 func (h *Handler) Diff(base, head Blob) (StructuredDiff, error) {
-	if len(base) == 0 {
-		return StructuredDiff{}, nil
-	}
-	docA, err := parseDoc(base)
+	docA, err := parseSideOrEmpty(base)
 	if err != nil {
 		return StructuredDiff{}, fmt.Errorf("parsing base: %w", err)
 	}
-	docB, err := parseDoc(head)
+	docB, err := parseSideOrEmpty(head)
 	if err != nil {
 		return StructuredDiff{}, fmt.Errorf("parsing head: %w", err)
 	}
 
-	var changes []DiffChange
+	// Non-nil so an empty diff marshals as [] (not null) — every consumer, from
+	// the renderer bundle to ForgeHub, can then trust changes is always a list.
+	changes := []DiffChange{}
 	if c := diffNodes(docA, docB); c != nil {
 		changes = append(changes, *c)
 	}
@@ -681,6 +683,15 @@ func (h *Handler) Diff(base, head Blob) (StructuredDiff, error) {
 	}
 
 	return StructuredDiff{Version: "1.0", Format: "gltf-scene", Changes: changes}, nil
+}
+
+// parseSideOrEmpty parses a blob, or returns an empty document for an empty
+// blob (the added/deleted-file case).
+func parseSideOrEmpty(blob Blob) (*gltf.Document, error) {
+	if len(blob) == 0 {
+		return &gltf.Document{}, nil
+	}
+	return parseDoc(blob)
 }
 
 func parseDoc(blob Blob) (*gltf.Document, error) {
