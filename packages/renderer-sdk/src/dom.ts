@@ -50,7 +50,9 @@ export function renderDiffTree(container: HTMLElement, props: MountProps): void 
   root.appendChild(style);
 
   const diff = props.diff;
-  if (!diff || diff.changes.length === 0) {
+  // changes may be null over the wire (a nil Go slice marshals to JSON null) —
+  // treat that as "no changes" rather than dereferencing null.length.
+  if (!diff || !diff.changes || diff.changes.length === 0) {
     const empty = doc.createElement("div");
     empty.className = "fhr-diff__empty";
     empty.textContent = diff ? "No changes." : "No diff provided.";
