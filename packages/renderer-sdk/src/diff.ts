@@ -30,7 +30,8 @@ export function flattenDiff(diff: StructuredDiff): DiffRow[] {
       if (children.length > 0) walk(children, depth + 1);
     }
   };
-  walk(diff.changes, 0);
+  // A nil Go slice marshals to JSON null, so changes may be null over the wire.
+  walk(diff.changes ?? [], 0);
   return rows;
 }
 
@@ -52,7 +53,7 @@ export function diffSummary(diff: StructuredDiff): DiffSummary {
       if (c.children?.length) walk(c.children);
     }
   };
-  walk(diff.changes);
+  walk(diff.changes ?? []);
   return s;
 }
 
