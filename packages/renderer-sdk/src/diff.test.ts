@@ -20,10 +20,19 @@ const nested: StructuredDiff = {
   ],
 };
 
+// A nil Go slice marshals to JSON null, so a diff with no changes can arrive
+// as { changes: null } — the SDK must not crash on it.
+const nullChanges = { version: "1.0", format: "gltf-scene", changes: null } as unknown as StructuredDiff;
+
 describe("flattenDiff", () => {
   it("flattens depth-first with parents before children", () => {
     const rows = flattenDiff(nested);
     expect(rows.map((r) => r.path)).toEqual(["n0", "n1", "n1.pos", "n1.rot", "n2"]);
+  });
+
+  it("treats null changes (nil Go slice over the wire) as empty", () => {
+    expect(flattenDiff(nullChanges)).toEqual([]);
+    expect(diffSummary(nullChanges)).toEqual({ added: 0, removed: 0, modified: 0, total: 0 });
   });
 
   it("assigns depth by nesting level", () => {
