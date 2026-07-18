@@ -6,30 +6,35 @@ const KIND_SYMBOL: Record<string, string> = { added: "+", removed: "−", modifi
 // Self-contained styles — a renderer bundle cannot rely on host CSS. Injected
 // once per container, scoped under .fhr-diff, theme-aware via [data-theme].
 const STYLE = `
-.fhr-diff { font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; color: #1f2328; }
+.fhr-diff { font: 13px/1.55 ui-sans-serif, system-ui, sans-serif; color: #1f2328; max-width: 60rem; }
 .fhr-diff[data-theme="dark"] { color: #e6edf3; }
-.fhr-diff__summary { display: flex; gap: 12px; align-items: center; padding: 8px 4px; flex-wrap: wrap; }
-.fhr-diff__count { font-weight: 600; }
-.fhr-diff__count--added { color: #1a7f37; }
-.fhr-diff__count--removed { color: #cf222e; }
-.fhr-diff__count--modified { color: #9a6700; }
-.fhr-diff[data-theme="dark"] .fhr-diff__count--added { color: #3fb950; }
-.fhr-diff[data-theme="dark"] .fhr-diff__count--removed { color: #f85149; }
-.fhr-diff[data-theme="dark"] .fhr-diff__count--modified { color: #d29922; }
-.fhr-diff__rows { list-style: none; margin: 0; padding: 0; border-top: 1px solid #d0d7de; }
-.fhr-diff[data-theme="dark"] .fhr-diff__rows { border-color: #30363d; }
-.fhr-diff__row { display: flex; gap: 8px; align-items: baseline; padding: 5px 4px; border-bottom: 1px solid #eaeef2; cursor: default; }
-.fhr-diff[data-theme="dark"] .fhr-diff__row { border-color: #21262d; }
+.fhr-diff__summary { display: flex; gap: 8px; align-items: center; padding: 2px 0 12px; flex-wrap: wrap; }
+.fhr-diff__count { font-weight: 600; font-size: 12px; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.fhr-diff__count--added { color: #1a7f37; background: rgba(31,136,61,0.12); }
+.fhr-diff__count--removed { color: #cf222e; background: rgba(207,34,46,0.12); }
+.fhr-diff__count--modified { color: #9a6700; background: rgba(154,103,0,0.14); }
+.fhr-diff[data-theme="dark"] .fhr-diff__count--added { color: #3fb950; background: rgba(63,185,80,0.16); }
+.fhr-diff[data-theme="dark"] .fhr-diff__count--removed { color: #f85149; background: rgba(248,81,73,0.16); }
+.fhr-diff[data-theme="dark"] .fhr-diff__count--modified { color: #d29922; background: rgba(210,153,34,0.16); }
+.fhr-diff__rows { list-style: none; margin: 0; padding: 0; }
+/* Rows read as an indented tree — hover highlight and rounded corners instead
+   of full-width rules, which look like a broken table in a wide panel. */
+.fhr-diff__row { display: flex; gap: 8px; align-items: baseline; padding: 3px 8px; border-radius: 6px; cursor: default; }
+.fhr-diff__row:hover { background: rgba(130,130,130,0.10); }
 .fhr-diff__row[data-selectable="1"] { cursor: pointer; }
-.fhr-diff__row[data-selectable="1"]:hover { background: rgba(84,174,255,0.12); }
+/* A faint guide connects a group header to its indented children. */
+.fhr-diff__row[data-depth="0"] { margin-top: 2px; }
 .fhr-diff__mark { flex: none; width: 1em; text-align: center; font-weight: 700; }
 .fhr-diff__mark--added { color: #1a7f37; }
 .fhr-diff__mark--removed { color: #cf222e; }
 .fhr-diff__mark--modified { color: #9a6700; }
+.fhr-diff[data-theme="dark"] .fhr-diff__mark--added { color: #3fb950; }
+.fhr-diff[data-theme="dark"] .fhr-diff__mark--removed { color: #f85149; }
+.fhr-diff[data-theme="dark"] .fhr-diff__mark--modified { color: #d29922; }
 .fhr-diff__label { flex: none; font-weight: 500; }
 .fhr-diff__values { color: #57606a; font-family: ui-monospace, monospace; font-size: 12px; }
 .fhr-diff[data-theme="dark"] .fhr-diff__values { color: #8b949e; }
-.fhr-diff__arrow { opacity: 0.6; padding: 0 4px; }
+.fhr-diff__arrow { opacity: 0.55; padding: 0 6px; }
 .fhr-diff__empty { padding: 16px 4px; color: #57606a; }
 .fhr-diff__note { padding: 8px 4px; color: #57606a; font-style: italic; }
 `;
@@ -89,7 +94,8 @@ export function renderDiffTree(container: HTMLElement, props: MountProps): void 
   for (const row of flattenDiff(diff)) {
     const li = doc.createElement("li");
     li.className = "fhr-diff__row";
-    li.style.paddingLeft = `${4 + row.depth * 16}px`;
+    li.setAttribute("data-depth", String(row.depth));
+    li.style.paddingLeft = `${8 + row.depth * 18}px`;
 
     const mark = doc.createElement("span");
     mark.className = `fhr-diff__mark fhr-diff__mark--${row.kind}`;
