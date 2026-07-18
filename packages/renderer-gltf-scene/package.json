@@ -11,9 +11,11 @@
   },
   "dependencies": {
     "@fhr/renderer-sdk": "*",
-    "@fhr/types": "*"
+    "@fhr/types": "*",
+    "three": "^0.185.1"
   },
   "devDependencies": {
+    "@types/three": "^0.185.0",
     "esbuild": "^0.24.0",
     "typescript": "^5.4.0",
     "vitest": "^2.1.0"
