@@ -15,6 +15,7 @@ maintainer  = "ForgeHub Project"
 [formats]
 ".gltf" = { handler = "gltf-scene", build = "e520cc6" }
 ".glb"  = { handler = "gltf-scene", build = "e520cc6" }
+".wav"  = { handler = "wav", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -32,6 +33,17 @@ maintainer  = "ForgeHub Project"
 # native binaries above.
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene.wasm"
 
+# The wav handler — rolling release `wav-latest`, overwritten on each push to
+# main that touches packages/handler-wav/. The RIFF header parses with plain
+# stdlib byte reads, so it ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."wav"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/forge-handler-wav_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/forge-handler-wav_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/forge-handler-wav_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/forge-handler-wav_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/forge-handler-wav_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/forge-handler-wav.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -39,3 +51,4 @@ maintainer  = "ForgeHub Project"
 
 [assets.renderers]
 "gltf-scene" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/renderer-gltf-scene.js"
+"wav"        = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/renderer-wav.js"
