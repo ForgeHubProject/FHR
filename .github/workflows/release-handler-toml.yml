@@ -1,0 +1,147 @@
+name: Release toml handler
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - 'packages/handler-toml/**'
+      - 'packages/renderer-toml/**'
+      - 'packages/renderer-sdk/**'
+      - 'packages/types/**'
+      - '.github/workflows/release-handler-toml.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            asset: forge-handler-toml_linux-amd64
+          - goos: linux
+            goarch: arm64
+            asset: forge-handler-toml_linux-arm64
+          - goos: darwin
+            goarch: amd64
+            asset: forge-handler-toml_darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            asset: forge-handler-toml_darwin-arm64
+          - goos: windows
+            goarch: amd64
+            asset: forge-handler-toml_windows-amd64.exe
+          # Browser build for client-side (Tier B) diff. Standard Go wasm.
+          - goos: js
+            goarch: wasm
+            asset: forge-handler-toml.wasm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/handler-toml/go.mod
+
+      - name: Build
+        working-directory: packages/handler-toml
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -mod=mod -trimpath -ldflags="-s -w" -o ${{ matrix.asset }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: packages/handler-toml/${{ matrix.asset }}
+
+  build-renderer:
+    name: Build renderer bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install workspace deps
+        run: npm ci
+
+      - name: Build renderer (types → sdk → renderer)
+        env:
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          npm run build --workspace @fhr/types
+          npm run build --workspace @fhr/renderer-sdk
+          BUILD_SHA="$(git rev-parse --short HEAD)" npm run build --workspace @fhr/renderer-toml
+          cp packages/renderer-toml/dist/renderer.js renderer-toml.js
+
+      - name: Upload renderer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderer-toml.js
+          path: renderer-toml.js
+
+  release:
+    name: Publish rolling release
+    needs: [build, build-renderer]
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.short }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Delete existing rolling release (if any)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete toml-latest --yes --cleanup-tag 2>/dev/null || true
+
+      - name: Create rolling release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: toml-latest
+          name: "toml (latest)"
+          body: "Rolling release — always points to the latest build from main. Includes native binaries, the wasm build, and the renderer bundle."
+          files: dist/*
+
+  update-manifest:
+    name: Update manifest build SHA
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Patch build SHA in manifest.toml
+        env:
+          SHA: ${{ needs.release.outputs.sha }}
+        run: |
+          sed -i 's/\(handler = "toml", build = "\)[^"]*"/\1'"$SHA"'"/' manifest.toml
+
+      - name: Commit updated manifest
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifest.toml
+          git diff --cached --quiet || git commit -m "chore: update toml build SHA to ${{ needs.release.outputs.sha }}"
+          git push
