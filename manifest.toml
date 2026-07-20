@@ -15,6 +15,7 @@ maintainer  = "ForgeHub Project"
 [formats]
 ".gltf" = { handler = "gltf-scene", build = "e520cc6" }
 ".glb"  = { handler = "gltf-scene", build = "e520cc6" }
+".obj"  = { handler = "obj", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -32,6 +33,17 @@ maintainer  = "ForgeHub Project"
 # native binaries above.
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene.wasm"
 
+# The obj handler — rolling release `obj-latest`, overwritten on each push to
+# main that touches packages/handler-obj/. OBJ is plain text, so it ships the
+# wasm build too (Tier B in-browser diff).
+[assets.handlers."obj"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -39,3 +51,4 @@ maintainer  = "ForgeHub Project"
 
 [assets.renderers]
 "gltf-scene" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/renderer-gltf-scene.js"
+"obj"        = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/renderer-obj.js"
