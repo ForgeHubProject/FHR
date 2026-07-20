@@ -105,6 +105,37 @@ func TestIDKeyedAttributeChange(t *testing.T) {
 	}
 }
 
+func TestIDKeyedTagChange(t *testing.T) {
+	// Regression: id-matched elements pair by "#id" regardless of tag, and
+	// this diff used to come back empty — the tag rename was silently dropped.
+	d, js := diffJSON(t, `<svg><rect id="a" width="1"/></svg>`, `<svg><circle id="a" width="1"/></svg>`)
+	if len(d.Changes) != 1 || d.Changes[0].Path != "svg/#a" || d.Changes[0].Kind != Modified {
+		t.Fatalf("expected exactly svg/#a modified, got %s", js)
+	}
+	kids := d.Changes[0].Children
+	if len(kids) != 1 || kids[0].Path != "tag" || kids[0].Kind != Modified || kids[0].Before != "rect" || kids[0].After != "circle" {
+		t.Fatalf("expected tag rect → circle, got %s", js)
+	}
+}
+
+func TestIDKeyedTagChangeNested(t *testing.T) {
+	// The tag comparison must hold at any depth, and produce one coherent
+	// modified change — not an empty diff, not add/remove noise.
+	base := `<svg><g id="grp"><rect id="a" width="1"/><path id="p" d="M0 0"/></g></svg>`
+	head := `<svg><g id="grp"><circle id="a" width="1"/><path id="p" d="M0 0"/></g></svg>`
+	d, js := diffJSON(t, base, head)
+	if len(d.Changes) != 1 {
+		t.Fatalf("expected exactly one changed element, got %s", js)
+	}
+	c := d.Changes[0]
+	if c.Path != "svg/#grp/#a" || c.Kind != Modified {
+		t.Fatalf("expected svg/#grp/#a modified, got %s", js)
+	}
+	if len(c.Children) != 1 || c.Children[0].Path != "tag" || c.Children[0].Before != "rect" || c.Children[0].After != "circle" {
+		t.Fatalf("expected tag rect → circle, got %s", js)
+	}
+}
+
 func TestAttributeAddedAndRemoved(t *testing.T) {
 	base := `<svg><path id="p" d="M0 0" stroke="black"/></svg>`
 	head := `<svg><path id="p" d="M0 0" opacity="0.5"/></svg>`
