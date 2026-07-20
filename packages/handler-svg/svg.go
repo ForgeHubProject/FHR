@@ -2,7 +2,8 @@
 // tree of elements (paths, shapes, groups) with attributes carrying geometry,
 // transforms, and styles — so a text diff drowns a one-attribute tweak in
 // serialization noise. This handler diffs the XML tree itself: elements added
-// or removed, attributes added / removed / changed, and text content changes.
+// or removed, attributes added / removed / changed, text content changes, and
+// tag renames on id-matched elements.
 // Root-level width / height / viewBox changes fall out naturally as attribute
 // changes on the svg element.
 //
@@ -261,10 +262,19 @@ func (d *differ) attrAndTextChanges(a, b *element) []DiffChange {
 	return kids
 }
 
-// diffElement compares one matched element pair: its own attributes and text,
-// then its children by identity key.
+// diffElement compares one matched element pair: its tag, its own attributes
+// and text, then its children by identity key. Id-keyed elements pair up by
+// "#theId" regardless of tag, so a tag rename (rect#a → circle#a) must be
+// reported here — otherwise it would silently vanish from the diff.
+// (Structurally keyed pairs embed the tag in the key, so their tags always
+// agree; the root tag change is handled separately in Diff.)
 func (d *differ) diffElement(a, b *element, path, key string, out *[]DiffChange) {
-	if kids := d.attrAndTextChanges(a, b); len(kids) > 0 && d.take() {
+	var kids []DiffChange
+	if a.tag != b.tag && d.take() {
+		kids = append(kids, DiffChange{Path: "tag", Kind: Modified, Label: "tag", Before: a.tag, After: b.tag})
+	}
+	kids = append(kids, d.attrAndTextChanges(a, b)...)
+	if len(kids) > 0 && d.take() {
 		*out = append(*out, DiffChange{Path: path, Kind: Modified, Label: elementLabel(b, key), Children: kids})
 	}
 	d.diffChildren(a, b, path, out)
