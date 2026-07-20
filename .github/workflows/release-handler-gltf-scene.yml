@@ -1,6 +1,8 @@
 name: Release gltf-scene handler
 
 on:
+  # Manual trigger — rerun the rolling release without a code change.
+  workflow_dispatch: {}
   push:
     branches: [main]
     paths:
@@ -8,6 +10,9 @@ on:
       - 'packages/renderer-gltf-scene/**'
       - 'packages/renderer-sdk/**'
       - 'packages/types/**'
+      # Include this workflow so changes to how the release is built/published
+      # (e.g. adding the 3D chunk) actually trigger a rebuild.
+      - '.github/workflows/release-handler-gltf-scene.yml'
 
 permissions:
   contents: write
