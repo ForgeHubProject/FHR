@@ -15,6 +15,10 @@ maintainer  = "ForgeHub Project"
 [formats]
 ".gltf" = { handler = "gltf-scene", build = "e520cc6" }
 ".glb"  = { handler = "gltf-scene", build = "e520cc6" }
+".png"  = { handler = "image-meta", build = "0000000" }
+".jpg"  = { handler = "image-meta", build = "0000000" }
+".jpeg" = { handler = "image-meta", build = "0000000" }
+".gif"  = { handler = "image-meta", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -32,6 +36,18 @@ maintainer  = "ForgeHub Project"
 # native binaries above.
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene.wasm"
 
+# The image-meta handler — rolling release `image-meta-latest`, overwritten on
+# each push to main that touches packages/handler-image-meta/. Header-only
+# metadata decode (stdlib image.DecodeConfig), so it ships the wasm build too
+# (Tier B in-browser diff).
+[assets.handlers."image-meta"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/image-meta-latest/forge-handler-image-meta_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/image-meta-latest/forge-handler-image-meta_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/image-meta-latest/forge-handler-image-meta_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/image-meta-latest/forge-handler-image-meta_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/image-meta-latest/forge-handler-image-meta_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/image-meta-latest/forge-handler-image-meta.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -39,3 +55,4 @@ maintainer  = "ForgeHub Project"
 
 [assets.renderers]
 "gltf-scene" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/renderer-gltf-scene.js"
+"image-meta" = "https://github.com/forgehubproject/fhr/releases/download/image-meta-latest/renderer-image-meta.js"
