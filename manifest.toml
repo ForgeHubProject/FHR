@@ -15,6 +15,7 @@ maintainer  = "ForgeHub Project"
 [formats]
 ".gltf" = { handler = "gltf-scene", build = "e520cc6" }
 ".glb"  = { handler = "gltf-scene", build = "e520cc6" }
+".toml" = { handler = "toml", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -32,6 +33,18 @@ maintainer  = "ForgeHub Project"
 # native binaries above.
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene.wasm"
 
+# The toml handler — rolling release `toml-latest`, overwritten on each push
+# to main that touches packages/handler-toml/. TOML parses in pure Go
+# (github.com/BurntSushi/toml), so it ships the wasm build too (Tier B
+# in-browser diff).
+[assets.handlers."toml"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/forge-handler-toml_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/forge-handler-toml_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/forge-handler-toml_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/forge-handler-toml_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/forge-handler-toml_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/forge-handler-toml.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -39,3 +52,4 @@ maintainer  = "ForgeHub Project"
 
 [assets.renderers]
 "gltf-scene" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/renderer-gltf-scene.js"
+"toml"       = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/renderer-toml.js"
