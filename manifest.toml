@@ -13,8 +13,9 @@ maintainer  = "ForgeHub Project"
 # whether a re-download is needed.
 
 [formats]
-".gltf" = { handler = "gltf-scene", build = "e520cc6" }
-".glb"  = { handler = "gltf-scene", build = "e520cc6" }
+".gltf"  = { handler = "gltf-scene", build = "e520cc6" }
+".glb"   = { handler = "gltf-scene", build = "e520cc6" }
+".ipynb" = { handler = "ipynb", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -32,6 +33,17 @@ maintainer  = "ForgeHub Project"
 # native binaries above.
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene.wasm"
 
+# The ipynb handler — rolling release `ipynb-latest`, overwritten on each push
+# to main that touches packages/handler-ipynb/. Notebooks are JSON, so it ships
+# the wasm build too (Tier B in-browser diff).
+[assets.handlers."ipynb"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -39,3 +51,4 @@ maintainer  = "ForgeHub Project"
 
 [assets.renderers]
 "gltf-scene" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/renderer-gltf-scene.js"
+"ipynb"      = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/renderer-ipynb.js"
