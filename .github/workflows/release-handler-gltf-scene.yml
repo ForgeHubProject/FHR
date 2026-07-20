@@ -82,12 +82,16 @@ jobs:
           npm run build --workspace @fhr/renderer-sdk
           BUILD_SHA="$(git rev-parse --short HEAD)" npm run build --workspace @fhr/renderer-gltf-scene
           cp packages/renderer-gltf-scene/dist/renderer.js renderer-gltf-scene.js
+          # The lite bundle lazy-imports this heavy three.js chunk as a sibling.
+          cp packages/renderer-gltf-scene/dist/renderer-3d.js renderer-gltf-scene-3d.js
 
-      - name: Upload renderer artifact
+      - name: Upload renderer artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: renderer-gltf-scene.js
-          path: renderer-gltf-scene.js
+          name: renderer-bundles
+          path: |
+            renderer-gltf-scene.js
+            renderer-gltf-scene-3d.js
 
   release:
     name: Publish rolling release
