@@ -20,7 +20,7 @@ export type Entity = {
   transform: Transform | null;
 };
 
-type GltfNode = {
+export type GltfNode = {
   name?: string;
   children?: number[];
   mesh?: number;
@@ -29,11 +29,21 @@ type GltfNode = {
   scale?: [number, number, number];
 };
 type GltfScene = { nodes?: number[]; name?: string };
-type GltfDocument = {
+/** A glTF buffer. No `uri` means "the GLB's own BIN chunk"; a `data:` uri is embedded. */
+export type GltfBuffer = { uri?: string; byteLength?: number };
+/** A glTF image. `bufferView` means embedded bytes; a non-`data:` `uri` is a sibling file. */
+export type GltfImage = { uri?: string; bufferView?: number; mimeType?: string; name?: string };
+export type GltfDocument = {
   asset?: { version: string };
   scene?: number;
   scenes?: GltfScene[];
   nodes?: GltfNode[];
+  buffers?: GltfBuffer[];
+  images?: GltfImage[];
+  /** Extensions the file cannot be read without. */
+  extensionsRequired?: string[];
+  /** Extensions the file uses but can be read (degraded) without. */
+  extensionsUsed?: string[];
 };
 
 function slugify(name: string): string {
