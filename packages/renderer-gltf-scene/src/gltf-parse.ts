@@ -46,6 +46,12 @@ export type GltfDocument = {
   extensionsUsed?: string[];
 };
 
+/**
+ * Build a path segment for an entity id. This is *only* for composing the
+ * outline view's tree paths — never for matching a name against another layer's
+ * name. Matching through slugified names is what #44 retired: see node-index.ts,
+ * which reconciles diff labels to glTF node indices against this same JSON.
+ */
 function slugify(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "node";
 }

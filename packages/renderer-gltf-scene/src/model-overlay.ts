@@ -108,8 +108,9 @@ export function buildOverlay(input: OverlayInput): Overlay {
   headGroup.name = "fhr-head";
   headGroup.add(head.gltf.scene);
 
-  // Materials we create and therefore own. Disposal walks the tree, so these are
-  // only tracked to be swapped-out originals' replacements — see `orphaned`.
+  // Materials this overlay creates and therefore owns. They end up attached to
+  // objects under `root`, so disposal finds them by walking the tree; the
+  // originals they *displace* are the ones that need tracking (`orphaned`).
   const ghostBaseMaterial = new MeshBasicMaterial({
     color: dark ? 0x8b98a5 : 0x57606a,
     transparent: true,
