@@ -4,6 +4,11 @@
 // change to "Cube.001" ends up unpainted. Names are reconciled once, in
 // node-index.ts, and only against the file's own JSON.
 //
+// Path scheme (see handler-gltf-scene): segments are "/"-separated and fully
+// qualified — "nodes/Cube.001/translation" — with "%" and "/" percent-escaped
+// inside segments ("%25", "%2F"). `label` always carries the raw display name;
+// the path is the escaped machine key.
+//
 // What this module deliberately does *not* read: the `before`/`after` values.
 // They are display strings in Blender coordinate space ("[1 2 -3]"), so deriving
 // a motion vector from them would mean string-parsing plus a coordinate-space
@@ -15,7 +20,15 @@ import type { StructuredDiff, DiffChange, ChangeKind } from "@fhr/types";
 
 /** The glTF collection this renderer paints. */
 const NODES = "nodes";
-const NODE_PREFIX = `${NODES}.`;
+const NODE_PREFIX = `${NODES}/`;
+
+/** A node-level path: exactly one (escaped) segment below the collection. */
+const NODE_PATH = /^nodes\/[^/]+$/;
+
+/** Reverse the handler's segment escaping ("/" first, then "%"). */
+function unescapeSegment(segment: string): string {
+  return segment.replace(/%2F/gi, "/").replace(/%25/g, "%");
+}
 
 /** Node fields that move geometry in space, as the handler labels them. */
 export const TRANSFORM_FIELDS: readonly string[] = ["translation", "rotation", "scale"];
@@ -41,11 +54,11 @@ export function diffChangeTypes(diff: StructuredDiff | undefined): Map<string, C
 /**
  * Node-level changes, in diff order. Recognises both shapes the handler may
  * emit: node changes nested under a "nodes" collection change (today), and node
- * changes appearing directly with a "nodes.<name>" path.
+ * changes appearing directly with a "nodes/<name>" path.
  *
- * Names are taken from `label` first and only then from the path remainder —
- * never from the last dot-separated segment, because node names legitimately
- * contain dots ("Cube.001", Blender's duplicate suffix).
+ * Names are taken from `label` first and only then from the unescaped path
+ * remainder — a node-level path is exactly one segment below the collection, so
+ * a fully-qualified field path ("nodes/Cube/translation") never reads as a node.
  */
 export function nodeChanges(diff: StructuredDiff | undefined): NodeChange[] {
   const out: NodeChange[] = [];
@@ -69,12 +82,12 @@ export function nodeChanges(diff: StructuredDiff | undefined): NodeChange[] {
 
   const walk = (changes: DiffChange[]): void => {
     for (const change of changes) {
-      if (change.path === NODES || change.path.endsWith(`.${NODES}`)) {
+      if (change.path === NODES || change.path.endsWith(`/${NODES}`)) {
         // The collection wrapper: its children are the node-level changes.
         for (const child of change.children ?? []) collect(child);
         continue;
       }
-      if (change.path.startsWith(NODE_PREFIX)) {
+      if (NODE_PATH.test(change.path)) {
         collect(change);
         continue;
       }
@@ -101,15 +114,16 @@ export function hasTransformChange(change: NodeChange): boolean {
   return change.fields.some((f) => TRANSFORM_FIELDS.includes(f));
 }
 
-/** A node change's name: its label, else everything after the "nodes." prefix. */
+/** A node change's name: its label, else the unescaped path remainder. */
 function nodeNameOf(change: DiffChange): string {
   if (change.label !== undefined && change.label !== "") return change.label;
-  return change.path.startsWith(NODE_PREFIX) ? change.path.slice(NODE_PREFIX.length) : change.path;
+  if (!NODE_PATH.test(change.path)) return "";
+  return unescapeSegment(change.path.slice(NODE_PREFIX.length));
 }
 
-/** A field change's name: its label, else the last path segment. */
+/** A field change's name: its label, else the unescaped last path segment. */
 function fieldNameOf(change: DiffChange): string {
   if (change.label !== undefined && change.label !== "") return change.label;
-  const at = change.path.lastIndexOf(".");
-  return at === -1 ? change.path : change.path.slice(at + 1);
+  const at = change.path.lastIndexOf("/");
+  return unescapeSegment(at === -1 ? change.path : change.path.slice(at + 1));
 }

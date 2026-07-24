@@ -15,16 +15,16 @@ describe("nodeChanges", () => {
   it("reads node-level changes out of the nodes collection, with their fields", () => {
     const diff = diffOf(
       {
-        path: "nodes.Cube",
+        path: "nodes/Cube",
         label: "Cube",
         kind: "modified",
         children: [
-          { path: "translation", label: "translation", kind: "modified", before: "[0 0 0]", after: "[1 0 0]" },
-          { path: "mesh", label: "mesh", kind: "modified" },
+          { path: "nodes/Cube/translation", label: "translation", kind: "modified", before: "[0 0 0]", after: "[1 0 0]" },
+          { path: "nodes/Cube/mesh", label: "mesh", kind: "modified" },
         ],
       },
-      { path: "nodes.NewLamp", label: "NewLamp", kind: "added" },
-      { path: "nodes.Mirror", label: "Mirror", kind: "removed" },
+      { path: "nodes/NewLamp", label: "NewLamp", kind: "added" },
+      { path: "nodes/Mirror", label: "Mirror", kind: "removed" },
     );
     expect(nodeChanges(diff)).toEqual([
       { name: "Cube", kind: "modified", fields: ["translation", "mesh"] },
@@ -34,18 +34,18 @@ describe("nodeChanges", () => {
   });
 
   it("keeps the raw name — no slugifying, no lowercasing", () => {
-    const diff = diffOf({ path: "nodes.Front Wheel.001", label: "Front Wheel.001", kind: "modified" });
+    const diff = diffOf({ path: "nodes/Front Wheel.001", label: "Front Wheel.001", kind: "modified" });
     expect(nodeChanges(diff)[0]!.name).toBe("Front Wheel.001");
   });
 
   it("takes a dotted name from the path remainder when there's no label", () => {
-    // The last path segment would be "001" — the whole remainder is the name.
-    const diff = diffOf({ path: "nodes.Cube.001", kind: "modified" });
+    // A dot is legal inside a segment — the whole remainder is the name.
+    const diff = diffOf({ path: "nodes/Cube.001", kind: "modified" });
     expect(nodeChanges(diff)[0]!.name).toBe("Cube.001");
   });
 
   it("reads the unnamed-node fallback label", () => {
-    const diff = diffOf({ path: "nodes.node[2]", label: "node[2]", kind: "removed" });
+    const diff = diffOf({ path: "nodes/node[2]", label: "node[2]", kind: "removed" });
     expect(nodeChanges(diff)[0]).toEqual({ name: "node[2]", kind: "removed", fields: [] });
   });
 
@@ -53,7 +53,7 @@ describe("nodeChanges", () => {
     const diff: StructuredDiff = {
       version: "1.0",
       format: "gltf-scene",
-      changes: [{ path: "nodes.Cube", label: "Cube", kind: "added" }],
+      changes: [{ path: "nodes/Cube", label: "Cube", kind: "added" }],
     };
     expect(nodeChanges(diff)).toEqual([{ name: "Cube", kind: "added", fields: [] }]);
   });
@@ -63,8 +63,8 @@ describe("nodeChanges", () => {
       version: "1.0",
       format: "gltf-scene",
       changes: [
-        { path: "materials", label: "materials", kind: "modified", children: [{ path: "materials.Paint", label: "Paint", kind: "modified" }] },
-        { path: "meshes", label: "meshes", kind: "modified", children: [{ path: "meshes.Tri", label: "Tri", kind: "modified" }] },
+        { path: "materials", label: "materials", kind: "modified", children: [{ path: "materials/Paint", label: "Paint", kind: "modified" }] },
+        { path: "meshes", label: "meshes", kind: "modified", children: [{ path: "meshes/Tri", label: "Tri", kind: "modified" }] },
       ],
     };
     expect(nodeChanges(diff)).toEqual([]);
@@ -79,7 +79,7 @@ describe("nodeChanges", () => {
           path: "scene",
           label: "scene",
           kind: "modified",
-          children: [{ path: "nodes", label: "nodes", kind: "modified", children: [{ path: "nodes.Cube", label: "Cube", kind: "added" }] }],
+          children: [{ path: "nodes", label: "nodes", kind: "modified", children: [{ path: "nodes/Cube", label: "Cube", kind: "added" }] }],
         },
       ],
     };
@@ -88,18 +88,18 @@ describe("nodeChanges", () => {
 
   it("does not mistake a field for a node", () => {
     const diff = diffOf({
-      path: "nodes.Cube",
+      path: "nodes/Cube",
       label: "Cube",
       kind: "modified",
-      children: [{ path: "translation", label: "translation", kind: "modified" }],
+      children: [{ path: "nodes/Cube/translation", label: "translation", kind: "modified" }],
     });
     expect(nodeChanges(diff).map((c) => c.name)).toEqual(["Cube"]);
   });
 
   it("merges a node named twice, keeping the first kind and unioning fields", () => {
     const diff = diffOf(
-      { path: "nodes.Cube", label: "Cube", kind: "modified", children: [{ path: "translation", label: "translation", kind: "modified" }] },
-      { path: "nodes.Cube", label: "Cube", kind: "modified", children: [{ path: "scale", label: "scale", kind: "modified" }] },
+      { path: "nodes/Cube", label: "Cube", kind: "modified", children: [{ path: "nodes/Cube/translation", label: "translation", kind: "modified" }] },
+      { path: "nodes/Cube", label: "Cube", kind: "modified", children: [{ path: "nodes/Cube/scale", label: "scale", kind: "modified" }] },
     );
     expect(nodeChanges(diff)).toEqual([{ name: "Cube", kind: "modified", fields: ["translation", "scale"] }]);
   });
@@ -114,8 +114,8 @@ describe("nodeChanges", () => {
 describe("diffChangeTypes", () => {
   it("keys node change kinds by raw name, ignoring field children", () => {
     const diff = diffOf(
-      { path: "nodes.Cube.001", label: "Cube.001", kind: "modified", children: [{ path: "translation", label: "translation", kind: "modified" }] },
-      { path: "nodes.NewLamp", label: "NewLamp", kind: "added" },
+      { path: "nodes/Cube.001", label: "Cube.001", kind: "modified", children: [{ path: "nodes/Cube/translation", label: "translation", kind: "modified" }] },
+      { path: "nodes/NewLamp", label: "NewLamp", kind: "added" },
     );
     const map = diffChangeTypes(diff);
     expect(map.get("Cube.001")).toBe("modified");
@@ -144,5 +144,25 @@ describe("transform-change classification (drives the move ghost)", () => {
     expect(isTransformOnly({ name: "A", kind: "added", fields: ["translation"] })).toBe(false);
     expect(isTransformOnly({ name: "A", kind: "modified", fields: [] })).toBe(false);
     expect(hasTransformChange({ name: "A", kind: "modified", fields: ["mesh"] })).toBe(false);
+  });
+});
+
+describe("path escaping (handler scheme: %2F for '/', %25 for '%')", () => {
+  it("unescapes a slash-bearing name from the path when there is no label", () => {
+    const diff: StructuredDiff = {
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [{ path: "nodes/rig%2Fhand", kind: "removed" }],
+    };
+    expect(nodeChanges(diff)).toEqual([{ name: "rig/hand", kind: "removed", fields: [] }]);
+  });
+
+  it("never mistakes a qualified field path for a node", () => {
+    const diff: StructuredDiff = {
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [{ path: "nodes/Cube/translation", label: "translation", kind: "modified" }],
+    };
+    expect(nodeChanges(diff)).toEqual([]);
   });
 });
