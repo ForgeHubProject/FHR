@@ -77,6 +77,9 @@ describe("decodeGltf / entitiesFromBlob", () => {
 });
 
 describe("diffChangeTypes", () => {
+  // Handler paths are "/"-separated and fully qualified, so field changes carry
+  // the node prefix too ("nodes/Cube/translation"); only the node level colours
+  // the scene.
   const diff: StructuredDiff = {
     version: "1.0",
     format: "gltf-scene",
@@ -85,9 +88,22 @@ describe("diffChangeTypes", () => {
         path: "nodes",
         kind: "modified",
         children: [
-          { path: "nodes.Cube", kind: "modified", label: "Cube", children: [{ path: "translation", kind: "modified" }] },
-          { path: "nodes.NewLamp", kind: "added", label: "NewLamp" },
+          {
+            path: "nodes/Cube",
+            kind: "modified",
+            label: "Cube",
+            children: [
+              { path: "nodes/Cube/translation", kind: "modified" },
+              { path: "nodes/Cube/parent", kind: "modified", before: "Body", after: "Door_L" },
+            ],
+          },
+          { path: "nodes/NewLamp", kind: "added", label: "NewLamp" },
         ],
+      },
+      {
+        path: "materials",
+        kind: "modified",
+        children: [{ path: "materials/Paint", kind: "modified", label: "Paint" }],
       },
     ],
   };
@@ -97,6 +113,20 @@ describe("diffChangeTypes", () => {
     expect(m.get("cube")).toBe("modified");
     expect(m.get("newlamp")).toBe("added");
     expect(m.has("translation")).toBe(false);
+    expect(m.has("parent")).toBe(false);
+  });
+
+  it("ignores other collections", () => {
+    expect(diffChangeTypes(diff).has("paint")).toBe(false);
+  });
+
+  it("unescapes the path when a change carries no label", () => {
+    const m = diffChangeTypes({
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [{ path: "nodes/rig%2Fhand", kind: "removed" }],
+    });
+    expect(m.get("rig-hand")).toBe("removed");
   });
 
   it("returns an empty map for no diff", () => {
