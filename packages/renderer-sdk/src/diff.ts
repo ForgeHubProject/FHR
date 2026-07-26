@@ -18,15 +18,7 @@ export function flattenDiff(diff: StructuredDiff): DiffRow[] {
   const walk = (changes: DiffChange[], depth: number) => {
     for (const c of changes) {
       const children = c.children ?? [];
-      rows.push({
-        path: c.path,
-        kind: c.kind,
-        label: c.label ?? c.path,
-        depth,
-        before: c.before,
-        after: c.after,
-        hasChildren: children.length > 0,
-      });
+      rows.push(rowOf(c, depth, children.length > 0));
       if (children.length > 0) walk(children, depth + 1);
     }
   };
@@ -41,20 +33,122 @@ export type DiffSummary = {
   modified: number;
   /** Total change nodes, including nested children. */
   total: number;
+  /**
+   * Counts keyed by kind *as it appeared on the wire*, so a kind this SDK build
+   * has never heard of (a handler that starts emitting "renamed" or "moved")
+   * still gets counted and shown instead of vanishing from the summary bar.
+   */
+  byKind: Record<string, number>;
+  /** Kinds present, known ones first in review order, then the rest sorted. */
+  kinds: string[];
 };
+
+/** The kinds this SDK knows, in the order a summary bar should read. */
+const KNOWN_KINDS: readonly string[] = ["added", "removed", "modified"];
 
 /** Count changes by kind across the whole tree (children included). */
 export function diffSummary(diff: StructuredDiff): DiffSummary {
-  const s: DiffSummary = { added: 0, removed: 0, modified: 0, total: 0 };
+  const byKind: Record<string, number> = {};
+  const s: DiffSummary = { added: 0, removed: 0, modified: 0, total: 0, byKind, kinds: [] };
   const walk = (changes: DiffChange[]) => {
     for (const c of changes) {
-      s[c.kind] += 1;
+      const kind = String(c.kind);
+      byKind[kind] = (byKind[kind] ?? 0) + 1;
+      if (kind === "added" || kind === "removed" || kind === "modified") s[kind] += 1;
       s.total += 1;
       if (c.children?.length) walk(c.children);
     }
   };
   walk(diff.changes ?? []);
+  const extra = Object.keys(byKind)
+    .filter((k) => !KNOWN_KINDS.includes(k))
+    .sort();
+  s.kinds = [...KNOWN_KINDS.filter((k) => byKind[k]), ...extra];
   return s;
+}
+
+/**
+ * One stop on the next/previous review path: a change plus the value rows that
+ * belong to it.
+ */
+export type ReviewStop = {
+  row: DiffRow;
+  /** This stop's own descendant rows — the "before → after" lines under it. */
+  details: DiffRow[];
+};
+
+/**
+ * The changes `n`/`p` steps through: the *shallowest rows that carry values*.
+ *
+ * A structured diff nests collection wrappers above the things a reviewer thinks
+ * of as changes ("nodes" → "Wheel_FL" → "translation"), and stepping through
+ * every row would mean stepping through both the wrapper and each field of the
+ * object it wraps. So a row is a stop when it has no children of its own, or
+ * when at least one of its children is a leaf *carrying a value* — and nothing
+ * below a stop is a stop. The "carrying a value" part is what separates an
+ * object from a collection: a collection's leaf children are whole entities
+ * (a node removed outright has no before/after of its own), while an object's
+ * leaf children are its changed fields, which always have one.
+ *
+ * Renderers that know their own path scheme can pass an exact list instead;
+ * the glTF renderer does.
+ */
+export function reviewStops(diff: StructuredDiff | undefined): ReviewStop[] {
+  const stops: ReviewStop[] = [];
+  if (!diff) return stops;
+
+  const descend = (change: DiffChange, depth: number): DiffRow[] => {
+    const rows: DiffRow[] = [];
+    const walk = (c: DiffChange, d: number): void => {
+      const children = c.children ?? [];
+      rows.push(rowOf(c, d, children.length > 0));
+      for (const child of children) walk(child, d + 1);
+    };
+    for (const child of change.children ?? []) walk(child, depth + 1);
+    return rows;
+  };
+
+  const walk = (changes: DiffChange[], depth: number): void => {
+    for (const change of changes) {
+      const children = change.children ?? [];
+      const isStop = children.length === 0 || children.some(isValueLeaf);
+      if (isStop) {
+        stops.push({ row: rowOf(change, depth, children.length > 0), details: descend(change, depth) });
+        continue;
+      }
+      walk(children, depth + 1);
+    }
+  };
+
+  walk(diff.changes ?? [], 0);
+  return stops;
+}
+
+/** A childless change that carries a value: a changed *field*, not an entity. */
+function isValueLeaf(c: DiffChange): boolean {
+  return (c.children ?? []).length === 0 && (c.before !== undefined || c.after !== undefined);
+}
+
+function rowOf(c: DiffChange, depth: number, hasChildren: boolean): DiffRow {
+  return {
+    path: c.path,
+    kind: c.kind,
+    label: c.label ?? c.path,
+    depth,
+    before: c.before,
+    after: c.after,
+    hasChildren,
+  };
+}
+
+/**
+ * Index of the next (or previous) stop, wrapping at both ends. `current` may be
+ * -1 for "nothing selected yet", which steps to the first (or last) stop.
+ */
+export function stepIndex(count: number, current: number, delta: number): number {
+  if (count <= 0) return -1;
+  if (current < 0) return delta >= 0 ? 0 : count - 1;
+  return (((current + delta) % count) + count) % count;
 }
 
 /**
