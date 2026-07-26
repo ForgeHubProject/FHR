@@ -9,7 +9,8 @@
 
 export type FakeElement = {
   tagName: string;
-  style: { cssText: string };
+  className: string;
+  style: Record<string, string> & { cssText: string };
   textContent: string;
   childNodes: FakeElement[];
   parentNode: FakeElement | null;
@@ -17,15 +18,26 @@ export type FakeElement = {
   listeners: Record<string, ((ev: unknown) => void)[]>;
   appendChild(child: FakeElement): FakeElement;
   append(...children: (FakeElement | string)[]): void;
+  replaceChildren(...children: FakeElement[]): void;
   remove(): void;
   removeAttribute(name: string): void;
   setAttribute(name: string, value: string): void;
   addEventListener(type: string, fn: (ev: unknown) => void): void;
   removeEventListener(type: string, fn: (ev: unknown) => void): void;
+  getAttribute(name: string): string | null;
+  focus(): void;
+  /** Test helper: times focus() was called. */
+  focused: number;
   /** Test helper: fire a listener registered on this element. */
   fire(type: string, ev?: unknown): void;
   /** Test helper: this element's text plus all descendants', joined. */
   allText(): string;
+  /** Test helper: every descendant (self excluded), depth first. */
+  descendants(): FakeElement[];
+  /** Test helper: descendants whose className contains `token`. */
+  byClass(token: string): FakeElement[];
+  /** Test helper: descendants carrying an attribute with this value. */
+  byAttr(name: string, value: string): FakeElement[];
   ownerDocument: FakeDocument;
   clientWidth: number;
   clientHeight: number;
@@ -41,7 +53,9 @@ export function createFakeDocument(): FakeDocument {
     createElement(tagName: string): FakeElement {
       const el: FakeElement = {
         tagName: tagName.toUpperCase(),
+        className: "",
         style: { cssText: "" },
+        focused: 0,
         textContent: "",
         childNodes: [],
         parentNode: null,
@@ -66,6 +80,11 @@ export function createFakeDocument(): FakeDocument {
             }
           }
         },
+        replaceChildren(...children: FakeElement[]): void {
+          for (const c of el.childNodes) c.parentNode = null;
+          el.childNodes = [];
+          for (const c of children) el.appendChild(c);
+        },
         remove(): void {
           const parent = el.parentNode;
           if (!parent) return;
@@ -74,6 +93,12 @@ export function createFakeDocument(): FakeDocument {
         },
         setAttribute(name: string, value: string): void {
           el.attributes[name] = value;
+        },
+        getAttribute(name: string): string | null {
+          return el.attributes[name] ?? null;
+        },
+        focus(): void {
+          el.focused += 1;
         },
         removeAttribute(name: string): void {
           delete el.attributes[name];
@@ -85,10 +110,19 @@ export function createFakeDocument(): FakeDocument {
           el.listeners[type] = (el.listeners[type] ?? []).filter((f) => f !== fn);
         },
         fire(type: string, ev: unknown = {}): void {
-          for (const fn of el.listeners[type] ?? []) fn(ev);
+          for (const fn of [...(el.listeners[type] ?? [])]) fn(ev);
         },
         allText(): string {
           return [el.textContent, ...el.childNodes.map((c) => c.allText())].join(" ").trim();
+        },
+        descendants(): FakeElement[] {
+          return el.childNodes.flatMap((c) => [c, ...c.descendants()]);
+        },
+        byClass(token: string): FakeElement[] {
+          return el.descendants().filter((c) => c.className.split(/\s+/).includes(token));
+        },
+        byAttr(name: string, value: string): FakeElement[] {
+          return el.descendants().filter((c) => c.attributes[name] === value);
         },
       };
       return el;

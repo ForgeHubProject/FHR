@@ -1,6 +1,6 @@
-import { defineRenderer, renderDiffTree } from "@fhr/renderer-sdk";
+import { defineRenderer } from "@fhr/renderer-sdk";
 import type { MountProps } from "@fhr/types";
-import { changeTreeCss } from "./palette.js";
+import { createLiveView, type LiveView, type Scene3D, type SceneHooks } from "./live-view.js";
 
 // Replaced at bundle-build time with the release's short commit SHA (see build.mjs).
 declare const __BUILD__: string;
@@ -9,8 +9,9 @@ declare const __BUILD__: string;
 // lite bundle stays tiny and loads the chunk on demand — so viewing the change
 // tree never pays for three.js. Types are declared locally so referencing them
 // can't pull three.js into this bundle.
-type SceneHandle = { dispose(): void };
-type SceneChunk = { mount3d(el: HTMLElement, props: MountProps): Promise<SceneHandle> };
+type SceneChunk = {
+  mount3d(el: HTMLElement, props: MountProps, hooks?: SceneHooks): Promise<Scene3D>;
+};
 
 // Resolve the 3D chunk as a sibling of this module's URL. Built as a string
 // (not `new URL(literal, ...)`) so esbuild leaves it a runtime dynamic import
@@ -25,129 +26,44 @@ function loadChunk(): Promise<SceneChunk> {
 }
 
 /**
+ * The live view per container, so an update can find what a render built. A
+ * WeakMap rather than a field on the element: the DOM is the host's, and a
+ * renderer that hangs state off it leaks into someone else's tree.
+ */
+const views = new WeakMap<HTMLElement, LiveView>();
+
+/**
  * Reference renderer for glTF/GLB scene diffs. The change-tree view is the
  * always-available default; the interactive 3D scene loads on demand behind the
- * same mount() contract. three.js is this renderer's private choice of how to
- * draw its scene — it is not a shared FHR contract.
+ * same mount() contract, and the two are one linked review surface (see
+ * live-view.ts). three.js is this renderer's private choice of how to draw its
+ * scene — it is not a shared FHR contract.
  */
 export default defineRenderer({
   handlerId: "gltf-scene",
   extensions: [".gltf", ".glb"],
   build: __BUILD__,
   render(container: HTMLElement, props: MountProps) {
-    // `view` (a single snapshot) goes straight to the 3D scene.
-    if (props.mode === "view") {
-      return mount3DInto(container, props);
-    }
-    // diff + merge render the change tree; diff additionally offers the scene.
-    renderDiffTree(container, props);
-    applyPalette(container);
-    if (props.mode === "diff") {
-      return attachView3DToggle(container, props);
-    }
-    return;
+    const view = createLiveView(container, props, (host, sceneProps, hooks) =>
+      loadChunk().then((chunk) => chunk.mount3d(host, sceneProps, hooks)),
+    );
+    views.set(container, view);
+    return () => {
+      views.delete(container);
+      view.dispose();
+    };
+  },
+  /**
+   * Non-destructive update (the #45 contract addition). A host that pushes a new
+   * selection — the other half of the `select` event this renderer emits — must
+   * not pay for a teardown: that would drop the WebGL context, re-fetch and
+   * re-parse both models, and put the camera back where it started. The live view
+   * patches what it can and declines anything else, which returns the caller to
+   * the default teardown path for that push only.
+   */
+  update(container: HTMLElement, props: MountProps, prev: MountProps) {
+    const view = views.get(container);
+    if (!view) return false;
+    return view.update(props, prev);
   },
 });
-
-/**
- * Recolour the SDK's change tree with this renderer's colour-blind-safe palette,
- * so a change is the same colour in the tree and in the 3D scene. The SDK's own
- * stylesheet ships GitHub's red/green — the worst possible pair for deuteranopia
- * — and lives inside the tree it just rendered, so appending this after it wins
- * the cascade at equal specificity. Pure CSS text: no three.js reaches the lite
- * bundle through it.
- */
-function applyPalette(container: HTMLElement): void {
-  const style = container.ownerDocument.createElement("style");
-  style.textContent = changeTreeCss();
-  container.appendChild(style);
-}
-
-// Load + mount the 3D scene into a host under `container`. Returns a cleanup
-// that disposes the scene even if it finishes loading after teardown.
-function mount3DInto(container: HTMLElement, props: MountProps): () => void {
-  const doc = container.ownerDocument;
-  let handle: SceneHandle | null = null;
-  let disposed = false;
-
-  const status = doc.createElement("div");
-  status.style.cssText = "padding:12px 4px;font:13px ui-sans-serif,system-ui;color:#8b949e";
-  status.textContent = "Loading 3D scene…";
-  const host = doc.createElement("div");
-  host.style.cssText = "width:100%;height:420px;border-radius:8px;overflow:hidden";
-  container.append(status, host);
-
-  loadChunk()
-    .then((chunk) => chunk.mount3d(host, props))
-    .then((h) => {
-      status.remove();
-      if (disposed) h.dispose();
-      else handle = h;
-    })
-    .catch((err) => {
-      status.textContent = "3D scene failed to load: " + errText(err);
-    });
-
-  return () => {
-    disposed = true;
-    handle?.dispose();
-  };
-}
-
-// A "View in 3D" toggle appended under the change tree. Loads the scene on first
-// click, toggles it off on the next. Returns a cleanup disposing any live scene.
-function attachView3DToggle(container: HTMLElement, props: MountProps): () => void {
-  const doc = container.ownerDocument;
-  let handle: SceneHandle | null = null;
-  let loading = false;
-  let disposed = false;
-
-  const bar = doc.createElement("div");
-  bar.style.cssText = "padding:10px 4px 4px";
-  const btn = doc.createElement("button");
-  btn.textContent = "View in 3D";
-  btn.style.cssText =
-    "font:12px ui-sans-serif,system-ui;padding:5px 12px;border-radius:6px;border:1px solid #d0d7de;background:transparent;color:inherit;cursor:pointer";
-  const host = doc.createElement("div");
-  bar.appendChild(btn);
-  container.append(bar, host);
-
-  btn.addEventListener("click", () => {
-    if (loading) return;
-    if (handle) {
-      handle.dispose();
-      handle = null;
-      host.replaceChildren();
-      host.removeAttribute("style");
-      btn.textContent = "View in 3D";
-      return;
-    }
-    loading = true;
-    btn.textContent = "Loading…";
-    host.style.cssText = "width:100%;height:420px;margin-top:8px;border-radius:8px;overflow:hidden";
-    loadChunk()
-      .then((chunk) => chunk.mount3d(host, props))
-      .then((h) => {
-        loading = false;
-        if (disposed) h.dispose();
-        else {
-          handle = h;
-          btn.textContent = "Hide 3D";
-        }
-      })
-      .catch((err) => {
-        loading = false;
-        btn.textContent = "View in 3D";
-        host.textContent = "3D failed: " + errText(err);
-      });
-  });
-
-  return () => {
-    disposed = true;
-    handle?.dispose();
-  };
-}
-
-function errText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}

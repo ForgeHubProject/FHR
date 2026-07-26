@@ -27,9 +27,9 @@ describe("nodeChanges", () => {
       { path: "nodes/Mirror", label: "Mirror", kind: "removed" },
     );
     expect(nodeChanges(diff)).toEqual([
-      { name: "Cube", kind: "modified", fields: ["translation", "mesh"] },
-      { name: "NewLamp", kind: "added", fields: [] },
-      { name: "Mirror", kind: "removed", fields: [] },
+      { name: "Cube", kind: "modified", fields: ["translation", "mesh"], path: "nodes/Cube" },
+      { name: "NewLamp", kind: "added", fields: [], path: "nodes/NewLamp" },
+      { name: "Mirror", kind: "removed", fields: [], path: "nodes/Mirror" },
     ]);
   });
 
@@ -46,7 +46,12 @@ describe("nodeChanges", () => {
 
   it("reads the unnamed-node fallback label", () => {
     const diff = diffOf({ path: "nodes/node[2]", label: "node[2]", kind: "removed" });
-    expect(nodeChanges(diff)[0]).toEqual({ name: "node[2]", kind: "removed", fields: [] });
+    expect(nodeChanges(diff)[0]).toEqual({
+      name: "node[2]",
+      kind: "removed",
+      fields: [],
+      path: "nodes/node[2]",
+    });
   });
 
   it("also accepts node changes that appear without the collection wrapper", () => {
@@ -55,7 +60,7 @@ describe("nodeChanges", () => {
       format: "gltf-scene",
       changes: [{ path: "nodes/Cube", label: "Cube", kind: "added" }],
     };
-    expect(nodeChanges(diff)).toEqual([{ name: "Cube", kind: "added", fields: [] }]);
+    expect(nodeChanges(diff)).toEqual([{ name: "Cube", kind: "added", fields: [], path: "nodes/Cube" }]);
   });
 
   it("ignores other collections (materials, meshes, animations)", () => {
@@ -101,7 +106,9 @@ describe("nodeChanges", () => {
       { path: "nodes/Cube", label: "Cube", kind: "modified", children: [{ path: "nodes/Cube/translation", label: "translation", kind: "modified" }] },
       { path: "nodes/Cube", label: "Cube", kind: "modified", children: [{ path: "nodes/Cube/scale", label: "scale", kind: "modified" }] },
     );
-    expect(nodeChanges(diff)).toEqual([{ name: "Cube", kind: "modified", fields: ["translation", "scale"] }]);
+    expect(nodeChanges(diff)).toEqual([
+      { name: "Cube", kind: "modified", fields: ["translation", "scale"], path: "nodes/Cube" },
+    ]);
   });
 
   it("survives an absent diff and a null changes array from the wire", () => {
@@ -131,19 +138,19 @@ describe("diffChangeTypes", () => {
 
 describe("transform-change classification (drives the move ghost)", () => {
   it("recognises a pure move / rotate / scale", () => {
-    expect(isTransformOnly({ name: "A", kind: "modified", fields: ["translation"] })).toBe(true);
-    expect(isTransformOnly({ name: "A", kind: "modified", fields: ["rotation", "scale"] })).toBe(true);
+    expect(isTransformOnly({ name: "A", kind: "modified", fields: ["translation"], path: "nodes/A" })).toBe(true);
+    expect(isTransformOnly({ name: "A", kind: "modified", fields: ["rotation", "scale"], path: "nodes/A" })).toBe(true);
   });
 
   it("is not a pure move when something else changed too", () => {
-    expect(isTransformOnly({ name: "A", kind: "modified", fields: ["translation", "mesh"] })).toBe(false);
-    expect(hasTransformChange({ name: "A", kind: "modified", fields: ["translation", "mesh"] })).toBe(true);
+    expect(isTransformOnly({ name: "A", kind: "modified", fields: ["translation", "mesh"], path: "nodes/A" })).toBe(false);
+    expect(hasTransformChange({ name: "A", kind: "modified", fields: ["translation", "mesh"], path: "nodes/A" })).toBe(true);
   });
 
   it("added/removed nodes are not moves, and fieldless changes aren't either", () => {
-    expect(isTransformOnly({ name: "A", kind: "added", fields: ["translation"] })).toBe(false);
-    expect(isTransformOnly({ name: "A", kind: "modified", fields: [] })).toBe(false);
-    expect(hasTransformChange({ name: "A", kind: "modified", fields: ["mesh"] })).toBe(false);
+    expect(isTransformOnly({ name: "A", kind: "added", fields: ["translation"], path: "nodes/A" })).toBe(false);
+    expect(isTransformOnly({ name: "A", kind: "modified", fields: [], path: "nodes/A" })).toBe(false);
+    expect(hasTransformChange({ name: "A", kind: "modified", fields: ["mesh"], path: "nodes/A" })).toBe(false);
   });
 });
 
@@ -154,7 +161,10 @@ describe("path escaping (handler scheme: %2F for '/', %25 for '%')", () => {
       format: "gltf-scene",
       changes: [{ path: "nodes/rig%2Fhand", kind: "removed" }],
     };
-    expect(nodeChanges(diff)).toEqual([{ name: "rig/hand", kind: "removed", fields: [] }]);
+    // The name is unescaped for display; the path stays the escaped machine key.
+    expect(nodeChanges(diff)).toEqual([
+      { name: "rig/hand", kind: "removed", fields: [], path: "nodes/rig%2Fhand" },
+    ]);
   });
 
   it("never mistakes a qualified field path for a node", () => {
