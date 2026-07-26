@@ -1303,8 +1303,9 @@ func meshName(m *gltf.Mesh, i int) string {
 //
 // The cost discipline, in the order the checks run:
 //
-//	geometry   bytes.Equal over the accessor byte spans. No hashing on the
-//	           unchanged path, which is the overwhelmingly common one.
+//	geometry   a memory compare of the accessor byte spans. No hashing on the
+//	           unchanged path, which is the overwhelmingly common one, and a
+//	           digest computed only for the streams actually displayed.
 //	material   a name lookup; zero byte reads.
 //	vertices   Accessor.Count; zero byte reads.
 //	bounds     Accessor.Min/Max, which glTF *requires* on POSITION; zero
@@ -1470,17 +1471,7 @@ func diffPrimitiveGeometry(ap, bp *gltf.Primitive, a, b meshSide, path string) (
 			bBlocked = bBlocked || !bs.readable
 			changed = true
 		default:
-			// The whole comparison, and the reason this is affordable: no hash on
-			// the unchanged path, just a memory compare of the two byte spans.
-			//
-			// Interleaved buffers (BufferView.ByteStride > 0) are compared over the
-			// strided span, padding bytes included, so two files that pack the same
-			// vertices with different padding compare as different. That is a false
-			// positive in the safe direction and it is not silent — the row names
-			// the stream — and avoiding it would mean a typed decode of every
-			// vertex on the common unchanged path, which costs far more than the
-			// mistake.
-			changed = !bytes.Equal(as.data, bs.data)
+			changed = !equalStreams(as, bs)
 		}
 		if !changed {
 			continue
@@ -1555,6 +1546,9 @@ type streamState struct {
 	present  bool
 	index    int
 	data     []byte
+	stride   int // bytes between consecutive elements; == elem when tightly packed
+	elem     int // bytes per element
+	count    int
 	readable bool
 }
 
@@ -1565,9 +1559,45 @@ func readStream(doc *gltf.Document, p *gltf.Primitive, stream string) streamStat
 	}
 	s := streamState{present: true, index: idx}
 	if idx >= 0 && idx < len(doc.Accessors) {
-		s.data, s.readable = accessorBytes(doc, doc.Accessors[idx])
+		acc := doc.Accessors[idx]
+		s.elem = acc.ComponentType.ByteSize() * acc.Type.Components()
+		s.count = acc.Count
+		s.data, s.stride, s.readable = accessorSpan(doc, acc)
 	}
 	return s
+}
+
+// equalStreams reports whether two vertex streams hold the same values.
+//
+// Tightly packed data — the overwhelmingly common case — is a single memory
+// compare, which is the reason this whole compare is affordable: no hashing, no
+// decoding, no allocation on the unchanged path.
+//
+// Interleaved data has to be compared element by element instead, because an
+// interleaved accessor's byte span *contains its neighbours' bytes*: POSITION at
+// stride 24 and NORMAL at the same view offset 12 overlap everywhere except the
+// first and last element. Comparing those spans whole would report NORMAL as
+// changed every time a position moved, which on an optimiser's output means
+// every stream of every edited primitive. Comparing per element also makes the
+// layout itself irrelevant, so the same vertices packed tightly in one file and
+// interleaved in another compare equal, as they should.
+func equalStreams(a, b streamState) bool {
+	if a.elem != b.elem || a.elem <= 0 {
+		return false
+	}
+	if a.stride == a.elem && b.stride == b.elem {
+		return bytes.Equal(a.data, b.data)
+	}
+	if a.count != b.count {
+		return false
+	}
+	for i := range a.count {
+		av, bv := a.data[i*a.stride:], b.data[i*b.stride:]
+		if !bytes.Equal(av[:a.elem], bv[:b.elem]) {
+			return false
+		}
+	}
+	return true
 }
 
 // describe renders the stream the way animation keyframe streams are rendered —
