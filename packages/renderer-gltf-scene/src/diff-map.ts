@@ -17,6 +17,7 @@
 // how the handler formats values.
 
 import type { StructuredDiff, DiffChange, ChangeKind } from "@fhr/types";
+import { unescapeSegment } from "./change-path.js";
 
 /** The glTF collection this renderer paints. */
 const NODES = "nodes";
@@ -24,11 +25,6 @@ const NODE_PREFIX = `${NODES}/`;
 
 /** A node-level path: exactly one (escaped) segment below the collection. */
 const NODE_PATH = /^nodes\/[^/]+$/;
-
-/** Reverse the handler's segment escaping ("/" first, then "%"). */
-function unescapeSegment(segment: string): string {
-  return segment.replace(/%2F/gi, "/").replace(/%25/g, "%");
-}
 
 /** Node fields that move geometry in space, as the handler labels them. */
 export const TRANSFORM_FIELDS: readonly string[] = ["translation", "rotation", "scale"];
@@ -39,6 +35,12 @@ export type NodeChange = {
   kind: ChangeKind;
   /** Changed field labels on this node, e.g. ["translation", "mesh"]. */
   fields: string[];
+  /**
+   * The change's fully-qualified path — the selection key the host and the change
+   * tree use for this node (#45). Carried here because this is the one place that
+   * has seen both the name and the path the handler paired it with.
+   */
+  path: string;
 };
 
 /**
@@ -75,7 +77,7 @@ export function nodeChanges(diff: StructuredDiff | undefined): NodeChange[] {
       for (const f of fields) if (!existing.fields.includes(f)) existing.fields.push(f);
       return;
     }
-    const entry: NodeChange = { name, kind: change.kind, fields };
+    const entry: NodeChange = { name, kind: change.kind, fields, path: change.path };
     seen.set(name, entry);
     out.push(entry);
   };

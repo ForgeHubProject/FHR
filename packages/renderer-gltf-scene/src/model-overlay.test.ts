@@ -12,6 +12,7 @@ import { decodeGltf } from "./gltf-parse.js";
 import { buildNameIndex } from "./node-index.js";
 import { buildOverlay, type LoadedSide } from "./model-overlay.js";
 import { meshesIn } from "./associations.js";
+import { pathOfNodeName } from "./change-path.js";
 import { KIND_COLOR, NEUTRAL } from "./palette.js";
 import { buildGltf, toArrayBuffer, toGlb, type FixtureSpec } from "./glb-fixture.js";
 
@@ -25,6 +26,7 @@ const change = (name: string, kind: NodeChange["kind"], fields: string[] = []): 
   name,
   kind,
   fields,
+  path: pathOfNodeName(name),
 });
 
 const materialOf = (object: Object3D): Material => (object as Mesh).material as Material;
