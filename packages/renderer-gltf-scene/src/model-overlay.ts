@@ -32,7 +32,7 @@ import type { Material, Object3D } from "three";
 import type { NodeChange } from "./diff-map.js";
 import { hasTransformChange } from "./diff-map.js";
 import { KIND_COLOR, NEUTRAL } from "./palette.js";
-import { meshesIn, objectsByNodeIndex, type AssociatedGltf } from "./associations.js";
+import { meshesIn, nodeIndexOfObject, objectsByNodeIndex, type AssociatedGltf } from "./associations.js";
 import { ambiguousNameMessage, resolveNodeIndex, type NameIndex } from "./node-index.js";
 import { disposeTree, type DisposeReport } from "./dispose.js";
 
@@ -80,6 +80,17 @@ export type Overlay = {
   boxByChangeName: Map<string, Box3>;
   /** Per-change objects, for selection/highlight in #45. */
   objectsByChangeName: Map<string, Object3D[]>;
+  /**
+   * Every object this overlay painted → the change it was painted for. The
+   * raycast-picking direction (#45): a click walks up from the Mesh it hit until
+   * it finds an entry here. It covers the ghost clones too, which appear in no
+   * glTF association because the loader never made them.
+   */
+  changeNameByObject: Map<Object3D, string>;
+  /** Head-model node index → change name, the fallback when nothing was painted. */
+  changeNameByNodeIndex: Map<number, string>;
+  /** The head model's glTF node for an object (associations.ts), or null. */
+  nodeIndexOfObject(object: Object3D): number | null;
   stats: OverlayStats;
   /** Plain-language notes for the banner list (ambiguity, unmatched names). */
   notes: string[];
@@ -150,6 +161,8 @@ export function buildOverlay(input: OverlayInput): Overlay {
   const changeBox = new Box3();
   const boxByChangeName = new Map<string, Box3>();
   const objectsByChangeName = new Map<string, Object3D[]>();
+  const changeNameByObject = new Map<Object3D, string>();
+  const changeNameByNodeIndex = new Map<number, string>();
   const paintedHeadMeshes = new Set<Object3D>();
   /** Base nodes that get their own grammar, so the plain ghost skips them. */
   const baseNodesWithOwnGrammar = new Set<number>();
@@ -231,7 +244,13 @@ export function buildOverlay(input: OverlayInput): Overlay {
       changeBox.union(box);
       boxByChangeName.set(change.name, box);
     }
-    if (painted.length > 0) objectsByChangeName.set(change.name, painted);
+    if (painted.length > 0) {
+      objectsByChangeName.set(change.name, painted);
+      for (const object of painted) changeNameByObject.set(object, change.name);
+    }
+    if (inHead.index !== null && !changeNameByNodeIndex.has(inHead.index)) {
+      changeNameByNodeIndex.set(inHead.index, change.name);
+    }
   }
 
   const paintApplied = stats.tinted > 0 || stats.removedGhosts > 0 || stats.moveGhosts > 0;
@@ -296,6 +315,9 @@ export function buildOverlay(input: OverlayInput): Overlay {
     sceneBox,
     boxByChangeName,
     objectsByChangeName,
+    changeNameByObject,
+    changeNameByNodeIndex,
+    nodeIndexOfObject: (object: Object3D): number | null => nodeIndexOfObject(object, head.gltf),
     stats,
     notes,
     dispose(): DisposeReport {

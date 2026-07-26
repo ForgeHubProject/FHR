@@ -23,13 +23,35 @@ import { fetchBlobBytes, loadGltf } from "./gltf-load.js";
 import { preflightGltf, unreadablePreflight, type Preflight } from "./gltf-preflight.js";
 import { createBanners, textureFailureMessage, type BannerList } from "./banner.js";
 import { allowGhostBase, ghostBaseSkippedMessage } from "./limits.js";
+import { emptyKeys, selectionKeys, type SelectionKeys } from "./selection-keys.js";
+
+/**
+ * What the lite bundle wires into the scene: the selection round trip (#45).
+ *
+ * The two halves speak different keys, on purpose. The lite bundle and the host
+ * speak the handler's fully-qualified *paths*, which are what a diff row and a
+ * host's selection state are keyed on. The scene speaks *node names*, which is
+ * what the overlay's maps are keyed on (model-overlay.ts). This module owns the
+ * translation, because `nodeChanges` is the one place that has seen the pairing
+ * the handler wrote — so neither half has to re-derive an escaping rule.
+ */
+export type SceneHooks = {
+  /** The viewer clicked geometry: the change's path, or null for "nothing". */
+  onPick?: (path: string | null) => void;
+  /** Change path → the one-line headline its callout shows (see review.ts). */
+  headlines?: Record<string, string>;
+};
 
 /**
  * Build and mount the 3D view: the real model with the diff painted on, or the
  * most informative fallback we can honestly offer. Returns a disposer (stops the
  * loop, frees GPU resources). The lite bundle awaits this.
  */
-export async function mount3d(container: HTMLElement, props: MountProps): Promise<SceneHandle> {
+export async function mount3d(
+  container: HTMLElement,
+  props: MountProps,
+  hooks: SceneHooks = {},
+): Promise<SceneHandle> {
   const doc = container.ownerDocument;
   const theme = props.theme ?? "light";
 
@@ -42,6 +64,10 @@ export async function mount3d(container: HTMLElement, props: MountProps): Promis
   host.style.cssText = "flex:1 1 auto;min-height:0;position:relative";
   container.appendChild(host);
 
+  // Filled in once the diff has been read; empty for the fallback views, whose
+  // handles have no selection to translate anyway.
+  let keys: SelectionKeys = emptyKeys();
+
   const withCleanup = (handle: SceneHandle | null): SceneHandle => ({
     dispose(): void {
       handle?.dispose();
@@ -50,6 +76,12 @@ export async function mount3d(container: HTMLElement, props: MountProps): Promis
     },
     flyToChange: handle?.flyToChange?.bind(handle),
     flyToChanges: handle?.flyToChanges?.bind(handle),
+    selectChange(path: string | null, options?: { fly?: boolean }): boolean {
+      if (!handle?.selectChange) return false;
+      if (path === null) return handle.selectChange(null, options);
+      const name = keys.nameOf(path);
+      return name === null ? false : handle.selectChange(name, options);
+    },
   });
 
   const headUrl = props.blobs?.head?.url ?? props.blobs?.base?.url;
@@ -99,12 +131,21 @@ export async function mount3d(container: HTMLElement, props: MountProps): Promis
 
   const base = await loadBase(props, banners);
   const changes = nodeChanges(props.diff);
+  keys = selectionKeys(changes);
   const overlay = buildOverlay({ head, base, changes, theme });
   for (const message of overlay.notes) banners.add(message);
   const textureNote = textureFailureMessage(failedResources);
   if (textureNote) banners.add(textureNote);
 
-  return withCleanup(mountModelScene(host, { overlay, theme, blink: overlay.baseSolidGroup !== null }));
+  return withCleanup(
+    mountModelScene(host, {
+      overlay,
+      theme,
+      blink: overlay.baseSolidGroup !== null,
+      headlines: keys.headlinesByName(hooks.headlines),
+      onPick: (name) => hooks.onPick?.(name === null ? null : keys.pathOf(name)),
+    }),
+  );
 }
 
 /**
