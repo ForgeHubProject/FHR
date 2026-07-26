@@ -1303,10 +1303,10 @@ func meshName(m *gltf.Mesh, i int) string {
 //
 // The cost discipline, in the order the checks run:
 //
+//	material   a name lookup; zero byte reads.
 //	geometry   a memory compare of the accessor byte spans. No hashing on the
 //	           unchanged path, which is the overwhelmingly common one, and a
 //	           digest computed only for the streams actually displayed.
-//	material   a name lookup; zero byte reads.
 //	vertices   Accessor.Count; zero byte reads.
 //	bounds     Accessor.Min/Max, which glTF *requires* on POSITION; zero
 //	           byte reads.
