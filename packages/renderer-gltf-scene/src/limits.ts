@@ -17,13 +17,27 @@ export function formatMb(bytes: number): string {
 }
 
 /**
- * May we load the base model alongside the head one? Unknown/absent sizes are
- * allowed (a host that doesn't report size shouldn't lose the feature); zero and
- * negative sizes mean "no bytes there".
+ * May we load the base model alongside the head one?
+ *
+ * This refuses one thing only: a size we *know* to be over the cap. Every other
+ * value — absent, zero, negative, NaN — means the host told us nothing useful,
+ * and the answer is to try the fetch and report whatever actually happens.
+ *
+ * Treating zero as "no bytes there" is the tempting reading and it was wrong.
+ * A host that simply hasn't filled the field in sends zero, which is
+ * indistinguishable from a genuinely empty blob, so the inference silently
+ * disabled the ghost overlay, the A/B blink, removed-part ghosts and old-pose
+ * motion vectors against a host that was serving both versions perfectly well.
+ * Worse, refusing here on a zero size produced the *only* skip with no banner,
+ * because the banner names a size and there was no size worth naming — so the
+ * one case that most needed an explanation was the one case that gave none.
+ *
+ * If the bytes really are absent, the fetch says so and that path already
+ * reports it honestly. Guessing from a sentinel buys nothing and costs the whole
+ * feature.
  */
 export function allowGhostBase(size: number | undefined, cap: number = GHOST_BASE_MAX_BYTES): boolean {
-  if (size === undefined) return true;
-  if (!Number.isFinite(size) || size <= 0) return false;
+  if (size === undefined || !Number.isFinite(size) || size <= 0) return true;
   return size <= cap;
 }
 
