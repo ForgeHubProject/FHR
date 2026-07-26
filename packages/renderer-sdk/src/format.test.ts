@@ -7,16 +7,32 @@ import { formatChange, parseNumeric, formatLength, trimNumber } from "./format.j
 
 describe("parseNumeric", () => {
   it("reads the handler's bracketed vectors", () => {
-    expect(parseNumeric("[1.00 2.00 -3.00]")).toEqual({ values: [1, 2, -3], degrees: false });
+    expect(parseNumeric("[1.00 2.00 -3.00]")).toEqual({ values: [1, 2, -3], degrees: false, annotation: "" });
   });
 
   it("reads euler degrees and remembers the unit", () => {
-    expect(parseNumeric("(0.00° 45.00° 0.00°)")).toEqual({ values: [0, 45, 0], degrees: true });
+    expect(parseNumeric("(0.00° 45.00° 0.00°)")).toEqual({ values: [0, 45, 0], degrees: true, annotation: "" });
   });
 
   it("reads comma-separated and bare numbers", () => {
     expect(parseNumeric("[1, 2, 3]")?.values).toEqual([1, 2, 3]);
     expect(parseNumeric("0.50")?.values).toEqual([0.5]);
+  });
+
+  // A handler may annotate a metric with what it measured about it; `forge diff`
+  // with no renderer prints those strings directly, so the annotation is
+  // load-bearing and cannot be dropped — but it must not hide the numbers either.
+  it("reads the numbers out of an annotated value, and keeps the annotation", () => {
+    expect(parseNumeric("[4.00 1.80 1.12] (+0.12 Z)")).toEqual({
+      values: [4, 1.8, 1.12],
+      degrees: false,
+      annotation: "+0.12 Z",
+    });
+    expect(parseNumeric("[0.00 0.00 0.06] (moved 0.060)")?.annotation).toBe("moved 0.060");
+  });
+
+  it("does not mistake a wholly parenthesised value for an annotation", () => {
+    expect(parseNumeric("(0.00° 45.00° 0.00°)")?.annotation).toBe("");
   });
 
   it("refuses anything that isn't all numbers", () => {
@@ -193,5 +209,116 @@ describe("formatChange — everything else", () => {
   it("accepts raw values, not just the handler's strings", () => {
     const f = formatChange({ label: "translation", before: [0, 0, 0], after: [0, 0.05, 0] });
     expect(f.magnitude).toBe("50 mm");
+  });
+});
+
+// Verbatim `gltf-scene` output, from the geometry-detection slice (FHR #50) run
+// over a sculpted car body plus a material reassignment. The point of pinning the
+// real strings is that this whole class of bug came from *pairing*: each side is
+// well-formed on the wire, and only the combination misformats.
+const SCULPT_ROWS = {
+  bounds: { label: "bounds", before: "[4.00 1.80 1.00]", after: "[4.00 1.80 1.12] (+0.12 Z)" },
+  centroid: { label: "centroid", before: "[0.00 0.00 0.00]", after: "[0.00 0.00 0.06] (moved 0.060)" },
+  position: {
+    label: "POSITION",
+    before: "count=24 type=VEC3 component=FLOAT hash=9138e59d77d851a5",
+    after: "count=24 type=VEC3 component=FLOAT hash=f9cd47e93c1ec065",
+  },
+  material: { label: "material", before: "Rubber", after: "Glass" },
+};
+
+describe("formatChange — a pair is formatted as a pair", () => {
+  it("formats an annotated vector pair in one notation, keeping the annotation", () => {
+    const f = formatChange(SCULPT_ROWS.bounds);
+    expect(f.kind).toBe("vector");
+    expect(f.before).toBe("(4, 1.8, 1)");
+    expect(f.after).toBe("(4, 1.8, 1.12) (+0.12 Z)");
+    // Both sides parse, so the delta is real — and bounds are a length.
+    expect(f.deltaCell).toBe("Δ(0, 0, 0.12) = 120 mm");
+    expect(f.dominantDelta).toBeCloseTo(0.12, 6);
+  });
+
+  it("does the same for a centroid, whose annotation is a distance", () => {
+    const f = formatChange(SCULPT_ROWS.centroid);
+    expect(f.before).toBe("(0, 0, 0)");
+    expect(f.after).toBe("(0, 0, 0.06) (moved 0.060)");
+    expect(f.magnitude).toBe("60 mm");
+  });
+
+  // The bug this rule exists to kill: one side reformatted to "(4, 1.8, 1)" while
+  // the other fell through as "[4.00 1.80 1.12] (+0.12 Z)".
+  it("never shows the two halves of one comparison in two notations", () => {
+    for (const row of Object.values(SCULPT_ROWS)) {
+      const f = formatChange(row);
+      const reformatted = (text: string): boolean => text.startsWith("(");
+      expect(reformatted(f.before), `${row.label}: ${f.before} → ${f.after}`).toBe(reformatted(f.after));
+    }
+  });
+
+  it("shows both sides verbatim when one parses and the other doesn't", () => {
+    const f = formatChange({ label: "bounds", before: "[4.00 1.80 1.00]", after: "unknown" });
+    expect(f.kind).toBe("text");
+    expect(f.before).toBe("[4.00 1.80 1.00]");
+    expect(f.after).toBe("unknown");
+    expect(f.deltaCell).toBeUndefined();
+  });
+
+  it("shows both sides verbatim when a vector became a scalar", () => {
+    const f = formatChange({ label: "bounds", before: "[4.00 1.80 1.00]", after: "1.12" });
+    expect(f.before).toBe("[4.00 1.80 1.00]");
+    expect(f.after).toBe("1.12");
+  });
+
+  it("shows both sides verbatim when degrees became a plain vector", () => {
+    const f = formatChange({ label: "rotation", before: "(0.00° 45.00° 0.00°)", after: "[0.00 45.00 0.00]" });
+    expect(f.before).toBe("(0.00° 45.00° 0.00°)");
+    expect(f.after).toBe("[0.00 45.00 0.00]");
+  });
+
+  it("shows both sides verbatim when only one side is a colour", () => {
+    const f = formatChange({ label: "baseColorFactor", before: "[1.00 0.00 0.00 1.00]", after: "inherit" });
+    expect(f.kind).toBe("text");
+    expect(f.beforeSwatch).toBeUndefined();
+    expect(f.after).toBe("inherit");
+  });
+
+  it("leaves a text pair alone — a geometry hash is a hash", () => {
+    const f = formatChange(SCULPT_ROWS.position);
+    expect(f.kind).toBe("text");
+    expect(f.before).toBe(SCULPT_ROWS.position.before);
+    expect(f.after).toBe(SCULPT_ROWS.position.after);
+  });
+
+  it("keeps reformatting a one-sided value, where there is no pair to break", () => {
+    const f = formatChange({ label: "bounds", after: "[4.00 1.80 1.12] (+0.12 Z)" });
+    expect(f.before).toBe("—");
+    expect(f.after).toBe("(4, 1.8, 1.12) (+0.12 Z)");
+  });
+
+  it("survives a row with no values at all (a group header)", () => {
+    const f = formatChange({ label: "geometry" });
+    expect(f).toEqual({ kind: "text", before: "—", after: "—", noise: false });
+  });
+
+  // The rows that were already right have to stay right.
+  it("still formats a transform pair as a delta", () => {
+    const f = formatChange({
+      label: "translation",
+      before: "[1.30 -0.95 0.45]",
+      after: "[1.75 -1.25 0.30]",
+    });
+    expect(f.before).toBe("(1.3, -0.95, 0.45)");
+    expect(f.after).toBe("(1.75, -1.25, 0.3)");
+    expect(f.magnitude).toBe("561.2 mm");
+  });
+
+  it("still draws a colour pair as two chips", () => {
+    const f = formatChange(
+      { label: "baseColorFactor", before: "[0.72 0.11 0.13 1.00]", after: "[0.12 0.30 0.70 1.00]" },
+      { colorSpace: "linear" },
+    );
+    expect(f.kind).toBe("color");
+    expect(f.before).toBe("#DD5D65");
+    expect(f.after).toBe("#6195DA");
   });
 });

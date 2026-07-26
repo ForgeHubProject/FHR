@@ -44,9 +44,20 @@ export function entityStops(diff: StructuredDiff | undefined): ReviewStop[] {
   return stops.length > 0 ? stops : reviewStops(diff);
 }
 
-/** Which field a stop's headline should be about, most significant first. */
-const HEADLINE_ORDER: readonly string[] = ["translation", "rotation", "scale"];
-const VERB: Record<string, string> = { translation: "moved", rotation: "rotated", scale: "scaled" };
+/**
+ * Which field a stop's headline should be about, most significant first: a node's
+ * transform, then the geometry metrics a mesh change carries (#50's slice).
+ */
+const HEADLINE_ORDER: readonly string[] = ["translation", "rotation", "scale", "bounds", "centroid"];
+const VERB: Record<string, string> = { translation: "moved", rotation: "rotated", scale: "scaled", centroid: "moved" };
+/** Vertex data: a change here is an edit with no single number to report. */
+const GEOMETRY_LABEL = /^(geometry|position|normal|tangent|indices|texcoord_\d+|color_\d+|joints_\d+|weights_\d+)$/i;
+
+/** "grew"/"shrank" for a bounds change, whose magnitude is an unsigned distance. */
+function verbFor(label: string, dominantDelta: number | undefined): string {
+  if (label === "bounds") return (dominantDelta ?? 0) < 0 ? "shrank" : "grew";
+  return VERB[label] ?? label;
+}
 
 /**
  * One short line for the viewport callout: the number a reviewer wants attached
@@ -61,19 +72,30 @@ export function headline(stop: ReviewStop): string {
   for (const label of HEADLINE_ORDER) {
     const detail = stop.details.find((d) => d.label === label);
     if (!detail) continue;
-    const magnitude = format(detail).magnitude;
-    if (magnitude) return `${VERB[label]} ${magnitude}`;
+    const measured = format(detail);
+    if (measured.magnitude) return `${verbFor(label, measured.dominantDelta)} ${measured.magnitude}`;
   }
 
   if (stop.details.some((d) => format(d).kind === "color")) return "recoloured";
 
-  const measured = stop.details.map(format).find((f) => f.magnitude !== undefined && !f.noise);
-  if (measured?.magnitude) return measured.magnitude;
+  const anyMagnitude = stop.details.map(format).find((f) => f.magnitude !== undefined && !f.noise);
+  if (anyMagnitude?.magnitude) return anyMagnitude.magnitude;
 
-  const meaningful = stop.details.filter((d) => !format(d).noise);
-  if (meaningful.length === 1) return `${meaningful[0]!.label} changed`;
-  if (meaningful.length > 1) return `${meaningful.length} changes`;
+  // Vertex data changed but nothing here measures it (that is #46's heatmap).
+  if (stop.details.some((d) => GEOMETRY_LABEL.test(d.label))) return "geometry edited";
+
+  // Only rows that carry a value are changes a reviewer would count: the group
+  // headers between an object and its fields ("primitive[0]", "geometry") are
+  // structure, and counting them turns one geometry edit into "5 changes".
+  const counted = stop.details.filter((d) => carriesValue(d) && !format(d).noise);
+  if (counted.length === 1) return `${counted[0]!.label} changed`;
+  if (counted.length > 1) return `${counted.length} changes`;
   return "changed";
+}
+
+/** A row with something in it, as opposed to a header above other rows. */
+function carriesValue(row: DiffRow): boolean {
+  return row.before !== undefined || row.after !== undefined;
 }
 
 /** Path → headline for every stop: the map the 3D view's callout reads. */
