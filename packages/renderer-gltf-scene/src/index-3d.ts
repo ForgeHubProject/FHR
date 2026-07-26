@@ -118,8 +118,13 @@ async function loadBase(props: MountProps, banners: BannerList): Promise<LoadedS
   // "view" mode is a single snapshot, and a host may pass the same blob twice.
   if (props.mode === "view" || !baseRef?.url || baseRef.url === headRef?.url) return null;
 
-  if (!allowGhostBase(baseRef.size)) {
-    if (baseRef.size > 0) banners.add(ghostBaseSkippedMessage(baseRef.size));
+  // allowGhostBase now refuses only a known size over the cap, so whenever it
+  // refuses there is a real number to name and the skip is never silent. The
+  // `undefined` check is what narrows the type; it changes no behaviour, since
+  // an absent size is allowed.
+  const baseSize = baseRef.size;
+  if (baseSize !== undefined && !allowGhostBase(baseSize)) {
+    banners.add(ghostBaseSkippedMessage(baseSize));
     return null;
   }
 
