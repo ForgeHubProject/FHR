@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 import type { BufferGeometry, Material, Mesh, Object3D } from "three";
-import { Color } from "three";
+import { Color, Vector3 } from "three";
 import type { NodeChange } from "./diff-map.js";
 import { loadGltf } from "./gltf-load.js";
 import { decodeGltf } from "./gltf-parse.js";
@@ -258,6 +258,79 @@ describe("moves: ghost at the old pose plus a motion vector", () => {
     expect(positions[3]).toBeCloseTo(6.5); // head triangle's centre
   });
 
+  // Regression: both poses of a moved node are the same shape in the same hue,
+  // and opacity was the only thing telling them apart. The ghost is unlit while
+  // the head copy is lit and tinted, so on a face turned from the light the
+  // current position can read darker than the previous one and "faded means old"
+  // inverts. Wireframe vs solid is categorical: it can't invert under lighting,
+  // survives any camera angle, and carries no hue, so it also holds up for
+  // colour-blind viewers.
+  it("draws the old pose as a wireframe so it can't be mistaken for the new one", async () => {
+    const head = await side({ nodes: [{ name: "Wheel", mesh: 0, translation: [6, 0, 0] }] });
+    const base = await side({ nodes: [{ name: "Wheel", mesh: 0 }] });
+    const overlay = buildOverlay({ head, base, changes: [change("Wheel", "modified", ["translation"])] });
+
+    // The arrowhead is a Mesh in this group too, and it is deliberately solid.
+    const ghosts = meshesIn(overlay.movedGroup!).filter((m) => m.name !== "fhr-motion-head");
+    expect(ghosts.length).toBeGreaterThan(0);
+    for (const ghost of ghosts) {
+      expect((materialOf(ghost) as unknown as { wireframe?: boolean }).wireframe).toBe(true);
+    }
+    const arrow = meshesIn(overlay.movedGroup!).find((m) => m.name === "fhr-motion-head")!;
+    expect((materialOf(arrow) as unknown as { wireframe?: boolean }).wireframe).toBeFalsy();
+    // The current position stays solid — that contrast is the whole signal.
+    for (const mesh of meshesIn(overlay.headGroup)) {
+      expect((materialOf(mesh) as unknown as { wireframe?: boolean }).wireframe).toBeFalsy();
+    }
+  });
+
+  it("puts an arrowhead on the destination end, so direction is stated not inferred", async () => {
+    const head = await side({ nodes: [{ name: "Wheel", mesh: 0, translation: [6, 0, 0] }] });
+    const base = await side({ nodes: [{ name: "Wheel", mesh: 0 }] });
+    const overlay = buildOverlay({ head, base, changes: [change("Wheel", "modified", ["translation"])] });
+
+    const arrow = overlay.movedGroup!.children.find((c) => c.name === "fhr-motion-head");
+    expect(arrow).toBeDefined();
+
+    // Read the endpoints off the line rather than restating them, so the test
+    // can't drift from how the vector is actually anchored.
+    const line = overlay.movedGroup!.children.find((c) => c.name === "fhr-motion")!;
+    const p = (line as unknown as { geometry: { attributes: { position: { array: ArrayLike<number> } } } })
+      .geometry.attributes.position.array;
+    const from = new Vector3(p[0]!, p[1]!, p[2]!);
+    const to = new Vector3(p[3]!, p[4]!, p[5]!);
+    const direction = new Vector3().subVectors(to, from).normalize();
+    const length = from.distanceTo(to) * 0.22;
+
+    // The cone's origin is its centre, so it sits half a length back from `to` —
+    // which puts the *tip* exactly on the destination.
+    const tip = arrow!.position.clone().addScaledVector(direction, length / 2);
+    expect(tip.distanceTo(to)).toBeLessThan(1e-6);
+    // And it points down the travel direction, not back along it.
+    const aim = new Vector3(0, 1, 0).applyQuaternion(arrow!.quaternion);
+    expect(aim.dot(direction)).toBeCloseTo(1, 5);
+  });
+
+  it("scales the arrowhead with the move, not with the model", async () => {
+    const far = buildOverlay({
+      head: await side({ nodes: [{ name: "P", mesh: 0, translation: [100, 0, 0] }] }),
+      base: await side({ nodes: [{ name: "P", mesh: 0 }] }),
+      changes: [change("P", "modified", ["translation"])],
+    });
+    const near = buildOverlay({
+      head: await side({ nodes: [{ name: "P", mesh: 0, translation: [2, 0, 0] }] }),
+      base: await side({ nodes: [{ name: "P", mesh: 0 }] }),
+      changes: [change("P", "modified", ["translation"])],
+    });
+    const height = (o: typeof far) => {
+      const cone = o.movedGroup!.children.find((c) => c.name === "fhr-motion-head")!;
+      return (cone as unknown as { geometry: { parameters: { height: number } } }).geometry.parameters.height;
+    };
+    // A 100-unit move gets a proportionally bigger head than a 2-unit one, so a
+    // tiny nudge never gets a cone larger than the move it describes.
+    expect(height(far)).toBeGreaterThan(height(near) * 10);
+  });
+
   it("skips the vector when the reported change didn't move anything", async () => {
     // A real case: (0,0,0,-1) and (0,0,0,1) are the *same* rotation, but compare
     // unequal component-wise, so a transform change can be reported for a node
@@ -334,10 +407,44 @@ describe("ghost base overlay", () => {
       ],
     });
     const overlay = buildOverlay({ head, base, changes: [change("Gone", "removed")] });
-    const visible = meshesIn(overlay.baseGhostGroup!).filter((m) => m.visible);
     const hidden = meshesIn(overlay.baseGhostGroup!).filter((m) => !m.visible);
-    expect(visible).toHaveLength(1); // "Keep"
-    expect(hidden).toHaveLength(1); // "Gone" — drawn as a removed ghost instead
+    // Both, for different reasons: "Gone" is drawn as a removed ghost instead,
+    // and "Keep" is identical to its head twin at the same world position.
+    expect(hidden).toHaveLength(2);
+    expect(meshesIn(overlay.baseGhostGroup!).filter((m) => m.visible)).toHaveLength(0);
+  });
+
+  // Regression: the ghost used to include every unchanged node, so unchanged
+  // geometry existed twice at the same coordinates — once opaque in the head
+  // model, once translucent here. Transparency draws after the opaque pass with
+  // depthWrite off and an equal-depth test that passes, so the two coincident
+  // surfaces blended wherever float depth tied, and faces visibly winked in and
+  // out as the camera orbited.
+  it("never ghosts a node the diff doesn't mention", async () => {
+    const scene: FixtureSpec = {
+      nodes: [
+        { name: "Quiet", mesh: 0 },
+        { name: "Loud", mesh: 0, translation: [3, 0, 0] },
+      ],
+    };
+    const head = await side(scene);
+    const base = await side(scene);
+    const overlay = buildOverlay({ head, base, changes: [change("Loud", "modified", ["mesh"])] });
+
+    const named = (visible: boolean) =>
+      meshesIn(overlay.baseGhostGroup!)
+        .filter((m) => m.visible === visible)
+        .length;
+    // "Loud" is in the diff but has no transform change, so it has no grammar of
+    // its own and legitimately belongs to the ghost. "Quiet" must not be there.
+    expect(named(true)).toBe(1);
+    expect(named(false)).toBe(1);
+  });
+
+  it("ghosts nothing at all when no change resolves to a base node", async () => {
+    const scene = { nodes: [{ name: "Solo", mesh: 0 }] };
+    const overlay = buildOverlay({ head: await side(scene), base: await side(scene), changes: [] });
+    expect(meshesIn(overlay.baseGhostGroup!).filter((m) => m.visible)).toHaveLength(0);
   });
 
   it("has no base layers at all when the base wasn't loaded", async () => {
