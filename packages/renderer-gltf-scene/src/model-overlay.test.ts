@@ -125,6 +125,41 @@ describe("tinting the head model", () => {
     expect(overlay.notes.join(" ")).toContain("isn't in either file's scene graph");
   });
 
+  // Regression: a removed node lives only in the previous version. With no base
+  // loaded it was counted as "in neither file's scene graph", which blames a
+  // change list that is in fact correct and points a reviewer at the wrong repo.
+  it("blames the missing base, not the change list, for an undrawable removal", async () => {
+    const head = await side(TWO_NODES);
+    const overlay = buildOverlay({ head, base: null, changes: [change("Mirror_L", "removed", ["translation"])] });
+
+    expect(overlay.stats.needsBase).toBe(1);
+    expect(overlay.stats.unmatched).toBe(0);
+
+    const notes = overlay.notes.join(" ");
+    expect(notes).toContain("previous version, which isn't loaded");
+    expect(notes).toContain("change list is correct");
+    expect(notes).not.toContain("isn't in either file's scene graph");
+  });
+
+  // A name in neither file is still a real mismatch even with no base loaded —
+  // the new counter must not swallow it.
+  it("still reports a genuinely unknown name when no base is loaded", async () => {
+    const head = await side(TWO_NODES);
+    const overlay = buildOverlay({ head, base: null, changes: [change("Spoiler", "modified", ["translation"])] });
+    expect(overlay.stats.unmatched).toBe(1);
+    expect(overlay.stats.needsBase).toBe(0);
+  });
+
+  // With the base present the removal is drawn, so neither counter fires.
+  it("draws the removal and counts nothing once the base is loaded", async () => {
+    const head = await side(TWO_NODES);
+    const base = await side(TWO_NODES);
+    const removedName = meshesIn(base.gltf.scene)[0]!.name;
+    const overlay = buildOverlay({ head, base, changes: [change(removedName, "removed", ["translation"])] });
+    expect(overlay.stats.needsBase).toBe(0);
+    expect(overlay.stats.removedGhosts).toBeGreaterThan(0);
+  });
+
   it("paints every primitive of a multi-primitive node", async () => {
     const head = await side({ nodes: [{ name: "Shell", mesh: 0 }], primitives: 3 });
     const overlay = buildOverlay({ head, changes: [change("Shell", "modified", ["mesh"])] });
@@ -195,7 +230,11 @@ describe("removed geometry, drawn from the base file", () => {
     const head = await side({ nodes: [{ name: "Hood", mesh: 0 }] });
     const overlay = buildOverlay({ head, base: null, changes: [change("Mirror", "removed")] });
     expect(overlay.removedGroup).toBeNull();
-    expect(overlay.stats.unmatched).toBe(1); // and the reviewer is told
+    // The reviewer is told — and told the truth. This used to count as
+    // `unmatched`, i.e. "in neither file's scene graph", which blames a change
+    // list that named a node the previous version really does contain.
+    expect(overlay.stats.needsBase).toBe(1);
+    expect(overlay.stats.unmatched).toBe(0);
     expect(overlay.notes).not.toHaveLength(0);
   });
 });
