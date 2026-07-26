@@ -46,25 +46,49 @@ export type DiffSummary = {
 /** The kinds this SDK knows, in the order a summary bar should read. */
 const KNOWN_KINDS: readonly string[] = ["added", "removed", "modified"];
 
+export type KindCounts = {
+  /** Count per kind as it appeared on the wire. */
+  byKind: Record<string, number>;
+  /** Kinds present: the known ones in review order, then the rest sorted. */
+  kinds: string[];
+};
+
+/**
+ * Tally any list of changes by kind. Kinds this SDK has never heard of are
+ * counted too and sorted after the known ones, so a handler that starts emitting
+ * "renamed" or "moved" shows up in a summary bar instead of vanishing from it.
+ */
+export function countKinds(changes: readonly { kind: string }[]): KindCounts {
+  const byKind: Record<string, number> = {};
+  for (const c of changes) {
+    const kind = String(c.kind);
+    byKind[kind] = (byKind[kind] ?? 0) + 1;
+  }
+  const extra = Object.keys(byKind)
+    .filter((k) => !KNOWN_KINDS.includes(k))
+    .sort();
+  return { byKind, kinds: [...KNOWN_KINDS.filter((k) => byKind[k]), ...extra] };
+}
+
 /** Count changes by kind across the whole tree (children included). */
 export function diffSummary(diff: StructuredDiff): DiffSummary {
-  const byKind: Record<string, number> = {};
-  const s: DiffSummary = { added: 0, removed: 0, modified: 0, total: 0, byKind, kinds: [] };
+  const all: DiffChange[] = [];
   const walk = (changes: DiffChange[]) => {
     for (const c of changes) {
-      const kind = String(c.kind);
-      byKind[kind] = (byKind[kind] ?? 0) + 1;
-      if (kind === "added" || kind === "removed" || kind === "modified") s[kind] += 1;
-      s.total += 1;
+      all.push(c);
       if (c.children?.length) walk(c.children);
     }
   };
   walk(diff.changes ?? []);
-  const extra = Object.keys(byKind)
-    .filter((k) => !KNOWN_KINDS.includes(k))
-    .sort();
-  s.kinds = [...KNOWN_KINDS.filter((k) => byKind[k]), ...extra];
-  return s;
+  const { byKind, kinds } = countKinds(all);
+  return {
+    added: byKind["added"] ?? 0,
+    removed: byKind["removed"] ?? 0,
+    modified: byKind["modified"] ?? 0,
+    total: all.length,
+    byKind,
+    kinds,
+  };
 }
 
 /**

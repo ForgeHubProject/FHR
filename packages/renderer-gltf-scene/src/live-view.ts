@@ -239,8 +239,10 @@ export function createLiveView(
         return false;
       }
       scene = handle;
-      // Open on whatever was already selected, without a flight from nowhere.
-      if (selected !== null) handle.selectChange?.(selected, { fly: false });
+      // Open on whatever was already selected: a reviewer who picked a row and
+      // then asked for the 3D view meant "show me that". The scene's own
+      // fly-to-all-changes reveal is still what happens with nothing selected.
+      if (selected !== null) handle.selectChange?.(selected);
       return true;
     } catch (err) {
       sceneLoading = false;

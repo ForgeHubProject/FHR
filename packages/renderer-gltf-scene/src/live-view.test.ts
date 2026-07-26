@@ -212,12 +212,12 @@ describe("createLiveView — the 3D half", () => {
     expect(mounts[0]!.selections).toEqual([{ path: "nodes/Wheel_FL", fly: true }]);
   });
 
-  it("adopts the current selection when the scene opens, without a flight", async () => {
+  it("opens on whatever was already selected, and frames it", async () => {
     const { container, mounts, view } = setup();
     view.select("nodes/Mirror_L");
     button(container).fire("click");
     await settle();
-    expect(mounts[0]!.selections).toEqual([{ path: "nodes/Mirror_L", fly: false }]);
+    expect(mounts[0]!.selections).toEqual([{ path: "nodes/Mirror_L", fly: true }]);
   });
 
   it("highlights the tree row when the viewer clicks geometry, and tells the host", async () => {
