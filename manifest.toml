@@ -13,8 +13,8 @@ maintainer  = "ForgeHub Project"
 # whether a re-download is needed.
 
 [formats]
-".gltf" = { handler = "gltf-scene", build = "e39c2aa" }
-".glb"  = { handler = "gltf-scene", build = "e39c2aa" }
+".gltf" = { handler = "gltf-scene", build = "33c2ab9" }
+".glb"  = { handler = "gltf-scene", build = "33c2ab9" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
