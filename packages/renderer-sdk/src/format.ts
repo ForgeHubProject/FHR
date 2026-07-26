@@ -48,6 +48,12 @@ export type FormattedChange = {
   deltaText?: string;
   /** The one number a reviewer judges, e.g. "50 mm", "45°", "×1.2", "+0.05". */
   magnitude?: string;
+  /**
+   * The signed component the magnitude was taken from — a distance and a ratio
+   * are unsigned, so this is what tells a caller whether the thing grew or shrank
+   * (the viewport headline uses it to pick a verb).
+   */
+  dominantDelta?: number;
   /** deltaText plus magnitude when the magnitude adds something: the delta cell. */
   deltaCell?: string;
   /**
@@ -67,8 +73,12 @@ export type FormatOptions = {
   colorSpace?: "linear" | "srgb";
 };
 
-/** Labels whose vectors are positions in metres (glTF's unit convention). */
-const LENGTH_LABEL = /translat|position|location|offset|origin|pivot|min|max/i;
+/**
+ * Labels whose vectors are lengths in metres (glTF's unit convention) — either a
+ * position or a measurement of one, so a geometry slice's bounds and centroid
+ * belong here too: "120 mm" is a judgement, "0.12" is a lookup.
+ */
+const LENGTH_LABEL = /translat|position|location|offset|origin|pivot|min|max|bounds|centroid|extent/i;
 /** Labels whose vectors are multipliers, judged as a ratio not a distance. */
 const SCALE_LABEL = /scale/i;
 /** Labels whose vectors are colours. */
@@ -78,16 +88,39 @@ const INDEXED = /^([A-Za-z_][\w.\-]*)\[(\d+)\]$/;
 
 const ABSENT = "—";
 
-/** Numbers parsed out of a formatted value, plus whether they carried degrees. */
-export type Numeric = { values: number[]; degrees: boolean };
+/**
+ * Numbers parsed out of a formatted value: the values, whether they carried
+ * degrees, and any trailing parenthetical the handler wrote after them.
+ */
+export type Numeric = { values: number[]; degrees: boolean; annotation: string };
+
+/**
+ * Split a trailing parenthetical off a value: `"[4.00 1.80 1.12] (+0.12 Z)"` →
+ * `["[4.00 1.80 1.12]", "+0.12 Z"]`.
+ *
+ * Handlers annotate a metric with the thing they measured about it, because
+ * `forge diff` with no renderer prints handler strings directly and the
+ * annotation is load-bearing there. It must not stop this module reading the
+ * numbers — and it must not be dropped, either, since it can name something the
+ * numbers only imply (which axis grew).
+ *
+ * A value that is *entirely* parenthesised is not annotated: "(0.00° 45.00°
+ * 0.00°)" is how the glTF handler writes euler degrees.
+ */
+function splitAnnotation(text: string): { value: string; annotation: string } {
+  const match = /^(.*\S)\s+\(([^()]*)\)$/.exec(text);
+  return match ? { value: match[1]!, annotation: match[2]! } : { value: text, annotation: "" };
+}
 
 /**
  * Parse a formatted value back to numbers: "[1.00 2.00 -3.00]", "(0.00° 45.00°
- * 0.00°)", "[1, 2, 3]", "0.50". Returns null unless every token is numeric —
- * a value this can't parse is text, and text is shown as text.
+ * 0.00°)", "[1, 2, 3]", "0.50", "[4.00 1.80 1.12] (+0.12 Z)". Returns null
+ * unless every token is numeric — a value this can't parse is text, and text is
+ * shown as text.
  */
 export function parseNumeric(text: string): Numeric | null {
-  const inner = text.trim().replace(/^[[({]/, "").replace(/[\])}]$/, "").trim();
+  const { value, annotation } = splitAnnotation(text.trim());
+  const inner = value.replace(/^[[({]/, "").replace(/[\])}]$/, "").trim();
   if (inner === "") return null;
   const tokens = inner.split(/[\s,]+/);
   const values: number[] = [];
@@ -98,7 +131,7 @@ export function parseNumeric(text: string): Numeric | null {
     if (!/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(bare)) return null;
     values.push(Number(bare));
   }
-  return { values, degrees };
+  return { values, degrees, annotation };
 }
 
 /** A number at display precision: at most `dp` decimals, no trailing zeros. */
@@ -139,11 +172,17 @@ function swatch(values: number[], opts: FormatOptions): Swatch {
   return { css, label };
 }
 
-/** Display text for a parsed value: a tuple in parens, a scalar bare. */
+/**
+ * Display text for a parsed value: a tuple in parens, a scalar bare, with the
+ * handler's own annotation re-emitted after it.
+ */
 function numericText(n: Numeric): string {
   const unit = n.degrees ? "°" : "";
-  if (n.values.length === 1) return `${trimNumber(n.values[0]!)}${unit}`;
-  return `(${n.values.map((v) => trimNumber(v) + unit).join(", ")})`;
+  const numbers =
+    n.values.length === 1
+      ? `${trimNumber(n.values[0]!)}${unit}`
+      : `(${n.values.map((v) => trimNumber(v) + unit).join(", ")})`;
+  return n.annotation === "" ? numbers : `${numbers} (${n.annotation})`;
 }
 
 function isColorLike(label: string, n: Numeric | null): boolean {
@@ -151,6 +190,27 @@ function isColorLike(label: string, n: Numeric | null): boolean {
   if (!COLOR_LABEL.test(label)) return false;
   if (n.values.length < 3 || n.values.length > 4) return false;
   return n.values.every((v) => v >= 0 && v <= 1.0001);
+}
+
+/** One side of a comparison, read on its own terms. */
+type Side = { text: string; numeric: Numeric | null; klass: ValueClass };
+
+/**
+ * What one side of a pair *is*. Read per side and then compared, because the
+ * formatting rule is about the pair (see `formatChange`), not about either half.
+ */
+function readSide(label: string, text: string): Side {
+  const numeric = parseNumeric(text);
+  const klass: ValueClass = isColorLike(label, numeric)
+    ? "color"
+    : numeric === null
+      ? "text"
+      : numeric.degrees
+        ? "angle"
+        : numeric.values.length > 1
+          ? "vector"
+          : "number";
+  return { text, numeric, klass };
 }
 
 /** Both sides are the same kind of array reference, at different indices. */
@@ -178,6 +238,15 @@ function uniformRatio(before: number[], after: number[]): number | null {
  * Turn one change's raw before/after into display text, a delta with a
  * magnitude, colour swatches and a noise flag. See the module header for why
  * each of those exists.
+ *
+ * The one invariant above all the display rules: **a pair is formatted as a
+ * pair.** Every reinterpretation here (reformatting numbers, drawing a swatch,
+ * subtracting) is applied only when both sides agree on what they are. Formatting
+ * one side while the other falls through verbatim puts two notations on the two
+ * halves of a single comparison, which reads as a rendering bug — and it is the
+ * failure mode a handler produces the moment it annotates one side of a metric
+ * (`[4.00 1.80 1.00]` → `[4.00 1.80 1.12] (+0.12 Z)`) or changes a field's type.
+ * When the sides disagree, both are shown exactly as the handler wrote them.
  */
 export function formatChange(
   row: { label?: string; before?: unknown; after?: unknown },
@@ -189,34 +258,45 @@ export function formatChange(
   const beforeText = hasBefore ? formatValue(row.before) : ABSENT;
   const afterText = hasAfter ? formatValue(row.after) : ABSENT;
 
-  const beforeNum = hasBefore ? parseNumeric(beforeText) : null;
-  const afterNum = hasAfter ? parseNumeric(afterText) : null;
+  const before = hasBefore ? readSide(label, beforeText) : null;
+  const after = hasAfter ? readSide(label, afterText) : null;
+  // A row with no values at all: a group header, which callers do hand to us.
+  if (!before && !after) return { kind: "text", before: beforeText, after: afterText, noise: false };
 
-  // Colours: chips on both sides, no arithmetic. A one-sided colour (an added or
-  // removed material) still gets its chip.
-  const beforeColor = isColorLike(label, beforeNum);
-  const afterColor = isColorLike(label, afterNum);
-  if ((beforeColor && (afterColor || !hasAfter)) || (afterColor && !hasBefore)) {
+  if (before && after) {
+    // Array-index churn: shown, but marked as the low-signal thing it usually is.
+    if (isIndexChurn(beforeText, afterText)) {
+      return { kind: "index", before: beforeText, after: afterText, noise: true };
+    }
+    // The sides are different kinds of thing. Neither gets reinterpreted.
+    if (before.klass !== after.klass) {
+      return { kind: "text", before: beforeText, after: afterText, noise: false };
+    }
+  }
+
+  // Colours: chips, no arithmetic. A one-sided colour (an added or removed
+  // material) still gets its chip.
+  if ((before ?? after)!.klass === "color") {
+    const beforeSwatch = before?.numeric ? swatch(before.numeric.values, opts) : undefined;
+    const afterSwatch = after?.numeric ? swatch(after.numeric.values, opts) : undefined;
     return {
       kind: "color",
-      before: beforeColor ? swatch(beforeNum!.values, opts).label : beforeText,
-      after: afterColor ? swatch(afterNum!.values, opts).label : afterText,
-      ...(beforeColor ? { beforeSwatch: swatch(beforeNum!.values, opts) } : {}),
-      ...(afterColor ? { afterSwatch: swatch(afterNum!.values, opts) } : {}),
+      before: beforeSwatch?.label ?? beforeText,
+      after: afterSwatch?.label ?? afterText,
+      ...(beforeSwatch ? { beforeSwatch } : {}),
+      ...(afterSwatch ? { afterSwatch } : {}),
       noise: false,
     };
   }
 
-  // Array-index churn: shown, but marked as the low-signal thing it usually is.
-  if (hasBefore && hasAfter && isIndexChurn(beforeText, afterText)) {
-    return { kind: "index", before: beforeText, after: afterText, noise: true };
-  }
+  const beforeNum = before?.numeric ?? null;
+  const afterNum = after?.numeric ?? null;
 
-  // One side missing, or unparseable text: display only, nothing to subtract.
+  // One side missing, unparseable on both sides, or two tuples of different
+  // arity: display only — symmetric, but with nothing to subtract.
   if (!beforeNum || !afterNum || beforeNum.values.length !== afterNum.values.length) {
-    const one = beforeNum ?? afterNum;
     return {
-      kind: one ? (one.values.length > 1 ? "vector" : "number") : "text",
+      kind: (before ?? after)!.klass,
       before: beforeNum ? numericText(beforeNum) : beforeText,
       after: afterNum ? numericText(afterNum) : afterText,
       noise: false,
@@ -232,13 +312,14 @@ export function formatChange(
     : `Δ(${deltas.map((d) => trimNumber(d) + unit).join(", ")})`;
 
   const magnitude = magnitudeOf(label, deltas, beforeNum.values, afterNum.values, degrees);
+  const dominant = deltas.reduce((m, d) => (Math.abs(d) > Math.abs(m) ? d : m), 0);
   const kind: ValueClass = degrees ? "angle" : scalar ? "number" : "vector";
   return {
     kind,
     before: numericText(beforeNum),
     after: numericText(afterNum),
     deltaText,
-    ...(magnitude ? { magnitude } : {}),
+    ...(magnitude ? { magnitude, dominantDelta: dominant } : {}),
     deltaCell: deltaCell(deltaText, magnitude, deltas, unit),
     noise: false,
   };

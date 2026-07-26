@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import type { StructuredDiff } from "@fhr/types";
 import { entityPath, nodeNameOfPath, pathOfNodeName, segmentCount, unescapeSegment, escapeSegment } from "./change-path.js";
-import { entityStops, headline, headlines } from "./review.js";
+import { entityStops, formatGltfChange, headline, headlines } from "./review.js";
 
 const carDiff: StructuredDiff = {
   version: "1.0",
@@ -230,5 +230,168 @@ describe("headline (the one viewport callout's text)", () => {
       "nodes/Mirror_L": "removed",
       "materials/Paint": "recoloured",
     });
+  });
+});
+
+// ── the geometry-detection seam (#50) ───────────────────────────────────────────
+// Verbatim `gltf-scene` output for a sculpted car body plus a material
+// reassignment, pinned as a fixture: this shape is what a mesh-level change looks
+// like once the handler reports geometry, and it is the diff that exposed the
+// asymmetric-pair formatting bug (see renderer-sdk/src/format.test.ts).
+const SCULPT_DIFF: StructuredDiff = {
+  "version": "1.0",
+  "format": "gltf-scene",
+  "changes": [
+    {
+      "path": "meshes",
+      "kind": "modified",
+      "label": "meshes",
+      "children": [
+        {
+          "path": "meshes/BodyMesh",
+          "kind": "modified",
+          "label": "BodyMesh",
+          "children": [
+            {
+              "path": "meshes/BodyMesh/primitives/0",
+              "kind": "modified",
+              "label": "primitive[0]",
+              "children": [
+                {
+                  "path": "meshes/BodyMesh/primitives/0/geometry",
+                  "kind": "modified",
+                  "label": "geometry",
+                  "children": [
+                    {
+                      "path": "meshes/BodyMesh/primitives/0/geometry/POSITION",
+                      "kind": "modified",
+                      "label": "POSITION",
+                      "before": "count=24 type=VEC3 component=FLOAT hash=9138e59d77d851a5",
+                      "after": "count=24 type=VEC3 component=FLOAT hash=f9cd47e93c1ec065"
+                    }
+                  ]
+                },
+                {
+                  "path": "meshes/BodyMesh/primitives/0/bounds",
+                  "kind": "modified",
+                  "label": "bounds",
+                  "before": "[4.00 1.80 1.00]",
+                  "after": "[4.00 1.80 1.12] (+0.12 Z)"
+                },
+                {
+                  "path": "meshes/BodyMesh/primitives/0/centroid",
+                  "kind": "modified",
+                  "label": "centroid",
+                  "before": "[0.00 0.00 0.00]",
+                  "after": "[0.00 0.00 0.06] (moved 0.060)"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "path": "meshes/WheelMesh",
+          "kind": "modified",
+          "label": "WheelMesh",
+          "children": [
+            {
+              "path": "meshes/WheelMesh/primitives/0",
+              "kind": "modified",
+              "label": "primitive[0]",
+              "children": [
+                {
+                  "path": "meshes/WheelMesh/primitives/0/material",
+                  "kind": "modified",
+                  "label": "material",
+                  "before": "Rubber",
+                  "after": "Glass"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+} as StructuredDiff;
+
+describe("mesh-level changes (the #50 shape)", () => {
+  const stops = entityStops(SCULPT_DIFF);
+  const stopFor = (path: string) => stops.find((s) => s.row.path === path)!;
+
+  it("stops on each changed mesh, not on the primitives below it", () => {
+    expect(stops.map((s) => s.row.path)).toEqual(["meshes/BodyMesh", "meshes/WheelMesh"]);
+  });
+
+  it("gathers the whole subtree as details, headers included", () => {
+    expect(stopFor("meshes/BodyMesh").details.map((d) => d.label)).toEqual([
+      "primitive[0]",
+      "geometry",
+      "POSITION",
+      "bounds",
+      "centroid",
+    ]);
+  });
+
+  // Five detail rows, of which three carry a value and one is the edit: a
+  // reviewer calls that one geometry change, so the headline reports the
+  // magnitude rather than counting rows.
+  it("headlines a sculpt with the size it gained, not a row count", () => {
+    expect(headline(stopFor("meshes/BodyMesh"))).toBe("grew 120 mm");
+  });
+
+  it("headlines a material reassignment as the field that changed", () => {
+    expect(headline(stopFor("meshes/WheelMesh"))).toBe("material changed");
+  });
+
+  it("says a shrink shrank", () => {
+    const shrunk = entityStops({
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [
+        {
+          path: "meshes/Hood",
+          label: "Hood",
+          kind: "modified",
+          children: [
+            { path: "meshes/Hood/bounds", label: "bounds", kind: "modified", before: "[4.00 1.80 1.12]", after: "[4.00 1.80 1.00]" },
+          ],
+        },
+      ],
+    });
+    expect(headline(shrunk[0]!)).toBe("shrank 120 mm");
+  });
+
+  it("falls back to naming the edit when only vertex data changed", () => {
+    const vertexOnly = entityStops({
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [
+        {
+          path: "meshes/Hood",
+          label: "Hood",
+          kind: "modified",
+          children: [
+            {
+              path: "meshes/Hood/primitives/0",
+              label: "primitive[0]",
+              kind: "modified",
+              children: [
+                { path: "meshes/Hood/primitives/0/geometry/POSITION", label: "POSITION", kind: "modified", before: "hash=a", after: "hash=b" },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(headline(vertexOnly[0]!)).toBe("geometry edited");
+  });
+
+  it("formats both halves of an annotated metric in one notation", () => {
+    const bounds = stopFor("meshes/BodyMesh").details.find((d) => d.label === "bounds")!;
+    const f = formatGltfChange(bounds);
+    expect(f.before).toBe("(4, 1.8, 1)");
+    expect(f.after).toBe("(4, 1.8, 1.12) (+0.12 Z)");
+    expect(f.deltaCell).toBe("Δ(0, 0, 0.12) = 120 mm");
   });
 });
