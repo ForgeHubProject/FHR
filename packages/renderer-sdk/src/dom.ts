@@ -17,7 +17,7 @@
 // renderer bundle cannot rely on host CSS.
 
 import type { MountProps } from "@fhr/types";
-import { flattenDiff, diffSummary, reviewStops, type DiffRow, type ReviewStop } from "./diff.js";
+import { flattenDiff, countKinds, reviewStops, type DiffRow, type ReviewStop } from "./diff.js";
 import { formatChange, type FormattedChange } from "./format.js";
 
 const KIND_SYMBOL: Record<string, string> = { added: "+", removed: "−", modified: "~" };
@@ -165,6 +165,9 @@ export function renderDiffTree(
   const teardown: (() => void)[] = [];
   const rowByPath = new Map<string, HTMLElement>();
   let selected: string | null = null;
+  // Assigned once the summary bar exists; a no-op until then, and for a diff with
+  // nothing in it (where `select` is still callable and must not throw).
+  let updatePosition: () => void = () => {};
 
   const handle: DiffTreeHandle = {
     root,
@@ -219,11 +222,15 @@ export function renderDiffTree(
   handle.stops = stopPaths;
 
   // ── summary bar ─────────────────────────────────────────────────────────────
-  const s = diffSummary(diff);
+  // Counted over the review stops, not over every row: a reviewer reading
+  // "7 modified" off a diff of three changed objects has been told the size of
+  // the tree, which is not what they asked. `diffSummary` still reports the
+  // whole-tree totals for callers that want them.
+  const counts = countKinds(stops.map((stop) => stop.row));
   const summary = doc.createElement("div");
   summary.className = "fhr-diff__summary";
-  for (const kind of s.kinds) {
-    const n = s.byKind[kind] ?? 0;
+  for (const kind of counts.kinds) {
+    const n = counts.byKind[kind] ?? 0;
     if (n === 0) continue;
     const known = KIND_SYMBOL[kind] !== undefined;
     const span = doc.createElement("span");
@@ -236,7 +243,7 @@ export function renderDiffTree(
   // Position readout + step buttons: the same review path as `n`/`p`, for the
   // reviewer who never learns the keys.
   let position: HTMLElement | null = null;
-  const updatePosition = (): void => {
+  updatePosition = (): void => {
     if (!position) return;
     const at = selected === null ? -1 : stopPaths.indexOf(selected);
     position.textContent = at < 0 ? `${stopPaths.length} changes` : `${at + 1} / ${stopPaths.length}`;

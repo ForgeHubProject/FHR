@@ -115,6 +115,17 @@ describe("renderDiffTree — structure", () => {
     expect(handle.selected).toBeNull();
   });
 
+  // The handle is returned before the rows exist on this path, and a caller (a
+  // host pushing a selection) can still use it.
+  it("returns a handle that stays usable when there is nothing to select", () => {
+    const { handle } = mount({ diff: { version: "1.0", format: "x", changes: [] } });
+    expect(handle.stops).toEqual([]);
+    expect(handle.select("nodes/Cube")).toBe(false);
+    expect(handle.select(null)).toBe(true);
+    handle.focus();
+    handle.dispose();
+  });
+
   it("says so when there is nothing to show", () => {
     const { root } = mount({ diff: undefined });
     expect(root.allText()).toContain("No diff provided.");
@@ -124,10 +135,13 @@ describe("renderDiffTree — structure", () => {
 });
 
 describe("renderDiffTree — summary bar", () => {
+  // Counted over the changed objects, not over every row in the tree: three
+  // objects changed here, and the wrapper rows above them are not changes a
+  // reviewer would count.
   it("counts by kind above the tree", () => {
     const { root } = mount();
     const counts = root.byClass("fhr-diff__count").map((c) => c.textContent);
-    expect(counts).toEqual(["− 1 removed", "~ 7 modified"]);
+    expect(counts).toEqual(["− 1 removed", "~ 2 modified"]);
   });
 
   it("shows a kind it has never heard of rather than dropping it", () => {
