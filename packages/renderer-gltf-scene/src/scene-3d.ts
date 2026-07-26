@@ -19,6 +19,9 @@ import type { SceneNode } from "./scene-graph.js";
 import type { Overlay } from "./model-overlay.js";
 import { createFlyTo, DEFAULT_FLY_MS } from "./flyto.js";
 import { disposeTree } from "./dispose.js";
+import { createIsolator } from "./isolate.js";
+import { createCallout, projectToScreen } from "./callout.js";
+import { changeAtHits, isClickGesture, ndcFromPointer } from "./pick.js";
 
 type Theme = "light" | "dark";
 
@@ -31,6 +34,13 @@ export type SceneHandle = {
   flyToChange?(name: string): boolean;
   /** Frame every change at once — what the view does on load. */
   flyToChanges?(): void;
+  /**
+   * Select a change by name: fly to it, isolate it, and call it out (#45). null
+   * clears the selection. `fly: false` selects without moving the camera — what a
+   * click *in* the viewport does, since the reviewer is already looking at it.
+   * Returns false when the name isn't one of the painted changes.
+   */
+  selectChange?(name: string | null, options?: { fly?: boolean }): boolean;
 };
 
 const deg2rad = (d: number): number => (d * Math.PI) / 180;
@@ -150,6 +160,14 @@ export type ModelSceneOptions = {
   blink?: boolean;
   /** Fly to the changes once mounted (the reveal on load). Default: on. */
   flyToChangesOnLoad?: boolean;
+  /**
+   * The viewer clicked geometry: the change name they hit, or null for a click
+   * that landed on unchanged geometry or on nothing. The scene has already
+   * applied the selection's visuals by the time this runs.
+   */
+  onPick?: (name: string | null) => void;
+  /** Change name → the one-line headline its callout shows (see review.ts). */
+  headlines?: Record<string, string>;
 };
 
 /**
@@ -229,8 +247,92 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
   }
 
   const hint = canBlink ? blinkHint(container) : null;
+
+  // ── selection: isolate + one callout ────────────────────────────────────────
+  // The base model's solid copy is exempt from isolation: the blink is a
+  // whole-model comparison and has to keep working while a change is isolated.
+  const isolator = createIsolator(overlay.root, {
+    skip: overlay.baseSolidGroup ? [overlay.baseSolidGroup] : [],
+  });
+  const callout = createCallout(container, theme);
+  let selectedBox: THREE.Box3 | null = null;
+  const anchor = new THREE.Vector3();
+
+  const clearSelection = (): void => {
+    isolator.clear();
+    callout.hide();
+    selectedBox = null;
+  };
+
+  const applySelection = (name: string | null, fly: boolean): boolean => {
+    if (name === null) {
+      clearSelection();
+      return true;
+    }
+    const box = overlay.boxByChangeName.get(name);
+    const objects = overlay.objectsByChangeName.get(name);
+    if (!box || box.isEmpty() || !objects || objects.length === 0) {
+      clearSelection();
+      return false;
+    }
+    isolator.isolate(objects);
+    callout.show(name, options.headlines?.[name] ?? "changed");
+    selectedBox = box;
+    if (fly) flyTo.to(box);
+    return true;
+  };
+
+  // The callout follows the geometry: one projection and two style writes per
+  // frame, and only while something is selected.
+  viewport.onFrame(() => {
+    if (!selectedBox || !callout.visible) return;
+    selectedBox.getCenter(anchor);
+    const width = container.clientWidth || 1;
+    const height = container.clientHeight || 1;
+    callout.place(projectToScreen(anchor, viewport.camera, { width, height }), { width, height });
+  });
+
+  // ── picking ─────────────────────────────────────────────────────────────────
+  // Pick against the painted layers only: the ghost of the previous version is
+  // context, and clicking through it to the current model is what a reviewer
+  // means. OrbitControls owns dragging, so a press that travelled is not a click.
+  const raycaster = new THREE.Raycaster();
+  const pickTargets: THREE.Object3D[] = [overlay.headGroup];
+  if (overlay.removedGroup) pickTargets.push(overlay.removedGroup);
+  if (overlay.movedGroup) pickTargets.push(overlay.movedGroup);
+
+  let pressed: { x: number; y: number; t: number } | null = null;
+  const onPointerDown = (event: PointerEvent): void => {
+    pressed = { x: event.clientX, y: event.clientY, t: nowMs() };
+  };
+  const onPointerUp = (event: PointerEvent): void => {
+    const down = pressed;
+    pressed = null;
+    if (!down) return;
+    if (!isClickGesture(down, { x: event.clientX, y: event.clientY, t: nowMs() })) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const ndc = ndcFromPointer(event, rect);
+    raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), viewport.camera);
+    const hits = raycaster.intersectObjects(pickTargets, true);
+    const name = changeAtHits(hits, {
+      changeNameByObject: overlay.changeNameByObject,
+      changeNameByNodeIndex: overlay.changeNameByNodeIndex,
+      nodeIndexOf: overlay.nodeIndexOfObject,
+    });
+    // Selecting without flying: the reviewer is already looking at what they hit.
+    applySelection(name, false);
+    options.onPick?.(name);
+  };
+  canvas.addEventListener("pointerdown", onPointerDown as EventListener);
+  canvas.addEventListener("pointerup", onPointerUp as EventListener);
+
   viewport.onDispose(() => {
     viewport.controls.removeEventListener("start", onControlStart);
+    canvas.removeEventListener("pointerdown", onPointerDown as EventListener);
+    canvas.removeEventListener("pointerup", onPointerUp as EventListener);
+    callout.dispose();
+    isolator.clear();
     hint?.remove();
   });
 
@@ -248,7 +350,16 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     flyToChanges(): void {
       flyTo.to(overlay.changeBox);
     },
+    selectChange(name: string | null, selectOptions: { fly?: boolean } = {}): boolean {
+      return applySelection(name, selectOptions.fly !== false);
+    },
   };
+}
+
+function nowMs(): number {
+  return typeof performance === "object" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
 }
 
 /** One-line affordance for the blink; same muted style as the view's status text. */

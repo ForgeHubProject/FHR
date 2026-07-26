@@ -190,6 +190,14 @@ export type MountProps = {
   /** Raw blob references, served same-origin by the consumer. */
   blobs?: RendererBlobs;
   theme?: "light" | "dark";
+  /**
+   * The change the host wants selected, as a `DiffChange.path`. The inbound half
+   * of the selection round trip whose outbound half is `RendererEvent.select`:
+   * a host that highlights a row in its own UI pushes the same key back in here,
+   * and the renderer highlights it (and, for a 3D renderer, frames it).
+   * Undefined means "the host isn't driving selection"; null means "nothing".
+   */
+  selectedChangePath?: string | null;
   /** Host callback for renderer-emitted events (selection, resolution, error). */
   onEvent?: (e: RendererEvent) => void;
 };

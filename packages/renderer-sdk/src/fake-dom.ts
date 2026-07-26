@@ -1,11 +1,15 @@
-// Test-only DOM stand-in. Not imported by any bundle entry.
+// Test-only DOM stand-in. Not exported from the package entry.
 //
-// The DOM this renderer's non-3D code touches is deliberately tiny
-// (createElement, style.cssText, textContent, appendChild/append, remove,
-// addEventListener), so a few dozen lines of plain objects cover it. That keeps
-// the test suite dependency-free — no jsdom in the lockfile for a handful of
-// element assertions — and keeps these tests honest about what they prove: DOM
-// *structure and text*, never layout or rendering.
+// The DOM renderDiffTree touches is deliberately small (createElement, class and
+// style writes, textContent, append/appendChild/remove, get/setAttribute,
+// add/removeEventListener, focus, scrollIntoView), so a hundred lines of plain
+// objects cover it. That keeps the suite dependency-free — no jsdom in the
+// lockfile for a handful of element assertions — and keeps these tests honest
+// about what they prove: DOM structure, text and attributes, never layout.
+//
+// A near-twin of this file lives in renderer-gltf-scene (added with the real
+// renderer in FHR #44); the two are deliberately independent, because a package's
+// test double is not a contract other packages should import.
 
 export type FakeElement = {
   tagName: string;
@@ -16,19 +20,20 @@ export type FakeElement = {
   parentNode: FakeElement | null;
   attributes: Record<string, string>;
   listeners: Record<string, ((ev: unknown) => void)[]>;
+  /** Test helper: times focus()/scrollIntoView() were called. */
+  focused: number;
+  scrolled: number;
   appendChild(child: FakeElement): FakeElement;
   append(...children: (FakeElement | string)[]): void;
-  replaceChildren(...children: FakeElement[]): void;
   remove(): void;
   removeAttribute(name: string): void;
   setAttribute(name: string, value: string): void;
+  getAttribute(name: string): string | null;
   addEventListener(type: string, fn: (ev: unknown) => void): void;
   removeEventListener(type: string, fn: (ev: unknown) => void): void;
-  getAttribute(name: string): string | null;
   focus(): void;
-  /** Test helper: times focus() was called. */
-  focused: number;
-  /** Test helper: fire a listener registered on this element. */
+  scrollIntoView(): void;
+  /** Test helper: fire the listeners registered on this element. */
   fire(type: string, ev?: unknown): void;
   /** Test helper: this element's text plus all descendants', joined. */
   allText(): string;
@@ -36,16 +41,10 @@ export type FakeElement = {
   descendants(): FakeElement[];
   /** Test helper: descendants whose className contains `token`. */
   byClass(token: string): FakeElement[];
-  /** Test helper: descendants carrying an attribute with this value. */
-  byAttr(name: string, value: string): FakeElement[];
   ownerDocument: FakeDocument;
-  clientWidth: number;
-  clientHeight: number;
 };
 
-export type FakeDocument = {
-  createElement(tagName: string): FakeElement;
-};
+export type FakeDocument = { createElement(tagName: string): FakeElement };
 
 /** A document whose elements record what was done to them. */
 export function createFakeDocument(): FakeDocument {
@@ -55,14 +54,13 @@ export function createFakeDocument(): FakeDocument {
         tagName: tagName.toUpperCase(),
         className: "",
         style: { cssText: "" },
-        focused: 0,
         textContent: "",
         childNodes: [],
         parentNode: null,
         attributes: {},
         listeners: {},
-        clientWidth: 640,
-        clientHeight: 420,
+        focused: 0,
+        scrolled: 0,
         ownerDocument: doc,
         appendChild(child: FakeElement): FakeElement {
           child.parentNode = el;
@@ -80,11 +78,6 @@ export function createFakeDocument(): FakeDocument {
             }
           }
         },
-        replaceChildren(...children: FakeElement[]): void {
-          for (const c of el.childNodes) c.parentNode = null;
-          el.childNodes = [];
-          for (const c of children) el.appendChild(c);
-        },
         remove(): void {
           const parent = el.parentNode;
           if (!parent) return;
@@ -97,9 +90,6 @@ export function createFakeDocument(): FakeDocument {
         getAttribute(name: string): string | null {
           return el.attributes[name] ?? null;
         },
-        focus(): void {
-          el.focused += 1;
-        },
         removeAttribute(name: string): void {
           delete el.attributes[name];
         },
@@ -108,6 +98,12 @@ export function createFakeDocument(): FakeDocument {
         },
         removeEventListener(type: string, fn: (ev: unknown) => void): void {
           el.listeners[type] = (el.listeners[type] ?? []).filter((f) => f !== fn);
+        },
+        focus(): void {
+          el.focused += 1;
+        },
+        scrollIntoView(): void {
+          el.scrolled += 1;
         },
         fire(type: string, ev: unknown = {}): void {
           for (const fn of [...(el.listeners[type] ?? [])]) fn(ev);
@@ -121,9 +117,6 @@ export function createFakeDocument(): FakeDocument {
         byClass(token: string): FakeElement[] {
           return el.descendants().filter((c) => c.className.split(/\s+/).includes(token));
         },
-        byAttr(name: string, value: string): FakeElement[] {
-          return el.descendants().filter((c) => c.attributes[name] === value);
-        },
       };
       return el;
     },
@@ -131,12 +124,22 @@ export function createFakeDocument(): FakeDocument {
   return doc;
 }
 
-/** The fake document, typed as a DOM Document for functions that expect one. */
-export function asDocument(doc: FakeDocument): Document {
-  return doc as unknown as Document;
-}
-
-/** A fake element, typed as an HTMLElement for functions that expect one. */
+/** A container element, typed as an HTMLElement for functions that expect one. */
 export function asElement(el: FakeElement): HTMLElement {
   return el as unknown as HTMLElement;
+}
+
+/** A keyboard-event stand-in that records preventDefault(). */
+export function fakeKey(
+  key: string,
+  extra: Partial<{ target: unknown; ctrlKey: boolean; metaKey: boolean; altKey: boolean }> = {},
+): { key: string; prevented: number; preventDefault(): void } & Record<string, unknown> {
+  return {
+    key,
+    prevented: 0,
+    preventDefault(): void {
+      (this as { prevented: number }).prevented += 1;
+    },
+    ...extra,
+  };
 }
