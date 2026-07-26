@@ -65,11 +65,31 @@ type MountProps = {
   diff?: StructuredDiff;              // computed by ANY tier (§4)
   blobs?: { base?: BlobRef; head?: BlobRef; ours?: BlobRef; theirs?: BlobRef };
   theme?: "light" | "dark";
+  selectedChangePath?: string | null; // host-driven selection, keyed on
+                                      // DiffChange.path (see below)
   onEvent?: (e: RendererEvent) => void;   // e.g. merge resolution produced
 };
 
 type BlobRef = { url: string; size: number };  // consumer-served, same-origin
 ```
+
+**Selection is a round trip.** A renderer reports what the viewer picked with
+`onEvent({type: "select", changePath})`; a host that keeps its own selection
+state pushes the same key back in through `selectedChangePath`. The key is a
+`DiffChange.path` exactly as the handler wrote it — fully qualified and
+"/"-separated, with `%` and `/` percent-escaped inside a segment
+(`nodes/Cube.001/translation`). `undefined` means "the host isn't driving
+selection"; `null` means "nothing selected".
+
+**`update()` is allowed to be cheap.** The lifecycle a renderer gets from
+`@fhr/renderer-sdk`'s `defineRenderer` tears down and redraws on every prop push
+by default, which is correct but expensive: for a 3D renderer it destroys the
+WebGL context, re-fetches and re-parses the model blobs and resets the camera. A
+renderer MAY implement the SDK's optional `update(container, props, prev)` hook
+to patch in place instead, and MUST return `false` from it for any push it cannot
+patch (new blobs, a new diff) so the teardown path runs for that push. Hosts see
+no difference in the contract: `RendererInstance.update` has the same signature
+and the same meaning either way.
 
 Rationale:
 

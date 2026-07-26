@@ -12,6 +12,8 @@ import { decodeGltf } from "./gltf-parse.js";
 import { buildNameIndex } from "./node-index.js";
 import { buildOverlay, type LoadedSide } from "./model-overlay.js";
 import { meshesIn } from "./associations.js";
+import { pathOfNodeName } from "./change-path.js";
+import { changeAtObject } from "./pick.js";
 import { KIND_COLOR, NEUTRAL } from "./palette.js";
 import { buildGltf, toArrayBuffer, toGlb, type FixtureSpec } from "./glb-fixture.js";
 
@@ -25,6 +27,7 @@ const change = (name: string, kind: NodeChange["kind"], fields: string[] = []): 
   name,
   kind,
   fields,
+  path: pathOfNodeName(name),
 });
 
 const materialOf = (object: Object3D): Material => (object as Mesh).material as Material;
@@ -376,5 +379,61 @@ describe("overlay disposal", () => {
     // Tint clones AND the originals they displaced are both accounted for.
     expect(report.materials).toBeGreaterThanOrEqual(4);
     expect(overlay.root.parent).toBeNull();
+  });
+});
+
+// The maps the raycast reads (#45). Picking is what makes the 3D view an input
+// and not just a picture, and the only mapping that survives cloning is the one
+// the overlay builds while it paints.
+describe("the maps a click resolves through", () => {
+  it("maps every painted head object to its change", async () => {
+    const head = await side(TWO_NODES);
+    const overlay = buildOverlay({ head, changes: [change("Hood", "modified", ["mesh"])] });
+    const objects = overlay.objectsByChangeName.get("Hood")!;
+    expect(objects.length).toBeGreaterThan(0);
+    for (const object of objects) expect(overlay.changeNameByObject.get(object)).toBe("Hood");
+  });
+
+  it("resolves a click on a mesh inside a painted node", async () => {
+    const head = await side(TWO_NODES);
+    const overlay = buildOverlay({ head, changes: [change("Hood", "modified", ["mesh"])] });
+    const hood = meshesIn(head.gltf.scene).find((m) => m.name === "Hood")!;
+    expect(changeAtObject(hood, { changeNameByObject: overlay.changeNameByObject })).toBe("Hood");
+  });
+
+  it("resolves a click on the ghost of a removed part, which no association covers", async () => {
+    const head = await side({ nodes: [{ name: "Hood", mesh: 0 }] });
+    const base = await side(TWO_NODES);
+    const overlay = buildOverlay({ head, base, changes: [change("Mirror", "removed")] });
+    const ghost = overlay.removedGroup!.children[0]!;
+    // The clone is in no glTF association — the loader never made it.
+    expect(overlay.nodeIndexOfObject(ghost)).toBeNull();
+    expect(changeAtObject(meshesIn(ghost)[0] ?? ghost, { changeNameByObject: overlay.changeNameByObject })).toBe(
+      "Mirror",
+    );
+  });
+
+  it("resolves nothing for a click on unchanged geometry", async () => {
+    const head = await side(TWO_NODES);
+    const overlay = buildOverlay({ head, changes: [change("Hood", "modified", ["mesh"])] });
+    const mirror = meshesIn(head.gltf.scene).find((m) => m.name === "Mirror")!;
+    expect(changeAtObject(mirror, { changeNameByObject: overlay.changeNameByObject })).toBeNull();
+  });
+
+  it("offers the loader's node association as the fallback path", async () => {
+    const head = await side(TWO_NODES);
+    const overlay = buildOverlay({ head, changes: [change("Mirror", "modified", ["mesh"])] });
+    const mirror = meshesIn(head.gltf.scene).find((m) => m.name === "Mirror")!;
+    const index = overlay.nodeIndexOfObject(mirror);
+    expect(index).not.toBeNull();
+    expect(overlay.changeNameByNodeIndex.get(index!)).toBe("Mirror");
+    // The same answer, reached without the painted map.
+    expect(
+      changeAtObject(mirror, {
+        changeNameByObject: new Map(),
+        nodeIndexOf: overlay.nodeIndexOfObject,
+        changeNameByNodeIndex: overlay.changeNameByNodeIndex,
+      }),
+    ).toBe("Mirror");
   });
 });
