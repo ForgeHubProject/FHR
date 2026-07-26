@@ -49,14 +49,34 @@ jobs:
         with:
           go-version-file: packages/handler-gltf-scene/go.mod
 
+      # Needed to execute the wasm test binary (see the wasm test step below).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Vet
         run: go vet -mod=mod ./...
 
       - name: Build (native)
         run: go build -mod=mod ./...
 
+      - name: Test (native — subprocess build)
+        run: go test -mod=mod ./...
+
       - name: Build (wasm — Tier B)
         env:
           GOOS: js
           GOARCH: wasm
         run: go build -mod=mod -o /tmp/handler-gltf-scene.wasm .
+
+      # Parity: the same suite that guards the subprocess build runs against the
+      # wasm build, under node, so the two entry points cannot drift.
+      - name: Test (wasm — Tier B)
+        env:
+          GOOS: js
+          GOARCH: wasm
+        run: |
+          # Go ships the wasm exec shim in lib/wasm (1.24+) or misc/wasm (older);
+          # go test picks up go_js_wasm_exec from PATH.
+          export PATH="$PATH:$(go env GOROOT)/lib/wasm:$(go env GOROOT)/misc/wasm"
+          go test -mod=mod ./...

@@ -20,7 +20,7 @@ export type Entity = {
   transform: Transform | null;
 };
 
-type GltfNode = {
+export type GltfNode = {
   name?: string;
   children?: number[];
   mesh?: number;
@@ -29,13 +29,29 @@ type GltfNode = {
   scale?: [number, number, number];
 };
 type GltfScene = { nodes?: number[]; name?: string };
-type GltfDocument = {
+/** A glTF buffer. No `uri` means "the GLB's own BIN chunk"; a `data:` uri is embedded. */
+export type GltfBuffer = { uri?: string; byteLength?: number };
+/** A glTF image. `bufferView` means embedded bytes; a non-`data:` `uri` is a sibling file. */
+export type GltfImage = { uri?: string; bufferView?: number; mimeType?: string; name?: string };
+export type GltfDocument = {
   asset?: { version: string };
   scene?: number;
   scenes?: GltfScene[];
   nodes?: GltfNode[];
+  buffers?: GltfBuffer[];
+  images?: GltfImage[];
+  /** Extensions the file cannot be read without. */
+  extensionsRequired?: string[];
+  /** Extensions the file uses but can be read (degraded) without. */
+  extensionsUsed?: string[];
 };
 
+/**
+ * Build a path segment for an entity id. This is *only* for composing the
+ * outline view's tree paths — never for matching a name against another layer's
+ * name. Matching through slugified names is what #44 retired: see node-index.ts,
+ * which reconciles diff labels to glTF node indices against this same JSON.
+ */
 function slugify(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "node";
 }

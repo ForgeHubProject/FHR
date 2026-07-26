@@ -3,26 +3,55 @@
 // here is reused by other formats' renderers. The only FHR contracts are
 // mount() and StructuredDiff; everything in this file lives inside this one
 // bundle. A different 3D format's renderer is free to draw however it likes.
+//
+// Two views live here, behind one viewport:
+//   * mountModelScene — the real model with the diff painted on (#44)
+//   * mountBoxScene   — a unit box per node, the honest fallback for when the
+//                       real model can't be decoded (always paired with a banner)
+//
+// Requires a DOM + WebGL context (i.e. a real browser). Everything decided
+// *about* the picture — mapping, grammar, framing, budgets — lives in the pure
+// modules this file calls, which are tested headlessly.
 
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { SceneNode } from "./scene-graph.js";
+import type { Overlay } from "./model-overlay.js";
+import { createFlyTo, DEFAULT_FLY_MS } from "./flyto.js";
+import { disposeTree } from "./dispose.js";
 
 type Theme = "light" | "dark";
 
-export type SceneHandle = { dispose(): void };
+export type SceneHandle = {
+  dispose(): void;
+  /**
+   * Frame a named change (the change-list ⇄ 3D wiring in #45 calls this).
+   * Returns false when the name isn't one of the painted changes.
+   */
+  flyToChange?(name: string): boolean;
+  /** Frame every change at once — what the view does on load. */
+  flyToChanges?(): void;
+};
 
 const deg2rad = (d: number): number => (d * Math.PI) / 180;
 
+type Viewport = {
+  scene: THREE.Scene;
+  camera: THREE.PerspectiveCamera;
+  renderer: THREE.WebGLRenderer;
+  controls: OrbitControls;
+  /** Run `cb` once per frame, before the controls update and the draw. */
+  onFrame(cb: (nowMs: number) => void): void;
+  /** Register teardown work to run before the viewport itself is released. */
+  onDispose(cb: () => void): void;
+  dispose(): void;
+};
+
 /**
- * Imperative: mount a three.js scene of the given nodes into `container`. Each
- * node is a unit box placed by its transform and tinted by its change kind;
- * removed nodes render translucent. Lighting is a simple ambient+directional
- * rig — no external HDR, so it stays within the strict CSP both hosts enforce.
- * Returns a handle that stops the animation loop and releases GPU resources.
- * Requires a DOM + WebGL context (i.e. a real browser).
+ * Renderer + camera + controls + lights + grid + the frame loop, with resize
+ * handling and a teardown that actually releases the GPU. Both views share it.
  */
-export function mountScene(container: HTMLElement, nodes: SceneNode[], theme: Theme = "light"): SceneHandle {
+function createViewport(container: HTMLElement, theme: Theme): Viewport {
   const width = container.clientWidth || 640;
   const height = container.clientHeight || 420;
 
@@ -41,17 +70,214 @@ export function mountScene(container: HTMLElement, nodes: SceneNode[], theme: Th
   key.position.set(6, 10, 8);
   scene.add(key);
 
-  scene.add(
-    new THREE.GridHelper(
-      40,
-      40,
-      theme === "dark" ? 0x30363d : 0xd0d7de,
-      theme === "dark" ? 0x21262d : 0xe6edf3,
-    ),
+  const grid = new THREE.GridHelper(
+    40,
+    40,
+    theme === "dark" ? 0x30363d : 0xd0d7de,
+    theme === "dark" ? 0x21262d : 0xe6edf3,
   );
+  scene.add(grid);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+
+  const frameCallbacks: ((nowMs: number) => void)[] = [];
+  const disposeCallbacks: (() => void)[] = [];
+
+  let raf = 0;
+  let alive = true;
+  const tick = (nowMs: number): void => {
+    if (!alive) return;
+    raf = requestAnimationFrame(tick);
+    for (const cb of frameCallbacks) cb(nowMs);
+    controls.update();
+    renderer.render(scene, camera);
+  };
+  raf = requestAnimationFrame(tick);
+
+  // Resize: the container is laid out by the host, so its size can change
+  // without the window's. ResizeObserver catches that; the window listener is
+  // the fallback where the observer isn't available.
+  const resize = (): void => {
+    const w = container.clientWidth || width;
+    const h = container.clientHeight || height;
+    if (w === 0 || h === 0) return;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  };
+  const observer = typeof ResizeObserver === "function" ? new ResizeObserver(() => resize()) : null;
+  observer?.observe(container);
+  globalThis.addEventListener?.("resize", resize);
+
+  return {
+    scene,
+    camera,
+    renderer,
+    controls,
+    onFrame(cb): void {
+      frameCallbacks.push(cb);
+    },
+    onDispose(cb): void {
+      disposeCallbacks.push(cb);
+    },
+    dispose(): void {
+      alive = false;
+      cancelAnimationFrame(raf);
+      observer?.disconnect();
+      globalThis.removeEventListener?.("resize", resize);
+      for (const cb of disposeCallbacks) cb();
+      controls.dispose();
+      disposeTree(grid);
+      renderer.dispose();
+      // Free the WebGL context itself: browsers cap live contexts (~16), and a
+      // reviewer toggling the 3D view repeatedly would otherwise hit the cap and
+      // start losing older canvases.
+      try {
+        renderer.forceContextLoss();
+      } catch {
+        // Not fatal — some environments don't implement the extension.
+      }
+      renderer.domElement.parentNode?.removeChild(renderer.domElement);
+    },
+  };
+}
+
+export type ModelSceneOptions = {
+  overlay: Overlay;
+  theme?: Theme;
+  /** Enable the A/B blink (only meaningful when the base model loaded). */
+  blink?: boolean;
+  /** Fly to the changes once mounted (the reveal on load). Default: on. */
+  flyToChangesOnLoad?: boolean;
+};
+
+/**
+ * Mount the real model with the diff painted on. The overlay is already built
+ * (see model-overlay.ts); this adds the viewport, the A/B blink and the camera
+ * behaviour, and owns teardown of both.
+ */
+export function mountModelScene(container: HTMLElement, options: ModelSceneOptions): SceneHandle {
+  const { overlay } = options;
+  const theme = options.theme ?? "light";
+  const viewport = createViewport(container, theme);
+  viewport.scene.add(overlay.root);
+
+  const flyTo = createFlyTo(viewport.camera, viewport.controls);
+  // Start on the whole model, then move to the changes: the reviewer sees what
+  // they are looking at before the camera closes in on what changed.
+  flyTo.snap(overlay.sceneBox.isEmpty() ? unitBox() : overlay.sceneBox);
+  if (options.flyToChangesOnLoad !== false && !overlay.changeBox.isEmpty()) {
+    flyTo.to(overlay.changeBox, DEFAULT_FLY_MS);
+  }
+  viewport.onFrame((nowMs) => flyTo.update(nowMs));
+  // A flight the reviewer interrupts by grabbing the model must stop, not fight.
+  const onControlStart = (): void => flyTo.cancel();
+  viewport.controls.addEventListener("start", onControlStart);
+
+  // ── A/B blink ───────────────────────────────────────────────────────────────
+  // Both versions are already resident, so the swap is a `visible` toggle and
+  // lands in the very next frame. That matters: the change-blindness literature
+  // is unambiguous that a blank or slow intermediate frame destroys the
+  // detection advantage the blink exists to provide.
+  const canBlink = options.blink === true && overlay.baseSolidGroup !== null;
+  const showBase = (on: boolean): void => {
+    overlay.headGroup.visible = !on;
+    if (overlay.baseGhostGroup) overlay.baseGhostGroup.visible = !on;
+    if (overlay.removedGroup) overlay.removedGroup.visible = !on;
+    if (overlay.movedGroup) overlay.movedGroup.visible = !on;
+    if (overlay.baseSolidGroup) overlay.baseSolidGroup.visible = on;
+  };
+
+  const canvas = viewport.renderer.domElement;
+  if (canBlink) {
+    // Compile both blink states up front, for the same "no slow frame" reason: a
+    // material first seen mid-blink would compile its shader on that frame.
+    showBase(true);
+    try {
+      viewport.renderer.compile(viewport.scene, viewport.camera);
+    } catch {
+      // compile() is an optimisation; a failure here must not break mounting.
+    }
+    showBase(false);
+
+    canvas.tabIndex = 0;
+    canvas.style.outline = "none";
+    const isSpace = (event: KeyboardEvent): boolean => event.code === "Space" || event.key === " ";
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!isSpace(event)) return;
+      event.preventDefault(); // don't scroll the review page
+      if (!event.repeat) showBase(true);
+    };
+    const onKeyUp = (event: KeyboardEvent): void => {
+      if (!isSpace(event)) return;
+      event.preventDefault();
+      showBase(false);
+    };
+    const onPointerDown = (): void => canvas.focus();
+    const onBlur = (): void => showBase(false);
+    canvas.addEventListener("keydown", onKeyDown);
+    canvas.addEventListener("keyup", onKeyUp);
+    canvas.addEventListener("pointerdown", onPointerDown);
+    canvas.addEventListener("blur", onBlur);
+    viewport.onDispose(() => {
+      canvas.removeEventListener("keydown", onKeyDown);
+      canvas.removeEventListener("keyup", onKeyUp);
+      canvas.removeEventListener("pointerdown", onPointerDown);
+      canvas.removeEventListener("blur", onBlur);
+    });
+  }
+
+  const hint = canBlink ? blinkHint(container) : null;
+  viewport.onDispose(() => {
+    viewport.controls.removeEventListener("start", onControlStart);
+    hint?.remove();
+  });
+
+  return {
+    dispose(): void {
+      viewport.dispose();
+      overlay.dispose();
+    },
+    flyToChange(name: string): boolean {
+      const box = overlay.boxByChangeName.get(name);
+      if (!box || box.isEmpty()) return false;
+      flyTo.to(box);
+      return true;
+    },
+    flyToChanges(): void {
+      flyTo.to(overlay.changeBox);
+    },
+  };
+}
+
+/** One-line affordance for the blink; same muted style as the view's status text. */
+function blinkHint(container: HTMLElement): HTMLElement {
+  const hint = container.ownerDocument.createElement("div");
+  hint.style.cssText =
+    "padding:6px 2px 0;font:12px ui-sans-serif,system-ui,sans-serif;color:#8b949e;pointer-events:none";
+  hint.textContent = "Click the view, then hold Space to see the previous version.";
+  container.appendChild(hint);
+  return hint;
+}
+
+function unitBox(): THREE.Box3 {
+  return new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
+}
+
+/**
+ * Fallback view: one unit box per scene node, placed by its transform and tinted
+ * by its change kind (removed boxes translucent). Shown when the real model
+ * can't be decoded — the caller owns the banner that says why.
+ */
+export function mountBoxScene(
+  container: HTMLElement,
+  nodes: SceneNode[],
+  theme: Theme = "light",
+): SceneHandle {
+  const viewport = createViewport(container, theme);
 
   const boxGeom = new THREE.BoxGeometry(1, 1, 1);
-  const materials: THREE.Material[] = [];
   const group = new THREE.Group();
   const bounds = new THREE.Box3();
 
@@ -64,61 +290,28 @@ export function mountScene(container: HTMLElement, nodes: SceneNode[], theme: Th
       transparent: removed,
       opacity: removed ? 0.45 : 1,
     });
-    materials.push(mat);
     const mesh = new THREE.Mesh(boxGeom, mat);
     mesh.position.set(n.position[0], n.position[1], n.position[2]);
-    mesh.rotation.set(deg2rad(n.rotationEulerDeg[0]), deg2rad(n.rotationEulerDeg[1]), deg2rad(n.rotationEulerDeg[2]));
+    mesh.rotation.set(
+      deg2rad(n.rotationEulerDeg[0]),
+      deg2rad(n.rotationEulerDeg[1]),
+      deg2rad(n.rotationEulerDeg[2]),
+    );
     mesh.scale.set(n.scale[0], n.scale[1], n.scale[2]);
     group.add(mesh);
     bounds.expandByObject(mesh);
   }
-  scene.add(group);
+  viewport.scene.add(group);
 
-  // Frame the camera on the content.
-  const center = new THREE.Vector3();
-  const size = new THREE.Vector3(2, 2, 2);
-  if (!bounds.isEmpty()) {
-    bounds.getCenter(center);
-    bounds.getSize(size);
-  }
-  const radius = Math.max(size.x, size.y, size.z, 1);
-  camera.position.set(center.x + radius * 2.2, center.y + radius * 1.8, center.z + radius * 2.2);
-  camera.lookAt(center);
-
-  const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.copy(center);
-  controls.enableDamping = true;
-  controls.update();
-
-  let raf = 0;
-  let alive = true;
-  const tick = (): void => {
-    if (!alive) return;
-    raf = requestAnimationFrame(tick);
-    controls.update();
-    renderer.render(scene, camera);
-  };
-  tick();
-
-  const onResize = (): void => {
-    const w = container.clientWidth || width;
-    const h = container.clientHeight || height;
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-    renderer.setSize(w, h);
-  };
-  globalThis.addEventListener?.("resize", onResize);
+  const flyTo = createFlyTo(viewport.camera, viewport.controls);
+  flyTo.snap(bounds.isEmpty() ? unitBox() : bounds);
+  viewport.onFrame((nowMs) => flyTo.update(nowMs));
 
   return {
-    dispose() {
-      alive = false;
-      cancelAnimationFrame(raf);
-      globalThis.removeEventListener?.("resize", onResize);
-      controls.dispose();
+    dispose(): void {
+      viewport.dispose();
+      disposeTree(group);
       boxGeom.dispose();
-      for (const m of materials) m.dispose();
-      renderer.dispose();
-      renderer.domElement.parentNode?.removeChild(renderer.domElement);
     },
   };
 }

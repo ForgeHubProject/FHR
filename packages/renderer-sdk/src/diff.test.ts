@@ -47,6 +47,51 @@ describe("flattenDiff", () => {
     expect(rows.find((r) => r.path === "n1")?.hasChildren).toBe(true);
     expect(rows.find((r) => r.path === "n0")?.hasChildren).toBe(false);
   });
+
+  // Handlers emit fully-qualified paths ("/"-separated, names percent-escaped for
+  // "%" and "/"), and flattenDiff must carry them through verbatim: a row's path
+  // is the selection key a renderer round-trips against the scene. Composing
+  // paths here instead would guess at a separator the handler already chose.
+  it("preserves the handler's fully-qualified child paths", () => {
+    const fromHandler: StructuredDiff = {
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [
+        {
+          path: "nodes",
+          kind: "modified",
+          label: "nodes",
+          children: [
+            {
+              path: "nodes/Cube.001",
+              kind: "modified",
+              label: "Cube.001",
+              children: [{ path: "nodes/Cube.001/translation", kind: "modified", label: "translation" }],
+            },
+            {
+              path: "nodes/rig%2Fhand",
+              kind: "modified",
+              label: "rig/hand",
+              children: [{ path: "nodes/rig%2Fhand/scale", kind: "modified", label: "scale" }],
+            },
+          ],
+        },
+      ],
+    };
+
+    const rows = flattenDiff(fromHandler);
+    expect(rows.map((r) => r.path)).toEqual([
+      "nodes",
+      "nodes/Cube.001",
+      "nodes/Cube.001/translation",
+      "nodes/rig%2Fhand",
+      "nodes/rig%2Fhand/scale",
+    ]);
+    // Labels stay raw for display, escaping is confined to the path.
+    expect(rows.find((r) => r.path === "nodes/rig%2Fhand")?.label).toBe("rig/hand");
+    // Paths are unique, which is what makes them usable as selection keys.
+    expect(new Set(rows.map((r) => r.path)).size).toBe(rows.length);
+  });
 });
 
 describe("diffSummary", () => {
