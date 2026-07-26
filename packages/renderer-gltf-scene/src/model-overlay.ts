@@ -27,7 +27,18 @@
 // three.js is used here for scene assembly and math only — no renderer, no
 // canvas — so all of it is exercised in the headless tests.
 
-import { Box3, BufferGeometry, Color, Group, Line, LineBasicMaterial, MeshBasicMaterial, Vector3 } from "three";
+import {
+  Box3,
+  BufferGeometry,
+  Color,
+  ConeGeometry,
+  Group,
+  Line,
+  LineBasicMaterial,
+  Mesh,
+  MeshBasicMaterial,
+  Vector3,
+} from "three";
 import type { Material, Object3D } from "three";
 import type { NodeChange } from "./diff-map.js";
 import { hasTransformChange } from "./diff-map.js";
@@ -106,6 +117,13 @@ export type Overlay = {
 const GHOST_BASE_OPACITY = 0.22;
 const REMOVED_OPACITY = 0.5;
 const MOVED_OPACITY = 0.32;
+/** Wireframe lines are thin, so the old pose needs more alpha than a solid would. */
+const MOVED_WIREFRAME_OPACITY = 0.85;
+/** Arrowhead size as a fraction of the travel distance — scales with the move. */
+const ARROWHEAD_LENGTH_RATIO = 0.22;
+const ARROWHEAD_RADIUS_RATIO = 0.08;
+/** ConeGeometry's own axis, the "from" of every arrowhead rotation. */
+const CONE_AXIS = new Vector3(0, 1, 0);
 /** World-space distance below which a "move" is too small to draw an arrow for. */
 const MOTION_EPSILON = 1e-3;
 
@@ -140,13 +158,32 @@ export function buildOverlay(input: OverlayInput): Overlay {
     opacity: REMOVED_OPACITY,
     depthWrite: false,
   });
+  // The old pose is drawn as a WIREFRAME, not a fainter solid.
+  //
+  // Both poses of a moved node are the same shape in the same hue, so the only
+  // thing distinguishing them was opacity — and that cue does not survive
+  // contact with reality. The ghost is unlit (MeshBasicMaterial) while the head
+  // copy is lit and tinted, so at a glancing angle or on a face turned away from
+  // the light the *current* position can read darker than the *previous* one, and
+  // "faded means old" silently inverts. A reviewer then cannot answer the only
+  // question the picture exists to answer: which way did it go.
+  //
+  // Wireframe vs solid is categorical rather than tonal. It cannot invert under
+  // lighting, it survives any camera angle, and it carries no hue information, so
+  // it stays legible for colour-blind viewers — who are exactly the reason this
+  // palette avoids red/green in the first place.
   const movedMaterial = new MeshBasicMaterial({
     color: KIND_COLOR["modified"],
+    wireframe: true,
     transparent: true,
-    opacity: MOVED_OPACITY,
+    opacity: MOVED_WIREFRAME_OPACITY,
     depthWrite: false,
   });
   const motionMaterial = new LineBasicMaterial({ color: KIND_COLOR["modified"] });
+  // Opaque, unlike the wireframe old pose: the head marks where the object
+  // actually is now, and a translucent marker for the current state would put it
+  // back in the same visual register as the thing it distinguishes it from.
+  const arrowheadMaterial = new MeshBasicMaterial({ color: KIND_COLOR["modified"] });
 
   /** Originals we replaced; nothing references them any more, so they must go. */
   const orphaned = new Set<Material>();
@@ -173,6 +210,8 @@ export function buildOverlay(input: OverlayInput): Overlay {
   const paintedHeadMeshes = new Set<Object3D>();
   /** Base nodes that get their own grammar, so the plain ghost skips them. */
   const baseNodesWithOwnGrammar = new Set<number>();
+  /** Base nodes the diff actually names — the only ones the ghost has news about. */
+  const baseNodesInDiff = new Set<number>();
 
   const removedGroup = new Group();
   removedGroup.name = "fhr-removed";
@@ -190,6 +229,7 @@ export function buildOverlay(input: OverlayInput): Overlay {
     if (inHead.ambiguous) noteAmbiguity(change.name, inHead.all.length);
 
     const baseNodeIndex = inBase?.index ?? null;
+    if (baseNodeIndex !== null) baseNodesInDiff.add(baseNodeIndex);
     const headTargets = inHead.index === null ? [] : headObjects.get(inHead.index) ?? [];
     const baseTargets = baseNodeIndex === null ? [] : baseObjects.get(baseNodeIndex) ?? [];
 
@@ -248,6 +288,8 @@ export function buildOverlay(input: OverlayInput): Overlay {
       const to = worldBox(headTargets[0]!).getCenter(new Vector3());
       if (from.distanceTo(to) > MOTION_EPSILON) {
         movedGroup.add(motionVector(from, to, motionMaterial));
+        const head = motionArrowhead(from, to, arrowheadMaterial);
+        if (head) movedGroup.add(head);
         stats.motionVectors++;
       }
     }
@@ -296,9 +338,26 @@ export function buildOverlay(input: OverlayInput): Overlay {
     baseGhostGroup = new Group();
     baseGhostGroup.name = "fhr-base-ghost";
     const ghost = base.gltf.scene.clone(true);
-    // Nodes drawn under their own grammar (removed, moved) are hidden here, so
-    // the same geometry isn't painted twice in two different translucent hues.
-    hideNodes(base.gltf.scene, ghost, baseNodesWithOwnGrammar, baseObjects);
+    // Two exclusions, for two different reasons.
+    //
+    // Nodes drawn under their own grammar (removed, moved) are hidden so the same
+    // geometry isn't painted twice in two different translucent hues.
+    //
+    // Nodes the diff never mentions are hidden because their head counterpart is
+    // identical and sits in exactly the same world position. A translucent copy
+    // laid over an opaque twin conveys nothing — but it does put two coincident
+    // surfaces in the pipeline, and three.js draws transparency after the opaque
+    // pass with `depthWrite` off and an equal-depth test that *passes*, so the
+    // ghost blends over its own twin wherever float depth happens to tie. The
+    // result is faces washing out and winking in and out as the camera moves,
+    // which reads as broken geometry. Unchanged parts are already accounted for:
+    // the head model shows them desaturated, and the blink shows the whole
+    // previous version on demand. The ghost's job is what *differs*.
+    const ghostHidden = new Set<number>(baseNodesWithOwnGrammar);
+    for (const index of baseObjects.keys()) {
+      if (!baseNodesInDiff.has(index)) ghostHidden.add(index);
+    }
+    hideNodes(base.gltf.scene, ghost, ghostHidden, baseObjects);
     for (const mesh of meshesIn(ghost)) {
       (mesh as { material?: Material }).material = ghostBaseMaterial;
       mesh.renderOrder = -1;
@@ -452,6 +511,39 @@ function motionVector(from: Vector3, to: Vector3, material: LineBasicMaterial): 
   line.name = "fhr-motion";
   line.renderOrder = 1;
   return line;
+}
+
+/**
+ * The cone at the destination end of a motion vector.
+ *
+ * A bare segment between two copies of one object states that they are related
+ * but not which came first — the reviewer has to infer direction from the ghost
+ * treatment, which means the arrow adds nothing the ghost didn't already say. A
+ * head makes the reading unambiguous and local: the point sits on the current
+ * position, so "it ended up here" is answered without cross-referencing anything.
+ *
+ * Returned as a separate sibling of the line rather than folded into it, so the
+ * line stays a `Line` whose geometry callers already read.
+ */
+function motionArrowhead(from: Vector3, to: Vector3, material: Material): Mesh | null {
+  const direction = new Vector3().subVectors(to, from);
+  const distance = direction.length();
+  if (distance <= MOTION_EPSILON) return null;
+  direction.divideScalar(distance);
+
+  // Proportional to the travel, so a millimetre nudge doesn't get a cone larger
+  // than the move it describes, and a ten-metre move still gets a visible one.
+  const length = distance * ARROWHEAD_LENGTH_RATIO;
+  const radius = distance * ARROWHEAD_RADIUS_RATIO;
+
+  const cone = new Mesh(new ConeGeometry(radius, length, 12), material);
+  cone.name = "fhr-motion-head";
+  cone.renderOrder = 1;
+  // ConeGeometry points along +Y; aim it down the travel direction and pull it
+  // back by half its length so the tip — not the centre — lands on `to`.
+  cone.quaternion.setFromUnitVectors(CONE_AXIS, direction);
+  cone.position.copy(to).addScaledVector(direction, -length / 2);
+  return cone;
 }
 
 /**
