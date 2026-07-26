@@ -16,11 +16,25 @@ describe("ghost-base size gate", () => {
     expect(allowGhostBase(undefined)).toBe(true);
   });
 
-  it("treats zero, negative and non-finite sizes as no bytes", () => {
-    expect(allowGhostBase(0)).toBe(false);
-    expect(allowGhostBase(-1)).toBe(false);
-    expect(allowGhostBase(Number.NaN)).toBe(false);
-    expect(allowGhostBase(Number.POSITIVE_INFINITY)).toBe(false);
+  // Regression: a host that hasn't filled the size field in sends zero, which is
+  // indistinguishable from a genuinely empty blob. Inferring "no bytes there"
+  // from it silently disabled the ghost overlay, the blink, removed-part ghosts
+  // and old-pose motion vectors against a host serving both versions fine — and
+  // because the skip banner names a size, that case was the only skip with no
+  // banner at all. A meaningless size must mean "try it and report", not "skip".
+  it("allows any size it cannot trust, rather than guessing there are no bytes", () => {
+    expect(allowGhostBase(0)).toBe(true);
+    expect(allowGhostBase(-1)).toBe(true);
+    expect(allowGhostBase(Number.NaN)).toBe(true);
+    expect(allowGhostBase(Number.POSITIVE_INFINITY)).toBe(true);
+  });
+
+  it("refuses only a size it knows to be over the cap", () => {
+    // Every refusal therefore carries a real number, so no skip is ever silent.
+    for (const size of [undefined, 0, -1, Number.NaN, 1024, GHOST_BASE_MAX_BYTES]) {
+      expect(allowGhostBase(size)).toBe(true);
+    }
+    expect(allowGhostBase(GHOST_BASE_MAX_BYTES + 1)).toBe(false);
   });
 
   it("honours a caller-supplied cap", () => {

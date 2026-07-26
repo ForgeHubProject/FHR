@@ -57,6 +57,12 @@ export type OverlayStats = {
   motionVectors: number;
   /** Changed node names that exist in neither file's scene graph. */
   unmatched: number;
+  /**
+   * Changes that could only ever have been drawn from the previous version,
+   * which isn't loaded. Counted apart from `unmatched` because nothing is wrong
+   * with the change list — the geometry is simply not in hand.
+   */
+  needsBase: number;
 };
 
 export type Overlay = {
@@ -146,6 +152,7 @@ export function buildOverlay(input: OverlayInput): Overlay {
     moveGhosts: 0,
     motionVectors: 0,
     unmatched: 0,
+    needsBase: 0,
   };
   const changeBox = new Box3();
   const boxByChangeName = new Map<string, Box3>();
@@ -174,7 +181,12 @@ export function buildOverlay(input: OverlayInput): Overlay {
     const baseTargets = baseNodeIndex === null ? [] : baseObjects.get(baseNodeIndex) ?? [];
 
     if (headTargets.length === 0 && baseTargets.length === 0) {
-      stats.unmatched++;
+      // A removed node exists only in the previous version. When that version
+      // isn't loaded, its absence here says nothing about the change list, and
+      // reporting it as "in neither file" sends a reviewer hunting for a bug in
+      // the handler that produced a perfectly correct diff.
+      if (!base && change.kind === "removed") stats.needsBase++;
+      else stats.unmatched++;
       continue;
     }
 
@@ -280,6 +292,15 @@ export function buildOverlay(input: OverlayInput): Overlay {
     notes.push(
       `${stats.unmatched} changed ${stats.unmatched === 1 ? "node" : "nodes"} in the change list ` +
         `${stats.unmatched === 1 ? "isn't" : "aren't"} in either file's scene graph, so ${stats.unmatched === 1 ? "it isn't" : "they aren't"} highlighted here.`,
+    );
+  }
+
+  if (stats.needsBase > 0) {
+    const one = stats.needsBase === 1;
+    notes.push(
+      `${stats.needsBase} removed ${one ? "node is" : "nodes are"} listed below but ${one ? "isn't" : "aren't"} ` +
+        `drawn here: removed geometry can only come from the previous version, which isn't loaded. ` +
+        `The change list is correct — the model just can't show what is no longer in it.`,
     );
   }
 
