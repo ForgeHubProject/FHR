@@ -8,11 +8,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"math"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -1241,6 +1243,8 @@ func diffMeshes(a, b *gltf.Document) *DiffChange {
 	bMap, bOrder := meshMap(b.Meshes)
 	names := mergeKeyOrder(aOrder, bOrder)
 
+	aSide, bSide := newMeshSide(a), newMeshSide(b)
+
 	var children []DiffChange
 	for _, name := range names {
 		am, inA := aMap[name]
@@ -1258,16 +1262,9 @@ func diffMeshes(a, b *gltf.Document) *DiffChange {
 				Kind: Removed, Before: fmt.Sprintf("%d primitives", len(am.Primitives)),
 			})
 		default:
-			// Vertex-level comparison is deliberately out of scope here; it needs
-			// the shared accessor-compare machinery of issue #43.
-			if len(am.Primitives) != len(bm.Primitives) {
+			if props := diffMeshPrimitives(am, bm, aSide, bSide, path); len(props) > 0 {
 				children = append(children, DiffChange{
-					Path: path, Label: name, Kind: Modified,
-					Children: []DiffChange{{
-						Path: childPath(path, "primitives"), Label: "primitives", Kind: Modified,
-						Before: fmt.Sprintf("%d", len(am.Primitives)),
-						After:  fmt.Sprintf("%d", len(bm.Primitives)),
-					}},
+					Path: path, Label: name, Kind: Modified, Children: props,
 				})
 			}
 		}
@@ -1295,6 +1292,396 @@ func meshName(m *gltf.Mesh, i int) string {
 		return m.Name
 	}
 	return fmt.Sprintf("mesh[%d]", i)
+}
+
+// ── mesh primitives: geometry, metrics, material ──────────────────────────────
+//
+// A mesh used to be compared by name and primitive *count* only, so the single
+// most common edit in a 3D review — sculpting vertices without touching
+// topology — diffed as no change at all, and so did reassigning a primitive to
+// another existing material. Both are compared here.
+//
+// The cost discipline, in the order the checks run:
+//
+//	material   a name lookup; zero byte reads.
+//	geometry   a memory compare of the accessor byte spans. No hashing on the
+//	           unchanged path, which is the overwhelmingly common one, and a
+//	           digest computed only for the streams actually displayed.
+//	vertices   Accessor.Count; zero byte reads.
+//	bounds     Accessor.Min/Max, which glTF *requires* on POSITION; zero
+//	           byte reads.
+//	centroid   the only check that decodes typed vertex data, so it runs
+//	           exclusively for primitives whose POSITION bytes already differ.
+//
+// What is deliberately never emitted is a per-vertex payload: a StructuredDiff
+// carrying 400k displacements is multiple megabytes of JSON, and the change tree
+// is not where that belongs. Booleans and metrics only; the per-vertex deviation
+// heatmap is issue #46, computed renderer-side from the two models it already has.
+
+// meshSide bundles one side of the comparison with the document-wide lookups the
+// primitive compare needs, so the helpers below take two symmetric arguments
+// instead of a widening list of positional ones.
+type meshSide struct {
+	doc *gltf.Document
+	// materialKeys maps a material index to the disambiguated key the materials
+	// collection is diffed under, resolved once per document rather than once per
+	// primitive.
+	materialKeys []string
+}
+
+func newMeshSide(doc *gltf.Document) meshSide {
+	return meshSide{doc: doc, materialKeys: uniqueKeys(doc.Materials, materialName)}
+}
+
+// diffMeshPrimitives compares the primitive lists of one mesh that exists on
+// both sides.
+//
+// glTF primitives carry no identity of their own — they are an ordered array —
+// so they are compared pairwise by index, and a count change is reported as its
+// own row while the overlapping prefix is still compared. Content-based
+// primitive matching, like content-based node matching, belongs with the
+// identity cascade of issue #42.
+func diffMeshPrimitives(am, bm *gltf.Mesh, a, b meshSide, path string) []DiffChange {
+	var changes []DiffChange
+	primitivesPath := childPath(path, "primitives")
+	if len(am.Primitives) != len(bm.Primitives) {
+		changes = append(changes, DiffChange{
+			Path: primitivesPath, Label: "primitives", Kind: Modified,
+			Before: fmt.Sprintf("%d", len(am.Primitives)),
+			After:  fmt.Sprintf("%d", len(bm.Primitives)),
+		})
+	}
+	for i := range min(len(am.Primitives), len(bm.Primitives)) {
+		primPath := childPath(primitivesPath, strconv.Itoa(i))
+		props := diffPrimitive(am.Primitives[i], bm.Primitives[i], a, b, primPath)
+		if len(props) > 0 {
+			changes = append(changes, DiffChange{
+				Path: primPath, Label: fmt.Sprintf("primitive[%d]", i),
+				Kind: Modified, Children: props,
+			})
+		}
+	}
+	return changes
+}
+
+// diffPrimitive compares one primitive across both sides.
+func diffPrimitive(ap, bp *gltf.Primitive, a, b meshSide, path string) []DiffChange {
+	var changes []DiffChange
+	emit := func(segment, before, after string) {
+		changes = append(changes, DiffChange{
+			Path: childPath(path, segment), Label: segment,
+			Kind: Modified, Before: before, After: after,
+		})
+	}
+
+	// Which material a primitive points at. Assigning an object a different
+	// material that already exists in the file changes nothing but this index,
+	// which used to diff as no change whatsoever.
+	if am, bm := a.materialKey(ap.Material), b.materialKey(bp.Material); am != bm {
+		emit("material", am, bm)
+	}
+
+	geometry, positionChanged := diffPrimitiveGeometry(ap, bp, a, b, path)
+	if geometry != nil {
+		changes = append(changes, *geometry)
+	}
+
+	aPos, bPos := positionAccessor(a.doc, ap), positionAccessor(b.doc, bp)
+	if aPos == nil || bPos == nil {
+		return changes
+	}
+	if aPos.Count != bPos.Count {
+		emit("vertices", fmtCount(aPos.Count), fmtCount(bPos.Count)+" ("+fmtSigned(bPos.Count-aPos.Count)+")")
+	}
+	aSize, aOK := primitiveExtent(aPos)
+	bSize, bOK := primitiveExtent(bPos)
+	if aOK && bOK && !nearEq3(aSize, bSize) {
+		emit("bounds", fmtVec3(aSize), fmtVec3(bSize)+" ("+dominantAxisDelta(aSize, bSize)+")")
+	}
+	if positionChanged {
+		if aC, ok := primitiveCentroid(a.doc, aPos); ok {
+			if bC, ok := primitiveCentroid(b.doc, bPos); ok && !nearEq3(aC, bC) {
+				emit("centroid", fmtVec3(aC), fmtVec3(bC)+" (moved "+fmtDistance(aC, bC)+")")
+			}
+		}
+	}
+	return changes
+}
+
+// materialKey names the material an index refers to, using the same
+// disambiguated key the materials collection is diffed under. The *name* and not
+// the array index is deliberate: inserting an unrelated material upstream shifts
+// every index after it, which would report every primitive in the document as
+// reassigned.
+func (s meshSide) materialKey(idx *int) string {
+	if idx == nil {
+		return noMaterial
+	}
+	if *idx < 0 || *idx >= len(s.materialKeys) {
+		return fmt.Sprintf("<dangling material %d>", *idx)
+	}
+	return s.materialKeys[*idx]
+}
+
+const noMaterial = "<none>"
+
+// ── primitive geometry ────────────────────────────────────────────────────────
+
+// leadingAttributes are the vertex semantics reported first, being the ones a
+// reviewer looks for. Every other semantic the primitive carries is compared
+// too, just after these; a fixed list of three would silently ignore an edit to
+// TANGENT or COLOR_0, which is the same class of blind spot this compare exists
+// to remove.
+var leadingAttributes = []string{gltf.POSITION, gltf.NORMAL, gltf.TEXCOORD_0}
+
+// indicesStream names the index buffer in the stream list. It is not an
+// attribute semantic, so it cannot collide with one.
+const indicesStream = "indices"
+
+const (
+	noStream      = "<none>"
+	readable      = "readable"
+	notComparable = "not comparable (external buffer or sparse accessor)"
+)
+
+// diffPrimitiveGeometry compares every vertex stream of a primitive pair. It
+// reports whether POSITION specifically changed, which is what gates the one
+// expensive metric (the centroid).
+func diffPrimitiveGeometry(ap, bp *gltf.Primitive, a, b meshSide, path string) (*DiffChange, bool) {
+	geometryPath := childPath(path, "geometry")
+	var streams []DiffChange
+	var aBlocked, bBlocked, positionChanged bool
+
+	for _, stream := range primitiveStreams(ap, bp) {
+		as := readStream(a.doc, ap, stream)
+		bs := readStream(b.doc, bp, stream)
+		changed := false
+		switch {
+		case !as.present && !bs.present:
+			// Neither side carries this semantic; nothing to compare.
+		case as.present != bs.present:
+			// A stream gained or lost outright — added UVs, stripped tangents.
+			changed = true
+		case !as.readable || !bs.readable:
+			// Bytes we cannot read must never be reported as "unchanged". The row
+			// is emitted whether or not the two descriptors happen to match, so a
+			// document whose geometry lives in an external .bin says so instead of
+			// silently claiming the mesh is untouched.
+			aBlocked = aBlocked || !as.readable
+			bBlocked = bBlocked || !bs.readable
+			changed = true
+		default:
+			changed = !equalStreams(as, bs)
+		}
+		if !changed {
+			continue
+		}
+		if stream == gltf.POSITION {
+			positionChanged = true
+		}
+		streams = append(streams, DiffChange{
+			Path: childPath(geometryPath, stream), Label: stream, Kind: Modified,
+			Before: as.describe(a.doc), After: bs.describe(b.doc),
+		})
+	}
+
+	if len(streams) == 0 {
+		return nil, false
+	}
+	change := &DiffChange{
+		Path: geometryPath, Label: "geometry", Kind: Modified, Children: streams,
+	}
+	// The geometry row's own value reports comparability; its children report
+	// content. It carries no value at all in the ordinary case, where the changed
+	// streams below it are the whole story.
+	if aBlocked || bBlocked {
+		change.Before = comparability(aBlocked)
+		change.After = comparability(bBlocked)
+	}
+	return change, positionChanged
+}
+
+func comparability(blocked bool) string {
+	if blocked {
+		return notComparable
+	}
+	return readable
+}
+
+// primitiveStreams lists the vertex streams to compare for a primitive pair:
+// the union of both sides' attribute semantics — so a semantic present on only
+// one side still participates — with leadingAttributes first, the remainder in
+// name order for a stable report, and the index buffer last.
+func primitiveStreams(ap, bp *gltf.Primitive) []string {
+	present := make(map[string]bool, len(ap.Attributes)+len(bp.Attributes))
+	for _, attrs := range []gltf.PrimitiveAttributes{ap.Attributes, bp.Attributes} {
+		for name := range attrs {
+			present[name] = true
+		}
+	}
+	out := make([]string, 0, len(present)+1)
+	for _, name := range leadingAttributes {
+		if present[name] {
+			out = append(out, name)
+		}
+	}
+	rest := make([]string, 0, len(present))
+	for name := range present {
+		if !slices.Contains(leadingAttributes, name) {
+			rest = append(rest, name)
+		}
+	}
+	slices.Sort(rest)
+	out = append(out, rest...)
+	if ap.Indices != nil || bp.Indices != nil {
+		out = append(out, indicesStream)
+	}
+	return out
+}
+
+// streamState is one side's view of one vertex stream. The descriptor is
+// deliberately *not* built here: it hashes the bytes, and the unchanged path
+// must not pay for a value nobody displays.
+type streamState struct {
+	present  bool
+	index    int
+	data     []byte
+	stride   int // bytes between consecutive elements; == elem when tightly packed
+	elem     int // bytes per element
+	count    int
+	readable bool
+}
+
+func readStream(doc *gltf.Document, p *gltf.Primitive, stream string) streamState {
+	idx, ok := primitiveStreamIndex(p, stream)
+	if !ok {
+		return streamState{index: -1}
+	}
+	s := streamState{present: true, index: idx}
+	if idx >= 0 && idx < len(doc.Accessors) {
+		acc := doc.Accessors[idx]
+		s.elem = acc.ComponentType.ByteSize() * acc.Type.Components()
+		s.count = acc.Count
+		s.data, s.stride, s.readable = accessorSpan(doc, acc)
+	}
+	return s
+}
+
+// equalStreams reports whether two vertex streams hold the same values.
+//
+// Tightly packed data — the overwhelmingly common case — is a single memory
+// compare, which is the reason this whole compare is affordable: no hashing, no
+// decoding, no allocation on the unchanged path.
+//
+// Interleaved data has to be compared element by element instead, because an
+// interleaved accessor's byte span *contains its neighbours' bytes*: POSITION at
+// stride 24 and NORMAL at the same view offset 12 overlap everywhere except the
+// first and last element. Comparing those spans whole would report NORMAL as
+// changed every time a position moved, which on an optimiser's output means
+// every stream of every edited primitive. Comparing per element also makes the
+// layout itself irrelevant, so the same vertices packed tightly in one file and
+// interleaved in another compare equal, as they should.
+func equalStreams(a, b streamState) bool {
+	if a.elem != b.elem || a.elem <= 0 {
+		return false
+	}
+	if a.stride == a.elem && b.stride == b.elem {
+		return bytes.Equal(a.data, b.data)
+	}
+	if a.count != b.count {
+		return false
+	}
+	for i := range a.count {
+		av, bv := a.data[i*a.stride:], b.data[i*b.stride:]
+		if !bytes.Equal(av[:a.elem], bv[:b.elem]) {
+			return false
+		}
+	}
+	return true
+}
+
+// describe renders the stream the way animation keyframe streams are rendered —
+// shape plus a content digest, or an explicit <unreadable> marker — so the two
+// halves of the handler report accessor data in one voice.
+func (s streamState) describe(doc *gltf.Document) string {
+	if !s.present {
+		return noStream
+	}
+	return accessorLabel(doc, s.index)
+}
+
+// primitiveStreamIndex resolves a stream name to the accessor index it uses. ok
+// is false when the primitive does not carry that stream; a dangling index is
+// reported as present, and rendered as dangling, rather than as absent.
+func primitiveStreamIndex(p *gltf.Primitive, stream string) (int, bool) {
+	if stream == indicesStream {
+		if p.Indices == nil {
+			return 0, false
+		}
+		return *p.Indices, true
+	}
+	idx, ok := p.Attributes[stream]
+	return idx, ok
+}
+
+func positionAccessor(doc *gltf.Document, p *gltf.Primitive) *gltf.Accessor {
+	idx, ok := p.Attributes[gltf.POSITION]
+	if !ok || idx < 0 || idx >= len(doc.Accessors) {
+		return nil
+	}
+	return doc.Accessors[idx]
+}
+
+// primitiveExtent returns the size of a primitive's axis-aligned bounding box,
+// in Blender space, for free: glTF *requires* min/max on a POSITION accessor, so
+// this reads no vertex bytes at all. Files that omit them anyway report !ok and
+// the bounds row is simply not emitted — the geometry row above it already says
+// whether the vertices changed.
+//
+// Extents are unsigned, so converting them to Blender space only reorders the
+// axes; the sign flip that blenderTranslation applies to a position would be
+// wrong here.
+func primitiveExtent(acc *gltf.Accessor) ([3]float64, bool) {
+	if len(acc.Min) < 3 || len(acc.Max) < 3 {
+		return [3]float64{}, false
+	}
+	var size [3]float64
+	for i := range 3 {
+		size[i] = acc.Max[i] - acc.Min[i]
+	}
+	return blenderScale(size), true
+}
+
+// primitiveCentroid averages a primitive's vertex positions, in Blender space —
+// the cheapest single number that answers "did the shape move, or only change
+// shape". It is the one metric that decodes typed vertex data, so callers run it
+// only for primitives already known to have changed POSITION bytes.
+//
+// It decodes in place from the accessor's own span rather than materialising a
+// slice of vectors, and reports !ok rather than guessing whenever the data is
+// not plain little-endian float32 VEC3: an unreadable buffer, or positions
+// quantized by KHR_mesh_quantization.
+func primitiveCentroid(doc *gltf.Document, acc *gltf.Accessor) ([3]float64, bool) {
+	if acc.Count == 0 || acc.ComponentType != gltf.ComponentFloat || acc.Type != gltf.AccessorVec3 {
+		return [3]float64{}, false
+	}
+	data, stride, ok := accessorSpan(doc, acc)
+	if !ok {
+		return [3]float64{}, false
+	}
+	const elem = 3 * 4 // VEC3 of float32; glTF buffers are little-endian by spec.
+	var sum [3]float64
+	for i := range acc.Count {
+		v := data[i*stride:]
+		if len(v) < elem {
+			return [3]float64{}, false
+		}
+		sum[0] += float64(math.Float32frombits(binary.LittleEndian.Uint32(v[0:4])))
+		sum[1] += float64(math.Float32frombits(binary.LittleEndian.Uint32(v[4:8])))
+		sum[2] += float64(math.Float32frombits(binary.LittleEndian.Uint32(v[8:12])))
+	}
+	n := float64(acc.Count)
+	return blenderTranslation([3]float64{sum[0] / n, sum[1] / n, sum[2] / n}), true
 }
 
 // ── animations ────────────────────────────────────────────────────────────────
@@ -1463,15 +1850,30 @@ func accessorLabel(doc *gltf.Document, idx int) string {
 // external URI with no filesystem to read it from) report !ok; the caller then
 // reports the accessor's shape without a hash rather than guessing at equality.
 func accessorBytes(doc *gltf.Document, acc *gltf.Accessor) ([]byte, bool) {
+	data, _, ok := accessorSpan(doc, acc)
+	return data, ok
+}
+
+// accessorSpan is accessorBytes plus the stride between consecutive elements:
+// the element size for tightly packed data, and BufferView.ByteStride when the
+// attribute is interleaved with others in one buffer view. Callers that only
+// compare bytes ignore the stride; callers that decode typed values need it to
+// step over the neighbouring attributes.
+//
+// The span length is stride×(count−1) + element size, not count×element size:
+// the naive product under-reads interleaved data by the trailing padding of the
+// last element and over-reads nothing, so it can miss an edit to the final
+// vertex entirely.
+func accessorSpan(doc *gltf.Document, acc *gltf.Accessor) ([]byte, int, bool) {
 	if acc.BufferView == nil || acc.Sparse != nil {
-		return nil, false
+		return nil, 0, false
 	}
 	if *acc.BufferView < 0 || *acc.BufferView >= len(doc.BufferViews) {
-		return nil, false
+		return nil, 0, false
 	}
 	bv := doc.BufferViews[*acc.BufferView]
 	if bv.Buffer < 0 || bv.Buffer >= len(doc.Buffers) {
-		return nil, false
+		return nil, 0, false
 	}
 	data := doc.Buffers[bv.Buffer].Data
 	elem := acc.ComponentType.ByteSize() * acc.Type.Components()
@@ -1485,12 +1887,12 @@ func accessorBytes(doc *gltf.Document, acc *gltf.Accessor) ([]byte, bool) {
 	}
 	start := bv.ByteOffset + acc.ByteOffset
 	if elem <= 0 || length < 0 || start < 0 || start+length > len(data) {
-		return nil, false
+		return nil, 0, false
 	}
 	if bv.ByteLength > 0 && acc.ByteOffset+length > bv.ByteLength {
-		return nil, false
+		return nil, 0, false
 	}
-	return data[start : start+length], true
+	return data[start : start+length], stride, true
 }
 
 // bufferViewBytes returns a buffer view's bytes, used to hash images stored in
@@ -1616,6 +2018,63 @@ func fmtVec3(v [3]float64) string {
 
 func fmtVec4(v [4]float64) string {
 	return fmt.Sprintf("[%s %s %s %s]", fmtF(v[0]), fmtF(v[1]), fmtF(v[2]), fmtF(v[3]))
+}
+
+// fmtCount groups a count in thousands. Vertex counts run to six and seven
+// digits, where an ungrouped run of digits is genuinely hard to compare against
+// the one next to it.
+func fmtCount(n int) string {
+	digits := strconv.Itoa(n)
+	sign := ""
+	if strings.HasPrefix(digits, "-") {
+		sign, digits = "-", digits[1:]
+	}
+	var b strings.Builder
+	b.Grow(len(digits) + len(digits)/3 + 1)
+	for i := range len(digits) {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte(digits[i])
+	}
+	return sign + b.String()
+}
+
+// fmtSigned renders a delta with an explicit sign, so "+624" reads as a gain
+// without the reader having to compare the two numbers themselves.
+func fmtSigned(n int) string {
+	if n >= 0 {
+		return "+" + fmtCount(n)
+	}
+	return fmtCount(n)
+}
+
+// dominantAxisDelta names the axis that moved most between two vectors, e.g.
+// "+0.15 Y" — the one fact a reviewer wants from a bounding-box change.
+func dominantAxisDelta(before, after [3]float64) string {
+	axes := [3]string{"X", "Y", "Z"}
+	best := 0
+	for i := 1; i < 3; i++ {
+		if math.Abs(after[i]-before[i]) > math.Abs(after[best]-before[best]) {
+			best = i
+		}
+	}
+	d := after[best] - before[best]
+	sign := ""
+	if d >= 0 {
+		sign = "+"
+	}
+	return sign + fmtF(d) + " " + axes[best]
+}
+
+// fmtDistance formats a distance between two points. It carries one more decimal
+// than fmtF because it is the only value here that is meaningful at a scale
+// finer than the dimensions around it: a centroid shift of a few millimetres on
+// a metre-scale model is a real edit, and fmtF's two decimals would print it as
+// "0.00".
+func fmtDistance(a, b [3]float64) string {
+	d := math.Sqrt((b[0]-a[0])*(b[0]-a[0]) + (b[1]-a[1])*(b[1]-a[1]) + (b[2]-a[2])*(b[2]-a[2]))
+	return strconv.FormatFloat(d, 'f', 3, 64)
 }
 
 func ptrLabel(p *int, prefix string) string {
