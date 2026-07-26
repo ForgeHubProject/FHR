@@ -1,5 +1,6 @@
 import { defineRenderer, renderDiffTree } from "@fhr/renderer-sdk";
 import type { MountProps } from "@fhr/types";
+import { changeTreeCss } from "./palette.js";
 
 // Replaced at bundle-build time with the release's short commit SHA (see build.mjs).
 declare const __BUILD__: string;
@@ -40,12 +41,27 @@ export default defineRenderer({
     }
     // diff + merge render the change tree; diff additionally offers the scene.
     renderDiffTree(container, props);
+    applyPalette(container);
     if (props.mode === "diff") {
       return attachView3DToggle(container, props);
     }
     return;
   },
 });
+
+/**
+ * Recolour the SDK's change tree with this renderer's colour-blind-safe palette,
+ * so a change is the same colour in the tree and in the 3D scene. The SDK's own
+ * stylesheet ships GitHub's red/green — the worst possible pair for deuteranopia
+ * — and lives inside the tree it just rendered, so appending this after it wins
+ * the cascade at equal specificity. Pure CSS text: no three.js reaches the lite
+ * bundle through it.
+ */
+function applyPalette(container: HTMLElement): void {
+  const style = container.ownerDocument.createElement("style");
+  style.textContent = changeTreeCss();
+  container.appendChild(style);
+}
 
 // Load + mount the 3D scene into a host under `container`. Returns a cleanup
 // that disposes the scene even if it finishes loading after teardown.
