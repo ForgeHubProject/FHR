@@ -29,6 +29,13 @@ export type GltfNode = {
   scale?: [number, number, number];
 };
 type GltfScene = { nodes?: number[]; name?: string };
+/**
+ * One drawable of a mesh. `material` indexes the document's material array; a
+ * primitive with no material uses glTF's default and belongs to no material key.
+ */
+export type GltfPrimitive = { material?: number };
+export type GltfMesh = { name?: string; primitives?: GltfPrimitive[] };
+export type GltfMaterial = { name?: string };
 /** A glTF buffer. No `uri` means "the GLB's own BIN chunk"; a `data:` uri is embedded. */
 export type GltfBuffer = { uri?: string; byteLength?: number };
 /** A glTF image. `bufferView` means embedded bytes; a non-`data:` `uri` is a sibling file. */
@@ -38,6 +45,8 @@ export type GltfDocument = {
   scene?: number;
   scenes?: GltfScene[];
   nodes?: GltfNode[];
+  meshes?: GltfMesh[];
+  materials?: GltfMaterial[];
   buffers?: GltfBuffer[];
   images?: GltfImage[];
   /** Extensions the file cannot be read without. */

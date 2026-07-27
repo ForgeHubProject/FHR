@@ -14,7 +14,13 @@
 
 import type { MountProps } from "@fhr/types";
 import { decodeGltf, parseGltf, type GltfDocument } from "./gltf-parse.js";
-import { diffChangeTypes, nodeChanges } from "./diff-map.js";
+import {
+  animationChanges,
+  diffChangeTypes,
+  materialChanges,
+  meshChanges,
+  nodeChanges,
+} from "./diff-map.js";
 import { buildSceneGraph } from "./scene-graph.js";
 import { buildNameIndex } from "./node-index.js";
 import { buildOverlay, type LoadedSide } from "./model-overlay.js";
@@ -131,8 +137,25 @@ export async function mount3d(
 
   const base = await loadBase(props, banners);
   const changes = nodeChanges(props.diff);
-  keys = selectionKeys(changes);
-  const overlay = buildOverlay({ head, base, changes, theme });
+  const meshes = meshChanges(props.diff);
+  const materials = materialChanges(props.diff);
+  // Mesh and material rows are selection targets too, now that they resolve to
+  // geometry: registering them here is what lets clicking one fly the camera,
+  // closing the dead end #52 shipped with.
+  keys = selectionKeys([...changes, ...meshes, ...materials]);
+  // Meshes and materials reach the model indirectly, and animations not at all.
+  // All three are passed in: the first two to be painted through the geometry
+  // that carries them, the third only to be counted, so a diff whose whole
+  // content is unpaintable says so instead of rendering as an unchanged model.
+  const overlay = buildOverlay({
+    head,
+    base,
+    changes,
+    meshes,
+    materials,
+    unpaintable: animationChanges(props.diff),
+    theme,
+  });
   for (const message of overlay.notes) banners.add(message);
   const textureNote = textureFailureMessage(failedResources);
   if (textureNote) banners.add(textureNote);

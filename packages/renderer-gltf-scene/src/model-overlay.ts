@@ -40,11 +40,17 @@ import {
   Vector3,
 } from "three";
 import type { Material, Object3D } from "three";
-import type { NodeChange } from "./diff-map.js";
+import type { EntityChange, NodeChange } from "./diff-map.js";
 import { hasTransformChange } from "./diff-map.js";
 import { KIND_COLOR, NEUTRAL } from "./palette.js";
 import { meshesIn, nodeIndexOfObject, objectsByNodeIndex, type AssociatedGltf } from "./associations.js";
-import { ambiguousNameMessage, resolveNodeIndex, type NameIndex } from "./node-index.js";
+import {
+  ambiguousNameMessage,
+  resolveMaterialPrimitives,
+  resolveMeshNodes,
+  resolveNodeIndex,
+  type NameIndex,
+} from "./node-index.js";
 import { disposeTree, type DisposeReport } from "./dispose.js";
 
 export type Theme = "light" | "dark";
@@ -57,6 +63,16 @@ export type OverlayInput = {
   /** The previous version, when it was available and small enough to load. */
   base?: LoadedSide | null;
   changes: NodeChange[];
+  /** Changes against `meshes` — painted through the nodes instancing each mesh. */
+  meshes?: EntityChange[];
+  /** Changes against `materials` — painted through the primitives using each. */
+  materials?: EntityChange[];
+  /**
+   * Changes this view has no way to draw at all (animations today). Not painted,
+   * only counted, so the banner can say they exist rather than letting the model
+   * imply nothing happened.
+   */
+  unpaintable?: EntityChange[];
   theme?: Theme;
 };
 
@@ -74,6 +90,12 @@ export type OverlayStats = {
    * with the change list — the geometry is simply not in hand.
    */
   needsBase: number;
+  /**
+   * Changes the model cannot show: an animation edit, a mesh no node instances, a
+   * material no primitive references. Counted so the view can say so — a diff
+   * with real content that paints nothing must not look like an unchanged file.
+   */
+  unpaintable: number;
 };
 
 export type Overlay = {
@@ -201,6 +223,7 @@ export function buildOverlay(input: OverlayInput): Overlay {
     motionVectors: 0,
     unmatched: 0,
     needsBase: 0,
+    unpaintable: 0,
   };
   const changeBox = new Box3();
   const boxByChangeName = new Map<string, Box3>();
@@ -307,6 +330,87 @@ export function buildOverlay(input: OverlayInput): Overlay {
     }
   }
 
+  /**
+   * Paint some of a node's primitives and record the result under `name`.
+   *
+   * `ordinals` empty means every primitive of the node. GLTFLoader emits one Mesh
+   * per primitive in primitive order, so an ordinal indexes straight into the
+   * node's meshes; an ordinal past the end is a diff describing a primitive this
+   * file doesn't have, which is skipped rather than thrown.
+   */
+  const paintNodePrimitives = (
+    nodeIndex: number,
+    ordinals: readonly number[],
+    kind: string,
+    name: string,
+  ): Object3D[] => {
+    const color = KIND_COLOR[kind] ?? NEUTRAL;
+    const hit: Object3D[] = [];
+    for (const target of headObjects.get(nodeIndex) ?? []) {
+      const primitives = meshesIn(target);
+      const chosen = ordinals.length === 0 ? primitives : ordinals.map((o) => primitives[o]);
+      for (const mesh of chosen) {
+        if (!mesh) continue;
+        replaceMaterial(mesh, (material) => tint(material, color, tintCache), orphaned);
+        paintedHeadMeshes.add(mesh);
+        stats.tinted++;
+        hit.push(mesh);
+      }
+      if (!changeNameByNodeIndex.has(nodeIndex)) changeNameByNodeIndex.set(nodeIndex, name);
+    }
+    return hit;
+  };
+
+  const recordEntityPaint = (change: EntityChange, painted: Object3D[]): void => {
+    if (painted.length === 0) {
+      // The key resolved to nothing this file draws — an unreferenced mesh, a
+      // material no primitive uses. Counted so the banner can own it.
+      stats.unpaintable++;
+      return;
+    }
+    const box = new Box3();
+    for (const object of painted) box.union(worldBox(object));
+    if (!box.isEmpty()) {
+      changeBox.union(box);
+      boxByChangeName.set(change.name, box);
+    }
+    objectsByChangeName.set(change.name, painted);
+    for (const object of painted) changeNameByObject.set(object, change.name);
+  };
+
+  // A mesh is drawn once per node instancing it, so one geometry edit can have
+  // several places on screen — four wheels sharing one WheelMesh is the ordinary
+  // case, and painting just the first would be a lie about where the change is.
+  for (const change of input.meshes ?? []) {
+    const painted: Object3D[] = [];
+    for (const nodeIndex of resolveMeshNodes(head.index, change.name)) {
+      painted.push(...paintNodePrimitives(nodeIndex, change.primitives, change.kind, change.name));
+    }
+    recordEntityPaint(change, painted);
+  }
+
+  // A material reaches geometry only through the primitives referencing it, so
+  // this paints those primitives and not the nodes that merely contain them: a
+  // recoloured trim material on one primitive of a ten-primitive mesh lights up
+  // the trim, not the whole part.
+  for (const change of input.materials ?? []) {
+    const painted: Object3D[] = [];
+    const byNode = new Map<number, number[]>();
+    for (const ref of resolveMaterialPrimitives(head.index, change.name)) {
+      const list = byNode.get(ref.node);
+      if (list) list.push(ref.primitive);
+      else byNode.set(ref.node, [ref.primitive]);
+    }
+    for (const [nodeIndex, ordinals] of byNode) {
+      painted.push(...paintNodePrimitives(nodeIndex, ordinals, change.kind, change.name));
+    }
+    recordEntityPaint(change, painted);
+  }
+
+  // Changes with no representation on a static model at all. Never painted, only
+  // counted — the alternative is a view that looks like an unchanged file.
+  stats.unpaintable += (input.unpaintable ?? []).length;
+
   const paintApplied = stats.tinted > 0 || stats.removedGhosts > 0 || stats.moveGhosts > 0;
 
   // Quiet everything the diff didn't touch — but only once something *is* loud,
@@ -370,6 +474,15 @@ export function buildOverlay(input: OverlayInput): Overlay {
     notes.push(
       `${stats.unmatched} changed ${stats.unmatched === 1 ? "node" : "nodes"} in the change list ` +
         `${stats.unmatched === 1 ? "isn't" : "aren't"} in either file's scene graph, so ${stats.unmatched === 1 ? "it isn't" : "they aren't"} highlighted here.`,
+    );
+  }
+
+  if (stats.unpaintable > 0) {
+    const one = stats.unpaintable === 1;
+    notes.push(
+      `${stats.unpaintable} ${one ? "change" : "changes"} in the list ${one ? "has" : "have"} no place on the ` +
+        `model — an animation edit, or geometry nothing in the scene draws. ${one ? "It is" : "They are"} ` +
+        `listed but not highlighted here.`,
     );
   }
 
