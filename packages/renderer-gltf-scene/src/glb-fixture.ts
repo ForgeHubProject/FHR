@@ -19,6 +19,16 @@ export type FixtureSpec = {
   sceneNodes?: number[];
   /** Primitives on mesh 0 (>1 makes the loader build a Group of Meshes). */
   primitives?: number;
+  /** Name of mesh 0. Default "Tri". */
+  meshName?: string;
+  /** Material names, in document order. Default a single "Mat". */
+  materialNames?: string[];
+  /**
+   * Material index per primitive of mesh 0, so a material can cover some
+   * primitives and not others — the case that separates "paint the primitives
+   * using this material" from "paint the node containing one of them".
+   */
+  primitiveMaterials?: number[];
   extensionsRequired?: string[];
   extensionsUsed?: string[];
   /** Point buffer 0 at a sibling file instead of embedding it. */
@@ -43,18 +53,22 @@ export function buildGltf(spec: FixtureSpec = {}): Fixture {
 
   const bin = new Uint8Array(TRIANGLE.buffer.slice(0));
   const primitiveCount = spec.primitives ?? 1;
-  const primitives = Array.from({ length: primitiveCount }, () => ({
+  const primitives = Array.from({ length: primitiveCount }, (_, i) => ({
     attributes: { POSITION: 0 },
-    material: 0,
+    material: spec.primitiveMaterials?.[i] ?? 0,
   }));
+  const materialNames = spec.materialNames ?? ["Mat"];
 
   const json: Record<string, unknown> = {
     asset: { version: "2.0", generator: "fhr test fixture" },
     scene: 0,
     scenes: [{ name: spec.sceneName ?? "Scene", nodes: sceneNodes }],
     nodes,
-    meshes: [{ name: "Tri", primitives }],
-    materials: [{ name: "Mat", pbrMetallicRoughness: { baseColorFactor: [0.8, 0.8, 0.8, 1] } }],
+    meshes: [{ name: spec.meshName ?? "Tri", primitives }],
+    materials: materialNames.map((name) => ({
+      name,
+      pbrMetallicRoughness: { baseColorFactor: [0.8, 0.8, 0.8, 1] },
+    })),
     accessors: [
       { bufferView: 0, componentType: 5126, count: 3, type: "VEC3", min: [0, 0, 0], max: [1, 1, 0] },
     ],

@@ -40,6 +40,13 @@ export function normalizeName(name: string): string {
   return name.replace(/[[\]().:/\\ _\-]+/g, "").toLowerCase();
 }
 
+/**
+ * One drawable: the node that places it in the world, and which of that node's
+ * primitives it is. GLTFLoader emits one `Mesh` per primitive, in primitive
+ * order, so the ordinal indexes straight into `meshesIn(nodeObject)`.
+ */
+export type PrimitiveRef = { node: number; primitive: number };
+
 export type NameIndex = {
   /** Display key → node indices, document order. */
   byKey: Map<string, number[]>;
@@ -47,6 +54,20 @@ export type NameIndex = {
   byNormalized: Map<string, number[]>;
   /** Node count, so callers can sanity-check an index. */
   nodeCount: number;
+  /**
+   * Mesh key → the nodes instancing it. One-to-many in the direction that
+   * matters: four wheel nodes can share one `WheelMesh`, so a single mesh edit
+   * has four places on screen and painting one of them would be a lie.
+   */
+  meshToNodes: Map<string, number[]>;
+  meshToNodesNormalized: Map<string, number[]>;
+  /**
+   * Material key → the primitives that reference it. Materials reach geometry
+   * only through primitives, and a material on one primitive of a multi-primitive
+   * mesh must paint that primitive alone — not the whole node containing it.
+   */
+  materialToPrimitives: Map<string, PrimitiveRef[]>;
+  materialToPrimitivesNormalized: Map<string, PrimitiveRef[]>;
 };
 
 /** How a label was resolved to a node index. */
@@ -67,7 +88,27 @@ export type Resolution = {
 
 const MISS: Resolution = { index: null, all: [], via: "none", ambiguous: false };
 
-/** Index a document's nodes by display key and by normalised key. */
+/**
+ * Disambiguate a list of names exactly the way the handler does, so a key the
+ * diff emits is a key this file can look up. Duplicates take an ordinal suffix
+ * (`Wheel`, `Wheel#1`, …) and the loop keeps going, so a name that literally
+ * contains `#1` can't collide its way into someone else's slot.
+ */
+function uniqueKeys<T>(items: readonly T[], name: (item: T, index: number) => string): string[] {
+  const taken = new Set<string>();
+  return items.map((item, i) => {
+    const base = name(item, i);
+    let key = base;
+    for (let dup = 1; taken.has(key); dup++) key = `${base}#${dup}`;
+    taken.add(key);
+    return key;
+  });
+}
+
+const fallbackName = (kind: string) => (item: { name?: string } | undefined, i: number) =>
+  item?.name && item.name !== "" ? item.name : `${kind}[${i}]`;
+
+/** Index a document's nodes, meshes and materials by display and normalised key. */
 export function buildNameIndex(doc: GltfDocument): NameIndex {
   const nodes = doc.nodes ?? [];
   const byKey = new Map<string, number[]>();
@@ -77,7 +118,69 @@ export function buildNameIndex(doc: GltfDocument): NameIndex {
     push(byKey, key, i);
     push(byNormalized, normalizeName(key), i);
   }
-  return { byKey, byNormalized, nodeCount: nodes.length };
+
+  const meshes = doc.meshes ?? [];
+  const materials = doc.materials ?? [];
+  const meshKeys = uniqueKeys(meshes, fallbackName("mesh"));
+  const materialKeys = uniqueKeys(materials, fallbackName("material"));
+
+  const meshToNodes = new Map<string, number[]>();
+  const meshToNodesNormalized = new Map<string, number[]>();
+  const materialToPrimitives = new Map<string, PrimitiveRef[]>();
+  const materialToPrimitivesNormalized = new Map<string, PrimitiveRef[]>();
+
+  // Walk nodes, not meshes: a mesh nobody instances has no place on screen, and
+  // the whole point of these maps is "where would I paint this".
+  for (let node = 0; node < nodes.length; node++) {
+    const meshIndex = nodes[node]?.mesh;
+    if (meshIndex === undefined) continue;
+    const meshKey = meshKeys[meshIndex];
+    if (meshKey === undefined) continue; // dangling mesh reference — degrade, don't throw
+    push(meshToNodes, meshKey, node);
+    push(meshToNodesNormalized, normalizeName(meshKey), node);
+
+    const primitives = meshes[meshIndex]?.primitives ?? [];
+    for (let primitive = 0; primitive < primitives.length; primitive++) {
+      const materialIndex = primitives[primitive]?.material;
+      if (materialIndex === undefined) continue; // glTF's default material has no key
+      const materialKey = materialKeys[materialIndex];
+      if (materialKey === undefined) continue;
+      pushRef(materialToPrimitives, materialKey, { node, primitive });
+      pushRef(materialToPrimitivesNormalized, normalizeName(materialKey), { node, primitive });
+    }
+  }
+
+  return {
+    byKey,
+    byNormalized,
+    nodeCount: nodes.length,
+    meshToNodes,
+    meshToNodesNormalized,
+    materialToPrimitives,
+    materialToPrimitivesNormalized,
+  };
+}
+
+function pushRef(map: Map<string, PrimitiveRef[]>, key: string, value: PrimitiveRef): void {
+  const existing = map.get(key);
+  if (existing) existing.push(value);
+  else map.set(key, [value]);
+}
+
+/** Nodes instancing the mesh a diff label names; empty when nothing does. */
+export function resolveMeshNodes(index: NameIndex, label: string): number[] {
+  if (label === "") return [];
+  return index.meshToNodes.get(label) ?? index.meshToNodesNormalized.get(normalizeName(label)) ?? [];
+}
+
+/** Primitives referencing the material a diff label names; empty when none do. */
+export function resolveMaterialPrimitives(index: NameIndex, label: string): PrimitiveRef[] {
+  if (label === "") return [];
+  return (
+    index.materialToPrimitives.get(label) ??
+    index.materialToPrimitivesNormalized.get(normalizeName(label)) ??
+    []
+  );
 }
 
 function push(map: Map<string, number[]>, key: string, value: number): void {
