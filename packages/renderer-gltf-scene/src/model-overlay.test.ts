@@ -583,3 +583,106 @@ describe("the maps a click resolves through", () => {
     ).toBe("Mirror");
   });
 });
+
+// #51: a mesh is drawn once per node instancing it, and a material reaches
+// geometry only through the primitives referencing it. Before this, both classes
+// of change were detected, listed, formatted and headlined — and highlighted
+// nowhere, which made a real diff look like an unchanged model.
+describe("meshes and materials, painted through the geometry that carries them", () => {
+  const entity = (name: string, kind: NodeChange["kind"] = "modified", primitives: number[] = []) => ({
+    name,
+    kind,
+    fields: [],
+    path: `meshes/${name}`,
+    primitives,
+  });
+
+  it("paints every node instancing a changed mesh, not just the first", async () => {
+    const head = await side({
+      nodes: [
+        { name: "Wheel_FL", mesh: 0, translation: [0, 0, 0] },
+        { name: "Wheel_FR", mesh: 0, translation: [3, 0, 0] },
+        { name: "Wheel_RL", mesh: 0, translation: [0, 0, 3] },
+      ],
+      meshName: "WheelMesh",
+    });
+    const overlay = buildOverlay({ head, changes: [], meshes: [entity("WheelMesh")] });
+
+    expect(overlay.stats.tinted).toBe(3);
+    expect(overlay.objectsByChangeName.get("WheelMesh")).toHaveLength(3);
+    // The framing box spans all three, so the camera doesn't fly to one wheel.
+    const box = overlay.boxByChangeName.get("WheelMesh")!;
+    expect(box.max.x - box.min.x).toBeGreaterThan(3);
+  });
+
+  it("paints only the primitives using a changed material", async () => {
+    const head = await side({
+      nodes: [{ name: "Part", mesh: 0 }],
+      primitives: 3,
+      materialNames: ["Body", "Trim"],
+      primitiveMaterials: [0, 1, 0],
+    });
+    const overlay = buildOverlay({
+      head,
+      changes: [],
+      materials: [{ ...entity("Trim"), path: "materials/Trim" }],
+    });
+    // Trim is on one primitive of three: the trim lights up, not the whole part.
+    expect(overlay.stats.tinted).toBe(1);
+    expect(overlay.objectsByChangeName.get("Trim")).toHaveLength(1);
+  });
+
+  it("narrows a mesh change to the primitive ordinal it names", async () => {
+    const head = await side({ nodes: [{ name: "Part", mesh: 0 }], primitives: 3 });
+    const overlay = buildOverlay({ head, changes: [], meshes: [entity("Tri", "modified", [1])] });
+    expect(overlay.stats.tinted).toBe(1);
+  });
+
+  it("quiets the rest of the model once a mesh change paints", async () => {
+    const head = await side({
+      nodes: [
+        { name: "Body", mesh: 0 },
+        { name: "Trim", mesh: 0 },
+      ],
+    });
+    // Regression: with nothing paintable the quieting pass is skipped and the
+    // model renders in authored colours, so a real diff looked untouched.
+    const overlay = buildOverlay({ head, changes: [], meshes: [entity("Tri")] });
+    expect(overlay.stats.tinted).toBeGreaterThan(0);
+    expect(overlay.stats.desaturated).toBe(0); // both nodes instance the changed mesh
+  });
+
+  it("counts and explains a change with nowhere to go, instead of staying silent", async () => {
+    const head = await side({ nodes: [{ name: "Part", mesh: 0 }] });
+    const overlay = buildOverlay({
+      head,
+      changes: [],
+      materials: [{ ...entity("Ghostly"), path: "materials/Ghostly" }],
+      unpaintable: [{ ...entity("Spin"), path: "animations/Spin" }],
+    });
+    expect(overlay.stats.unpaintable).toBe(2); // unreferenced material + animation
+    expect(overlay.stats.tinted).toBe(0);
+    expect(overlay.notes.join(" ")).toContain("no place on the model");
+  });
+
+  it("does not throw on a mesh nothing instances", async () => {
+    const head = await side({ nodes: [{ name: "Part", mesh: 0 }] });
+    expect(() => buildOverlay({ head, changes: [], meshes: [entity("Absent")] })).not.toThrow();
+  });
+
+  it("merges a node's own change with one on the mesh it instances", async () => {
+    const head = await side({ nodes: [{ name: "Body", mesh: 0, translation: [2, 0, 0] }] });
+    const base = await side({ nodes: [{ name: "Body", mesh: 0 }] });
+    const overlay = buildOverlay({
+      head,
+      base,
+      changes: [change("Body", "modified", ["translation"])],
+      meshes: [entity("Tri")],
+    });
+    // Both are reported: the node moved and its geometry changed.
+    expect(overlay.stats.moveGhosts).toBe(1);
+    expect(overlay.objectsByChangeName.has("Body")).toBe(true);
+    expect(overlay.objectsByChangeName.has("Tri")).toBe(true);
+    expect(overlay.stats.unpaintable).toBe(0);
+  });
+});

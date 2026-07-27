@@ -26,6 +26,9 @@ const NODE_PREFIX = `${NODES}/`;
 /** A node-level path: exactly one (escaped) segment below the collection. */
 const NODE_PATH = /^nodes\/[^/]+$/;
 
+/** Primitive ordinals named anywhere under an entity change. */
+const PRIMITIVE_SEGMENT = /\/primitives\/(\d+)(?:\/|$)/;
+
 /** Node fields that move geometry in space, as the handler labels them. */
 export const TRANSFORM_FIELDS: readonly string[] = ["translation", "rotation", "scale"];
 
@@ -98,6 +101,106 @@ export function nodeChanges(diff: StructuredDiff | undefined): NodeChange[] {
   };
 
   // A nil Go slice marshals to JSON null, so `changes` may be null over the wire.
+  walk(diff.changes ?? []);
+  return out;
+}
+
+/**
+ * A change against a collection other than `nodes` — a mesh or a material.
+ *
+ * These reach the screen indirectly. A mesh is drawn once per node instancing it;
+ * a material is drawn once per primitive referencing it. Resolving either to
+ * something paintable is `node-index.ts`'s job, so all this carries is the key to
+ * resolve and which primitives, if any, the change narrowed itself to.
+ */
+export type EntityChange = {
+  /** The entity's key as the diff names it (handler's `uniqueKeys` output). */
+  name: string;
+  kind: ChangeKind;
+  fields: string[];
+  path: string;
+  /**
+   * Primitive ordinals named under this change. Empty means the change wasn't
+   * specific about one, so it applies to the whole entity — the difference
+   * between "primitive 2's material was reassigned" and "this mesh changed".
+   */
+  primitives: number[];
+};
+
+/** Changes against the `meshes` collection, in diff order. */
+export function meshChanges(diff: StructuredDiff | undefined): EntityChange[] {
+  return collectionChanges(diff, "meshes");
+}
+
+/** Changes against the `materials` collection, in diff order. */
+export function materialChanges(diff: StructuredDiff | undefined): EntityChange[] {
+  return collectionChanges(diff, "materials");
+}
+
+/**
+ * Changes against `animations`. Nothing paints these — an animation has no single
+ * resting place on a static model — but they still have to be *counted*, so the
+ * view can say it isn't showing them instead of looking like an unchanged file.
+ */
+export function animationChanges(diff: StructuredDiff | undefined): EntityChange[] {
+  return collectionChanges(diff, "animations");
+}
+
+function collectionChanges(diff: StructuredDiff | undefined, collection: string): EntityChange[] {
+  const out: EntityChange[] = [];
+  const seen = new Map<string, EntityChange>();
+  if (!diff) return out;
+
+  const prefix = `${collection}/`;
+  const entityPath = new RegExp(`^${collection}/[^/]+$`);
+
+  const primitivesUnder = (change: DiffChange): number[] => {
+    const found = new Set<number>();
+    const walkOne = (c: DiffChange): void => {
+      const match = PRIMITIVE_SEGMENT.exec(c.path);
+      if (match) found.add(Number(match[1]));
+      for (const child of c.children ?? []) walkOne(child);
+    };
+    walkOne(change);
+    return [...found].sort((a, b) => a - b);
+  };
+
+  const collect = (change: DiffChange): void => {
+    const name =
+      change.label !== undefined && change.label !== ""
+        ? change.label
+        : entityPath.test(change.path)
+          ? unescapeSegment(change.path.slice(prefix.length))
+          : "";
+    if (name === "") return;
+    const fields = (change.children ?? []).map(fieldNameOf).filter((f) => f !== "");
+    const primitives = primitivesUnder(change);
+    const existing = seen.get(name);
+    if (existing) {
+      for (const f of fields) if (!existing.fields.includes(f)) existing.fields.push(f);
+      for (const p of primitives) if (!existing.primitives.includes(p)) existing.primitives.push(p);
+      existing.primitives.sort((a, b) => a - b);
+      return;
+    }
+    const entry: EntityChange = { name, kind: change.kind, fields, path: change.path, primitives };
+    seen.set(name, entry);
+    out.push(entry);
+  };
+
+  const walk = (changes: DiffChange[]): void => {
+    for (const change of changes) {
+      if (change.path === collection || change.path.endsWith(`/${collection}`)) {
+        for (const child of change.children ?? []) collect(child);
+        continue;
+      }
+      if (entityPath.test(change.path)) {
+        collect(change);
+        continue;
+      }
+      if (change.children?.length) walk(change.children);
+    }
+  };
+
   walk(diff.changes ?? []);
   return out;
 }
