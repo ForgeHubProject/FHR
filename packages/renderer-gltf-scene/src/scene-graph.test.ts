@@ -3,11 +3,11 @@ import type { ChangeKind } from "@fhr/types";
 import { buildSceneGraph, KIND_COLOR, NEUTRAL } from "./scene-graph.js";
 import type { Entity } from "./gltf-parse.js";
 
-function entity(name: string, position?: [number, number, number]): Entity {
+function entity(name: string, position?: [number, number, number], parent: string | null = null): Entity {
   return {
     id: name,
     entityId: name,
-    parentEntityId: null,
+    parentEntityId: parent,
     kind: "part",
     name,
     path: name,
@@ -51,5 +51,31 @@ describe("buildSceneGraph", () => {
     expect(withT!.position).toEqual([1, 2, 3]);
     expect(withT!.scale).toEqual([1, 1, 1]);
     expect(withoutT!.position).toEqual([0, 0, 0]); // no transform → origin
+  });
+
+  it("resolves a depth per node, so a flat list renders as a tree", () => {
+    // parseGltf emits parents before children, which is what makes one forward
+    // pass enough — the structure region indents off this.
+    const nodes = buildSceneGraph(
+      [
+        entity("Car"),
+        entity("Axle", undefined, "Car"),
+        entity("Wheel_FL", undefined, "Axle"),
+        entity("Roof", undefined, "Car"),
+      ],
+      new Map(),
+    );
+    expect(nodes.map((n) => [n.name, n.depth])).toEqual([
+      ["Car", 0],
+      ["Axle", 1],
+      ["Wheel_FL", 2],
+      ["Roof", 1],
+    ]);
+    expect(nodes.map((n) => n.id)).toEqual(["Car", "Axle", "Wheel_FL", "Roof"]);
+  });
+
+  it("treats an unresolvable parent as a root rather than as depth -1", () => {
+    const [orphan] = buildSceneGraph([entity("Stray", undefined, "Missing")], new Map());
+    expect(orphan!.depth).toBe(0);
   });
 });
