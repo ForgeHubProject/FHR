@@ -29,7 +29,8 @@ import {
 } from "@fhr/renderer-sdk";
 import type { MountProps } from "@fhr/types";
 import { changeTreeCss } from "./palette.js";
-import { entityStops, formatGltfChange, headlines } from "./review.js";
+import { entityStops, formatGltfChange, headline, headlines } from "./review.js";
+import { buildQueue, type QueueEntry } from "./queue.js";
 
 /** Where a selection came from — what the fan-out must skip. */
 export type SelectSource = "viewer" | "scene" | "host";
@@ -42,10 +43,18 @@ export type Scene3D = {
 };
 
 export type SceneHooks = {
-  /** The viewer clicked geometry (null: clicked something with no change on it). */
+  /** The viewer picked a change in the 3D view (null: picked nothing). */
   onPick?: (path: string | null) => void;
   /** Path → one-line summary, for the single viewport callout. */
   headlines?: Record<string, string>;
+  /**
+   * The review worklist for the 3D view's change-queue region. Formatted here,
+   * where the SDK's formatting rules already live, so the 3D chunk renders a
+   * worklist rather than re-interpreting a diff (see queue.ts).
+   */
+  queue?: QueueEntry[];
+  /** The queue's ‹ / › asked for the next (+1) or previous (-1) change. */
+  onStep?: (delta: number) => void;
 };
 
 /** Mounts the 3D scene. Async because in production it is a lazy chunk import. */
@@ -98,6 +107,7 @@ export function createLiveView(
   const stopList: ReviewStop[] = props.mode === "view" ? [] : entityStops(props.diff);
   const stops = stopList.map((s) => s.row.path);
   const lines = headlines(stopList);
+  const queue = buildQueue(stopList, formatGltfChange, headline);
 
   const view: LiveView = {
     update(next: MountProps, prev: MountProps): boolean {
@@ -207,7 +217,10 @@ export function createLiveView(
     }
     sceneLoading = true;
     button.textContent = "Loading…";
-    host.style.cssText = "width:100%;height:420px;margin-top:8px;border-radius:8px;overflow:hidden";
+    // Taller than the bare viewport used to be: the 3D view now carries its own
+    // three-region chrome, and at 420px the regions fold away on a host page that
+    // is otherwise wide enough for them.
+    host.style.cssText = "width:100%;height:560px;margin-top:8px;border-radius:8px;overflow:hidden";
     void attachScene(host).then((ok) => {
       button.textContent = ok ? "Hide 3D" : "View in 3D";
     });
@@ -226,6 +239,10 @@ export function createLiveView(
     try {
       const handle = await mountScene(host, props, {
         headlines: lines,
+        queue,
+        onStep: (delta) => {
+          if (!disposed) view.step(delta);
+        },
         onPick: (path) => {
           if (disposed) return;
           view.select(path, "scene");

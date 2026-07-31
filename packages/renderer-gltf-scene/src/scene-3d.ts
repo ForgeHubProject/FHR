@@ -5,13 +5,21 @@
 // bundle. A different 3D format's renderer is free to draw however it likes.
 //
 // Two views live here, behind one viewport:
-//   * mountModelScene — the real model with the diff painted on (#44)
+//   * mountModelScene — the real model with the diff painted on (#44), in
+//                       whichever presentation the reviewer picked (#56)
 //   * mountBoxScene   — a unit box per node, the honest fallback for when the
 //                       real model can't be decoded (always paired with a banner)
 //
+// The presentations are not separate views. One scene, one camera rig, one
+// canvas: a mode switch changes which groups are visible and, for side-by-side,
+// how many scissored passes the frame takes. Nothing is torn down, which is what
+// makes "switching presentation must not cost the reviewer their place" true by
+// construction rather than by careful restoration.
+//
 // Requires a DOM + WebGL context (i.e. a real browser). Everything decided
-// *about* the picture — mapping, grammar, framing, budgets — lives in the pure
-// modules this file calls, which are tested headlessly.
+// *about* the picture — mapping, grammar, framing, budgets, the split geometry,
+// the mode ladder — lives in the pure modules this file calls, which are tested
+// headlessly.
 
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -22,8 +30,17 @@ import { disposeTree } from "./dispose.js";
 import { createIsolator } from "./isolate.js";
 import { createCallout, projectToScreen } from "./callout.js";
 import { changeAtHits, isClickGesture, ndcFromPointer } from "./pick.js";
+import { withPaneAspect } from "./camera-sync.js";
+import { splitPanes, type Pane, type PaneSide, type SplitOrientation } from "./split.js";
+import type { PresentationMode } from "./presentation.js";
 
 type Theme = "light" | "dark";
+
+/** What a pane's label says. The reviewer must never have to infer which is which. */
+const SIDE_LABEL: Record<PaneSide, string> = {
+  base: "Previous version",
+  head: "Current version",
+};
 
 export type SceneHandle = {
   dispose(): void;
@@ -41,6 +58,15 @@ export type SceneHandle = {
    * Returns false when the name isn't one of the painted changes.
    */
   selectChange?(name: string | null, options?: { fly?: boolean }): boolean;
+  /**
+   * Frame a node of the *current* version by name, changed or not — what the
+   * structure tree asks for. Returns false when this file has no such node.
+   */
+  frameNode?(name: string): boolean;
+  /** Switch presentation. No-op for a scene with only one (the fallbacks). */
+  setMode?(mode: PresentationMode): void;
+  /** Change which way side-by-side cuts the canvas. */
+  setSplit?(orientation: SplitOrientation): void;
 };
 
 const deg2rad = (d: number): number => (d * Math.PI) / 180;
@@ -52,6 +78,13 @@ type Viewport = {
   controls: OrbitControls;
   /** Run `cb` once per frame, before the controls update and the draw. */
   onFrame(cb: (nowMs: number) => void): void;
+  /**
+   * Replace the per-frame draw — side-by-side takes two scissored passes where
+   * every other mode takes one. null restores the single full-canvas render.
+   */
+  setDraw(draw: (() => void) | null): void;
+  /** The canvas size in CSS pixels: what the split geometry is computed against. */
+  size(): { width: number; height: number };
   /** Register teardown work to run before the viewport itself is released. */
   onDispose(cb: () => void): void;
   dispose(): void;
@@ -93,6 +126,8 @@ function createViewport(container: HTMLElement, theme: Theme): Viewport {
 
   const frameCallbacks: ((nowMs: number) => void)[] = [];
   const disposeCallbacks: (() => void)[] = [];
+  const size = { width, height };
+  let draw: (() => void) | null = null;
 
   let raf = 0;
   let alive = true;
@@ -101,7 +136,8 @@ function createViewport(container: HTMLElement, theme: Theme): Viewport {
     raf = requestAnimationFrame(tick);
     for (const cb of frameCallbacks) cb(nowMs);
     controls.update();
-    renderer.render(scene, camera);
+    if (draw) draw();
+    else renderer.render(scene, camera);
   };
   raf = requestAnimationFrame(tick);
 
@@ -109,9 +145,11 @@ function createViewport(container: HTMLElement, theme: Theme): Viewport {
   // without the window's. ResizeObserver catches that; the window listener is
   // the fallback where the observer isn't available.
   const resize = (): void => {
-    const w = container.clientWidth || width;
-    const h = container.clientHeight || height;
+    const w = container.clientWidth || size.width;
+    const h = container.clientHeight || size.height;
     if (w === 0 || h === 0) return;
+    size.width = w;
+    size.height = h;
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
@@ -127,6 +165,12 @@ function createViewport(container: HTMLElement, theme: Theme): Viewport {
     controls,
     onFrame(cb): void {
       frameCallbacks.push(cb);
+    },
+    setDraw(next): void {
+      draw = next;
+    },
+    size(): { width: number; height: number } {
+      return { width: size.width, height: size.height };
     },
     onDispose(cb): void {
       disposeCallbacks.push(cb);
@@ -156,6 +200,10 @@ function createViewport(container: HTMLElement, theme: Theme): Viewport {
 export type ModelSceneOptions = {
   overlay: Overlay;
   theme?: Theme;
+  /** Presentation to open on (presentation.ts). Default: structural. */
+  mode?: PresentationMode;
+  /** Which way side-by-side cuts the canvas. Default: columns. */
+  split?: SplitOrientation;
   /** Enable the A/B blink (only meaningful when the base model loaded). */
   blink?: boolean;
   /** Fly to the changes once mounted (the reveal on load). Default: on. */
@@ -193,31 +241,60 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
   const onControlStart = (): void => flyTo.cancel();
   viewport.controls.addEventListener("start", onControlStart);
 
+  // ── presentation ────────────────────────────────────────────────────────────
+  // Every mode is the same scene with a different set of groups visible, plus —
+  // for side-by-side only — a second scissored pass. Nothing is built or torn
+  // down on a switch, so the camera, the selection and the region layout all
+  // survive it without anything having to remember to restore them.
+  let mode: PresentationMode = options.mode ?? "structural";
+  let split: SplitOrientation = options.split ?? "columns";
+  let blinking = false;
+
+  /**
+   * Show exactly one version.
+   *
+   * `grammar` is what separates a single-viewport mode from a side-by-side pane.
+   * With it, the current version carries the whole diff grammar — the ghosts of
+   * what was removed, the old poses of what moved, and (in overlay) the entire
+   * previous version underneath. Without it, a pane shows one version and only
+   * that version, which is the promise its label makes.
+   */
+  const showVersion = (side: PaneSide, grammar: boolean): void => {
+    const head = side === "head";
+    overlay.headGroup.visible = head;
+    if (overlay.baseSolidGroup) overlay.baseSolidGroup.visible = !head;
+    if (overlay.baseGhostGroup) overlay.baseGhostGroup.visible = head && grammar && mode === "overlay";
+    if (overlay.removedGroup) overlay.removedGroup.visible = head && grammar;
+    if (overlay.movedGroup) overlay.movedGroup.visible = head && grammar;
+  };
+
   // ── A/B blink ───────────────────────────────────────────────────────────────
   // Both versions are already resident, so the swap is a `visible` toggle and
   // lands in the very next frame. That matters: the change-blindness literature
   // is unambiguous that a blank or slow intermediate frame destroys the
   // detection advantage the blink exists to provide.
+  //
+  // It works in every mode. In side-by-side it swaps which pane draws which
+  // version, so each pane does the same-pixels A/B the effect depends on — the
+  // one thing side-by-side otherwise cannot give you.
   const canBlink = options.blink === true && overlay.baseSolidGroup !== null;
   const showBase = (on: boolean): void => {
-    overlay.headGroup.visible = !on;
-    if (overlay.baseGhostGroup) overlay.baseGhostGroup.visible = !on;
-    if (overlay.removedGroup) overlay.removedGroup.visible = !on;
-    if (overlay.movedGroup) overlay.movedGroup.visible = !on;
-    if (overlay.baseSolidGroup) overlay.baseSolidGroup.visible = on;
+    blinking = on;
+    if (mode !== "side-by-side") showVersion(on ? "base" : "head", true);
+    // side-by-side reads `blinking` in its own pass, once per frame.
   };
 
   const canvas = viewport.renderer.domElement;
   if (canBlink) {
     // Compile both blink states up front, for the same "no slow frame" reason: a
     // material first seen mid-blink would compile its shader on that frame.
-    showBase(true);
+    showVersion("base", true);
     try {
       viewport.renderer.compile(viewport.scene, viewport.camera);
     } catch {
       // compile() is an optimisation; a failure here must not break mounting.
     }
-    showBase(false);
+    showVersion("head", true);
 
     canvas.tabIndex = 0;
     canvas.style.outline = "none";
@@ -255,42 +332,122 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     skip: overlay.baseSolidGroup ? [overlay.baseSolidGroup] : [],
   });
   const callout = createCallout(container, theme);
-  let selectedBox: THREE.Box3 | null = null;
   const anchor = new THREE.Vector3();
 
-  const clearSelection = (): void => {
-    isolator.clear();
-    callout.hide();
-    selectedBox = null;
+  /** What the viewport is currently pointing at, whatever put it there. */
+  type Marked = {
+    name: string;
+    headline: string;
+    box: THREE.Box3;
+    /** The objects to isolate, or null for something that isn't a change. */
+    isolate: THREE.Object3D[] | null;
+  };
+  let marked: Marked | null = null;
+
+  /**
+   * Re-apply the marking for the current mode. Both affordances are
+   * single-viewport only, for the same underlying reason — they assume there is
+   * one picture:
+   *
+   *   isolation, because two panes showing different amounts of model is not a
+   *   comparison, it is a trick question;
+   *   the callout, because it is placed by projecting a world point into *the*
+   *   viewport, and in a split there are two projections. A label placed by the
+   *   wrong one points confidently at unrelated geometry.
+   *
+   * The queue's panel carries the same numbers, so nothing is lost in the split.
+   */
+  const refreshMark = (): void => {
+    const single = mode !== "side-by-side";
+    if (marked?.isolate && single) isolator.isolate(marked.isolate);
+    else isolator.clear();
+    if (marked && single) callout.show(marked.name, marked.headline);
+    else callout.hide();
+  };
+
+  const mark = (next: Marked | null, fly: boolean): void => {
+    marked = next;
+    refreshMark();
+    if (fly && next) flyTo.to(next.box);
   };
 
   const applySelection = (name: string | null, fly: boolean): boolean => {
     if (name === null) {
-      clearSelection();
+      mark(null, false);
       return true;
     }
     const box = overlay.boxByChangeName.get(name);
     const objects = overlay.objectsByChangeName.get(name);
     if (!box || box.isEmpty() || !objects || objects.length === 0) {
-      clearSelection();
+      mark(null, false);
       return false;
     }
-    isolator.isolate(objects);
-    callout.show(name, options.headlines?.[name] ?? "changed");
-    selectedBox = box;
-    if (fly) flyTo.to(box);
+    mark({ name, headline: options.headlines?.[name] ?? "changed", box, isolate: objects }, fly);
     return true;
   };
 
   // The callout follows the geometry: one projection and two style writes per
-  // frame, and only while something is selected.
+  // frame, and only while something is marked.
   viewport.onFrame(() => {
-    if (!selectedBox || !callout.visible) return;
-    selectedBox.getCenter(anchor);
+    if (!marked || !callout.visible) return;
+    marked.box.getCenter(anchor);
     const width = container.clientWidth || 1;
     const height = container.clientHeight || 1;
     callout.place(projectToScreen(anchor, viewport.camera, { width, height }), { width, height });
   });
+
+  // ── side-by-side ────────────────────────────────────────────────────────────
+  // One renderer, two scissor rects, one camera rig drawn twice (camera-sync.ts
+  // for why that is the whole of "cameras locked"). Both versions are already
+  // resident for the ghost and the blink, so the mode loads nothing.
+  const paneLabels = overlay.baseSolidGroup === null ? null : createPaneLabels(container, theme);
+  let labelKey = "";
+
+  const drawPanes = (): void => {
+    const { renderer, scene, camera } = viewport;
+    const size = viewport.size();
+    const panes = splitPanes(split, size);
+    renderer.setScissorTest(true);
+    for (const pane of panes) {
+      // Holding Space swaps the panes' contents, so each pane compares the two
+      // versions in its own pixels rather than across the gutter.
+      const side: PaneSide = blinking ? (pane.side === "base" ? "head" : "base") : pane.side;
+      showVersion(side, false);
+      renderer.setViewport(pane.gl.x, pane.gl.y, pane.gl.width, pane.gl.height);
+      renderer.setScissor(pane.gl.x, pane.gl.y, pane.gl.width, pane.gl.height);
+      withPaneAspect(camera, pane.aspect, () => renderer.render(scene, camera));
+    }
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, size.width, size.height);
+    placeLabels(panes);
+  };
+
+  /** Move the pane labels, but only when something about them actually changed. */
+  const placeLabels = (panes: Pane[]): void => {
+    if (!paneLabels) return;
+    const key = panes.map((p) => `${p.side}:${p.css.x},${p.css.y},${p.css.width}`).join("|") + (blinking ? "!" : "");
+    if (key === labelKey) return;
+    labelKey = key;
+    panes.forEach((pane, index) => {
+      const side: PaneSide = blinking ? (pane.side === "base" ? "head" : "base") : pane.side;
+      paneLabels.place(index, SIDE_LABEL[side], pane);
+    });
+  };
+
+  /** Make the current `mode` the picture. One place, used by mount and by the toggle. */
+  const applyMode = (): void => {
+    if (mode === "side-by-side") {
+      viewport.setDraw(drawPanes);
+      paneLabels?.show(true);
+    } else {
+      viewport.setDraw(null);
+      paneLabels?.show(false);
+      labelKey = "";
+      showVersion(blinking ? "base" : "head", true);
+    }
+    refreshMark();
+  };
+  applyMode();
 
   // ── picking ─────────────────────────────────────────────────────────────────
   // Pick against the painted layers only: the ghost of the previous version is
@@ -300,6 +457,43 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
   const pickTargets: THREE.Object3D[] = [overlay.headGroup];
   if (overlay.removedGroup) pickTargets.push(overlay.removedGroup);
   if (overlay.movedGroup) pickTargets.push(overlay.movedGroup);
+
+  /**
+   * The rect and camera aspect a click must be turned into a ray with.
+   *
+   * A split canvas holds two projections, so building a ray from the whole
+   * canvas would land it wherever the arithmetic happened to put it — confidently
+   * selecting geometry the reviewer did not click. Each pane is measured on its
+   * own instead, and only the pane showing the *current* version is pickable:
+   * the diff is painted on that model, and the previous version has no change to
+   * select. A click in the gutter, or in the other pane, is not a pick.
+   */
+  const pickTarget = (
+    event: PointerEvent,
+    rect: DOMRect,
+  ): { rect: { left: number; top: number; width: number; height: number }; aspect: number } | null => {
+    if (mode !== "side-by-side") return { rect, aspect: viewport.camera.aspect };
+    // While the blink is held the panes are transposed and only the last one
+    // drawn has its geometry visible, so a pick then would be a coin flip.
+    if (blinking) return null;
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    for (const pane of splitPanes(split, viewport.size())) {
+      if (x < pane.css.x || x >= pane.css.x + pane.css.width) continue;
+      if (y < pane.css.y || y >= pane.css.y + pane.css.height) continue;
+      if (pane.side !== "head") return null;
+      return {
+        rect: {
+          left: rect.left + pane.css.x,
+          top: rect.top + pane.css.y,
+          width: pane.css.width,
+          height: pane.css.height,
+        },
+        aspect: pane.aspect,
+      };
+    }
+    return null;
+  };
 
   let pressed: { x: number; y: number; t: number } | null = null;
   const onPointerDown = (event: PointerEvent): void => {
@@ -311,10 +505,14 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     if (!down) return;
     if (!isClickGesture(down, { x: event.clientX, y: event.clientY, t: nowMs() })) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const ndc = ndcFromPointer(event, rect);
-    raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), viewport.camera);
-    const hits = raycaster.intersectObjects(pickTargets, true);
+    const target = pickTarget(event, canvas.getBoundingClientRect());
+    if (!target) return;
+    const ndc = ndcFromPointer(event, target.rect);
+    let hits: THREE.Intersection[] = [];
+    withPaneAspect(viewport.camera, target.aspect, () => {
+      raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), viewport.camera);
+      hits = raycaster.intersectObjects(pickTargets, true);
+    });
     const name = changeAtHits(hits, {
       changeNameByObject: overlay.changeNameByObject,
       changeNameByNodeIndex: overlay.changeNameByNodeIndex,
@@ -333,6 +531,7 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     canvas.removeEventListener("pointerup", onPointerUp as EventListener);
     callout.dispose();
     isolator.clear();
+    paneLabels?.dispose();
     hint?.remove();
   });
 
@@ -353,6 +552,78 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     selectChange(name: string | null, selectOptions: { fly?: boolean } = {}): boolean {
       return applySelection(name, selectOptions.fly !== false);
     },
+    frameNode(name: string): boolean {
+      // A change first: a node the diff touched should behave exactly as it does
+      // from the queue, or the two regions would disagree about what "selected"
+      // looks like.
+      if (overlay.boxByChangeName.has(name)) return applySelection(name, true);
+      const box = overlay.boxOfNode(name);
+      if (!box) return false;
+      // An unchanged node gets framed and named, and nothing is isolated. What a
+      // *selected* unchanged node should do to the rest of the model — dim it,
+      // leave it — is one of the questions #56 left open; this deliberately does
+      // the least that still answers "which one is that".
+      mark({ name, headline: "not in the change list", box, isolate: null }, true);
+      return true;
+    },
+    setMode(next: PresentationMode): void {
+      if (next === mode) return;
+      mode = next;
+      applyMode();
+    },
+    setSplit(orientation: SplitOrientation): void {
+      if (orientation === split) return;
+      split = orientation;
+      // The next frame re-derives the rects; clearing the key makes the labels
+      // follow rather than stay where the old orientation put them.
+      labelKey = "";
+    },
+  };
+}
+
+type PaneLabels = {
+  show(on: boolean): void;
+  place(index: number, text: string, pane: Pane): void;
+  dispose(): void;
+};
+
+/**
+ * The two "which version is this" captions. DOM over the canvas, like the
+ * callout: crisp at any pixel ratio, no texture memory, and never occluded by
+ * the model. An unlabelled split is a guessing game, and a reviewer who guesses
+ * wrong reads every change backwards.
+ */
+function createPaneLabels(container: HTMLElement, theme: Theme): PaneLabels {
+  const doc = container.ownerDocument;
+  const dark = theme === "dark";
+  const paper = dark ? "rgba(13,17,23,0.82)" : "rgba(255,255,255,0.88)";
+  const ink = dark ? "#e6edf3" : "#1f2328";
+  const els: HTMLElement[] = [0, 1].map(() => {
+    const el = doc.createElement("div");
+    el.style.cssText =
+      `position:absolute;z-index:2;pointer-events:none;display:none;padding:2px 8px;border-radius:6px;` +
+      `background:${paper};color:${ink};font:11px/1.5 ui-sans-serif,system-ui,sans-serif;white-space:nowrap`;
+    container.appendChild(el);
+    return el;
+  });
+  let visible = false;
+
+  return {
+    show(on: boolean): void {
+      visible = on;
+      for (const el of els) el.style.display = on ? "block" : "none";
+    },
+    place(index: number, text: string, pane: Pane): void {
+      const el = els[index];
+      if (!el) return;
+      el.textContent = text;
+      el.style.left = `${pane.css.x + 8}px`;
+      el.style.top = `${pane.css.y + 8}px`;
+      if (visible) el.style.display = "block";
+    },
+    dispose(): void {
+      for (const el of els) el.remove();
+    },
   };
 }
 
@@ -362,12 +633,19 @@ function nowMs(): number {
     : Date.now();
 }
 
-/** One-line affordance for the blink; same muted style as the view's status text. */
+/**
+ * One-line affordance for the blink. Pinned to the bottom of the viewport rather
+ * than laid out under it: the viewport is a region of the chrome now, and a hint
+ * that took vertical space would shrink the picture it is a hint about.
+ */
 function blinkHint(container: HTMLElement): HTMLElement {
   const hint = container.ownerDocument.createElement("div");
   hint.style.cssText =
-    "padding:6px 2px 0;font:12px ui-sans-serif,system-ui,sans-serif;color:#8b949e;pointer-events:none";
-  hint.textContent = "Click the view, then hold Space to see the previous version.";
+    "position:absolute;left:0;right:0;bottom:0;z-index:1;padding:6px 8px;" +
+    "font:12px ui-sans-serif,system-ui,sans-serif;color:#8b949e;pointer-events:none";
+  // Deliberately mode-neutral: in side-by-side, Space swaps the panes rather
+  // than revealing something you couldn't see.
+  hint.textContent = "Click the view, then hold Space to swap the versions.";
   container.appendChild(hint);
   return hint;
 }

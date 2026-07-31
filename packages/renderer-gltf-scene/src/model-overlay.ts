@@ -130,6 +130,14 @@ export type Overlay = {
   changeNameByNodeIndex: Map<number, string>;
   /** The head model's glTF node for an object (associations.ts), or null. */
   nodeIndexOfObject(object: Object3D): number | null;
+  /**
+   * World box of a node of the *current* version by name, whether or not the
+   * diff touched it. `boxByChangeName` only knows about changes; the structure
+   * tree (#56) can reach an unchanged part for context, which is the point of
+   * having it, and framing one needs a box nothing painted. Returns null for a
+   * name this file's scene graph doesn't have.
+   */
+  boxOfNode(name: string): Box3 | null;
   stats: OverlayStats;
   /** Plain-language notes for the banner list (ambiguity, unmatched names). */
   notes: string[];
@@ -511,6 +519,15 @@ export function buildOverlay(input: OverlayInput): Overlay {
     changeNameByObject,
     changeNameByNodeIndex,
     nodeIndexOfObject: (object: Object3D): number | null => nodeIndexOfObject(object, head.gltf),
+    boxOfNode(name: string): Box3 | null {
+      const resolved = resolveNodeIndex(head.index, name);
+      if (resolved.index === null) return null;
+      const targets = headObjects.get(resolved.index) ?? [];
+      if (targets.length === 0) return null;
+      const box = new Box3();
+      for (const target of targets) box.union(worldBox(target));
+      return box.isEmpty() ? null : box;
+    },
     stats,
     notes,
     dispose(): DisposeReport {

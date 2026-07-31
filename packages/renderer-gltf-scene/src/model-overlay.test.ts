@@ -494,6 +494,24 @@ describe("framing boxes", () => {
     const overlay = buildOverlay({ head: await side(TWO_NODES), changes: [] });
     expect(overlay.changeBox.isEmpty()).toBe(true);
   });
+
+  it("frames a node the diff never mentioned, for the structure tree", async () => {
+    // The whole reason the tree is a separate region: a reviewer can reach an
+    // *unchanged* part for context, and framing one needs a box that no painting
+    // pass produced.
+    const overlay = buildOverlay({
+      head: await side(TWO_NODES),
+      changes: [change("Hood", "modified", ["mesh"])],
+    });
+    expect(overlay.boxByChangeName.has("Mirror")).toBe(false);
+    expect(overlay.boxOfNode("Mirror")!.min.x).toBeCloseTo(4);
+    expect(overlay.boxOfNode("Hood")!.min.x).toBeCloseTo(0);
+  });
+
+  it("returns null for a name this file's scene graph doesn't have", async () => {
+    const overlay = buildOverlay({ head: await side(TWO_NODES), changes: [] });
+    expect(overlay.boxOfNode("NotHere")).toBeNull();
+  });
 });
 
 describe("overlay disposal", () => {

@@ -204,6 +204,40 @@ describe("createLiveView — the 3D half", () => {
     });
   });
 
+  it("hands the scene a formatted review queue for its change-queue region", async () => {
+    const { container, mounts } = setup();
+    button(container).fire("click");
+    await settle();
+    const queue = mounts[0]!.hooks.queue!;
+    // The worklist arrives in review order, already formatted: the 3D chunk
+    // renders a queue rather than re-interpreting a diff.
+    expect(queue.map((e) => e.path)).toEqual(["nodes/Wheel_FL", "nodes/Mirror_L", "materials/Paint"]);
+    expect(queue[0]!.headline).toBe("moved 50 mm");
+    expect(queue[0]!.details.map((d) => d.label)).toEqual(["translation"]);
+    expect(queue[1]!.details).toEqual([]);
+  });
+
+  it("steps the review path when the 3D chrome's queue asks it to", async () => {
+    const { container, mounts, view, events } = setup();
+    button(container).fire("click");
+    await settle();
+    mounts[0]!.hooks.onStep!(1);
+    expect(view.selected).toBe("nodes/Wheel_FL");
+    // A step is a viewer action, so it flies the scene and reaches the host.
+    expect(mounts[0]!.selections).toEqual([{ path: "nodes/Wheel_FL", fly: true }]);
+    expect(events).toEqual([{ type: "select", changePath: "nodes/Wheel_FL" }]);
+  });
+
+  it("ignores a step from a scene that outlived the view", async () => {
+    const { container, mounts, view } = setup();
+    button(container).fire("click");
+    await settle();
+    const step = mounts[0]!.hooks.onStep!;
+    view.dispose();
+    step(1);
+    expect(view.selected).toBeNull();
+  });
+
   it("flies the scene to a change selected from the tree", async () => {
     const { container, mounts } = setup();
     button(container).fire("click");

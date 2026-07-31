@@ -21,7 +21,7 @@ import {
   meshChanges,
   nodeChanges,
 } from "./diff-map.js";
-import { buildSceneGraph } from "./scene-graph.js";
+import { buildSceneGraph, type SceneNode } from "./scene-graph.js";
 import { buildNameIndex } from "./node-index.js";
 import { buildOverlay, type LoadedSide } from "./model-overlay.js";
 import { mountBoxScene, mountModelScene, type SceneHandle } from "./scene-3d.js";
@@ -30,6 +30,10 @@ import { preflightGltf, unreadablePreflight, type Preflight } from "./gltf-prefl
 import { createBanners, textureFailureMessage, type BannerList } from "./banner.js";
 import { allowGhostBase, ghostBaseSkippedMessage } from "./limits.js";
 import { emptyKeys, selectionKeys, type SelectionKeys } from "./selection-keys.js";
+import { availableModes, createModeState, defaultMode } from "./presentation.js";
+import { boxSize, defaultSplit, type SplitOrientation } from "./split.js";
+import { createChrome, type Chrome } from "./chrome.js";
+import type { QueueEntry } from "./queue.js";
 
 /**
  * What the lite bundle wires into the scene: the selection round trip (#45).
@@ -42,10 +46,26 @@ import { emptyKeys, selectionKeys, type SelectionKeys } from "./selection-keys.j
  * the handler wrote — so neither half has to re-derive an escaping rule.
  */
 export type SceneHooks = {
-  /** The viewer clicked geometry: the change's path, or null for "nothing". */
+  /**
+   * The viewer picked a change here — by clicking geometry, or from the chrome's
+   * own change queue or structure tree. Null means "nothing". The scene has
+   * already applied the visuals, so the lite half only has to follow.
+   */
   onPick?: (path: string | null) => void;
   /** Change path → the one-line headline its callout shows (see review.ts). */
   headlines?: Record<string, string>;
+  /**
+   * The review worklist for the change-queue region, formatted by the lite half
+   * (queue.ts). Absent or empty means no queue region — "view" mode, or a diff
+   * with nothing in it.
+   */
+  queue?: QueueEntry[];
+  /**
+   * The queue's ‹ / › asked for the next (+1) or previous (-1) change. Reported,
+   * not performed: the live view owns the selection, so a step comes back as a
+   * `selectChange` call and the two never disagree about where the reviewer is.
+   */
+  onStep?: (delta: number) => void;
 };
 
 /**
@@ -73,19 +93,30 @@ export async function mount3d(
   // Filled in once the diff has been read; empty for the fallback views, whose
   // handles have no selection to translate anyway.
   let keys: SelectionKeys = emptyKeys();
+  // Built only for the real-model view (the fallbacks have no viewport chrome to
+  // wrap), and null until then.
+  let chrome: Chrome | null = null;
 
   const withCleanup = (handle: SceneHandle | null): SceneHandle => ({
     dispose(): void {
       handle?.dispose();
+      chrome?.dispose();
       banners.el.remove();
       host.remove();
     },
     flyToChange: handle?.flyToChange?.bind(handle),
     flyToChanges: handle?.flyToChanges?.bind(handle),
     selectChange(path: string | null, options?: { fly?: boolean }): boolean {
+      // The one place a selection from *outside* the 3D view lands — a tree row,
+      // an `n`/`p` step, a host push — so it is also the one place the chrome's
+      // two regions are brought back into agreement with it. The queue is keyed
+      // on whole changes, so a field row ("…/translation") is routed to the stop
+      // that owns it rather than dropping the position readout.
+      const name = path === null ? null : keys.nameOf(path);
+      chrome?.selectChange(name === null ? null : keys.pathOf(name));
+      chrome?.highlightNode(name);
       if (!handle?.selectChange) return false;
       if (path === null) return handle.selectChange(null, options);
-      const name = keys.nameOf(path);
       return name === null ? false : handle.selectChange(name, options);
     },
   });
@@ -160,15 +191,93 @@ export async function mount3d(
   const textureNote = textureFailureMessage(failedResources);
   if (textureNote) banners.add(textureNote);
 
-  return withCleanup(
-    mountModelScene(host, {
-      overlay,
-      theme,
-      blink: overlay.baseSolidGroup !== null,
-      headlines: keys.headlinesByName(hooks.headlines),
-      onPick: (name) => hooks.onPick?.(name === null ? null : keys.pathOf(name)),
-    }),
-  );
+  // ── the three-region chrome ─────────────────────────────────────────────────
+  // The structure tree is `buildSceneGraph`'s output, the same annotated node
+  // list the box-scene fallback draws — promoted here from "what you see when
+  // the model fails to load" to a region that is always there.
+  const structure = structureRows(headDoc, props);
+  const queue = hooks.queue ?? [];
+  // Overlay and side-by-side both need the previous version in hand, so a mount
+  // that couldn't load it offers neither rather than offering an empty toggle.
+  const modes = availableModes({ bothVersionsResident: overlay.baseSolidGroup !== null });
+  const modeState = createModeState({ initial: defaultMode(props.capabilities), available: modes });
+  let split: SplitOrientation = defaultSplit(boxSize(overlay.sceneBox));
+
+  let scene: SceneHandle | null = null;
+  chrome = createChrome(host, {
+    theme,
+    modes,
+    mode: modeState.mode,
+    split,
+    structure,
+    queue,
+    info: viewInfo(structure.length, queue.length, props),
+    onMode: (mode) => {
+      if (!modeState.set(mode)) return;
+      chrome?.setMode(mode);
+      scene?.setMode?.(mode);
+    },
+    onSplit: (orientation) => {
+      split = orientation;
+      chrome?.setSplit(orientation);
+      scene?.setSplit?.(orientation);
+    },
+    onQueueSelect: (path) => {
+      const name = keys.nameOf(path);
+      if (name !== null) scene?.selectChange?.(name);
+      chrome?.selectChange(path);
+      chrome?.highlightNode(name);
+      hooks.onPick?.(path);
+    },
+    onStep: (delta) => hooks.onStep?.(delta),
+    onNode: (name) => {
+      scene?.frameNode?.(name);
+      chrome?.highlightNode(name);
+      // A node the diff touched is a queue selection like any other. One it
+      // didn't leaves the queue where it is — there is nothing for it to show,
+      // and moving the position would lose the reviewer's place in the worklist.
+      if (!overlay.boxByChangeName.has(name)) return;
+      const path = keys.pathOf(name);
+      chrome?.selectChange(path);
+      hooks.onPick?.(path);
+    },
+  });
+
+  scene = mountModelScene(chrome.viewport, {
+    overlay,
+    theme,
+    mode: modeState.mode,
+    split,
+    blink: overlay.baseSolidGroup !== null,
+    headlines: keys.headlinesByName(hooks.headlines),
+    onPick: (name) => {
+      const path = name === null ? null : keys.pathOf(name);
+      chrome?.selectChange(path);
+      chrome?.highlightNode(name);
+      hooks.onPick?.(path);
+    },
+  });
+  return withCleanup(scene);
+}
+
+/** The centre's top-left line: what this view is showing, in two numbers. */
+function viewInfo(nodes: number, changes: number, props: MountProps): string {
+  const parts = [`${nodes} ${nodes === 1 ? "node" : "nodes"}`];
+  if (props.mode !== "view") parts.push(`${changes} ${changes === 1 ? "change" : "changes"}`);
+  return parts.join(" · ");
+}
+
+/**
+ * The structure tree's rows. A file whose scene graph can't be walked still has
+ * a perfectly good model on screen — parseGltf is stricter than the loader — so
+ * this degrades to an empty region rather than failing the mount.
+ */
+function structureRows(doc: GltfDocument, props: MountProps): SceneNode[] {
+  try {
+    return buildSceneGraph(parseGltf(doc), diffChangeTypes(props.diff));
+  } catch {
+    return [];
+  }
 }
 
 /**
