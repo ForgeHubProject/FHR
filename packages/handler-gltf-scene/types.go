@@ -13,6 +13,11 @@ const (
 	Added    ChangeKind = "added"
 	Removed  ChangeKind = "removed"
 	Modified ChangeKind = "modified"
+	// Renamed is one element that kept its identity and changed its name (#47).
+	// Additive: the wire version stays "1.0", and a consumer that has never heard
+	// of this kind is required to carry it through rather than drop it — see the
+	// SDK's countKinds, which counts unknown kinds by design.
+	Renamed ChangeKind = "renamed"
 )
 
 // DiffChange is one semantic unit of change within a StructuredDiff.

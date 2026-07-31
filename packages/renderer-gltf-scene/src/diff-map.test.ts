@@ -154,6 +154,70 @@ describe("transform-change classification (drives the move ghost)", () => {
   });
 });
 
+describe("renamed nodes (#47)", () => {
+  it("keys the change on the head name and carries the base name alongside", () => {
+    const diff = diffOf({
+      path: "nodes/Fender",
+      label: "Fender",
+      kind: "renamed",
+      before: "Cube.003",
+      after: "Fender (matched by content, ~91% similar)",
+      children: [
+        { path: "nodes/Fender/translation", label: "translation", kind: "modified", before: "[0 0 0]", after: "[0 0 1]" },
+      ],
+    });
+    expect(nodeChanges(diff)).toEqual([
+      {
+        name: "Fender",
+        oldName: "Cube.003",
+        kind: "renamed",
+        fields: ["translation"],
+        path: "nodes/Fender",
+      },
+    ]);
+  });
+
+  it("never reads the evidence parenthetical as part of a name", () => {
+    // `after` is the new name plus how the handler matched it; the new name comes
+    // from `label`, so nothing has to parse that string back apart.
+    const diff = diffOf({
+      path: "nodes/Fender",
+      label: "Fender",
+      kind: "renamed",
+      before: "Cube.003",
+      after: "Fender (matched by fhr_uid)",
+    });
+    const [change] = nodeChanges(diff);
+    expect(change!.name).toBe("Fender");
+    expect(change!.oldName).toBe("Cube.003");
+  });
+
+  it("leaves oldName off every other kind", () => {
+    const diff = diffOf(
+      { path: "nodes/Lamp", label: "Lamp", kind: "added", after: "node" },
+      { path: "nodes/Mirror", label: "Mirror", kind: "removed", before: "node" },
+    );
+    for (const change of nodeChanges(diff)) expect(change.oldName).toBeUndefined();
+  });
+
+  it("reports a rename that also moved as a transform change", () => {
+    const diff = diffOf({
+      path: "nodes/Fender",
+      label: "Fender",
+      kind: "renamed",
+      before: "Cube.003",
+      after: "Fender (matched by fhr_uid)",
+      children: [{ path: "nodes/Fender/translation", label: "translation", kind: "modified" }],
+    });
+    const [change] = nodeChanges(diff);
+    // Not "transform only" — the rename is a change in its own right — but the
+    // move grammar still applies, so the overlay draws the old pose and a vector.
+    expect(hasTransformChange(change!)).toBe(true);
+    expect(isTransformOnly(change!)).toBe(false);
+    expect(diffChangeTypes(diff).get("Fender")).toBe("renamed");
+  });
+});
+
 describe("path escaping (handler scheme: %2F for '/', %25 for '%')", () => {
   it("unescapes a slash-bearing name from the path when there is no label", () => {
     const diff: StructuredDiff = {
