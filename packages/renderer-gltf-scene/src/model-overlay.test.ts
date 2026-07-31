@@ -670,6 +670,44 @@ describe("meshes and materials, painted through the geometry that carries them",
     expect(() => buildOverlay({ head, changes: [], meshes: [entity("Absent")] })).not.toThrow();
   });
 
+  it("resolves a renamed node against each file's own name (#47)", async () => {
+    // The head file knows it as Fender and the base file as Cube.003. Looking the
+    // base up under the head's name is how a renamed-and-moved node silently loses
+    // its ghost and its motion vector: nothing in the previous version answers to
+    // the new name.
+    const head = await side({ nodes: [{ name: "Fender", mesh: 0, translation: [6, 0, 0] }] });
+    const base = await side({ nodes: [{ name: "Cube.003", mesh: 0, translation: [0, 0, 0] }] });
+    const overlay = buildOverlay({
+      head,
+      base,
+      changes: [{ ...change("Fender", "renamed", ["translation"]), oldName: "Cube.003" }],
+    });
+
+    expect(overlay.stats.unmatched).toBe(0);
+    expect(overlay.stats.moveGhosts).toBe(1);
+    expect(overlay.stats.motionVectors).toBe(1);
+    // Tinted at the new name, in renamed's own colour — not ghosted as a removal.
+    expect(overlay.stats.removedGhosts).toBe(0);
+    const painted = meshesIn(head.gltf.scene)[0]!;
+    expect(distanceTo(painted, KIND_COLOR["renamed"]!)).toBeLessThan(
+      distanceTo(painted, KIND_COLOR["removed"]!),
+    );
+  });
+
+  it("paints a rename with no transform change like a modification: tint, no ghost", async () => {
+    const head = await side({ nodes: [{ name: "Fender", mesh: 0 }] });
+    const base = await side({ nodes: [{ name: "Cube.003", mesh: 0 }] });
+    const overlay = buildOverlay({
+      head,
+      base,
+      changes: [{ ...change("Fender", "renamed"), oldName: "Cube.003" }],
+    });
+    expect(overlay.stats.tinted).toBe(1);
+    expect(overlay.stats.moveGhosts).toBe(0);
+    expect(overlay.stats.removedGhosts).toBe(0);
+    expect(overlay.objectsByChangeName.has("Fender")).toBe(true);
+  });
+
   it("merges a node's own change with one on the mesh it instances", async () => {
     const head = await side({ nodes: [{ name: "Body", mesh: 0, translation: [2, 0, 0] }] });
     const base = await side({ nodes: [{ name: "Body", mesh: 0 }] });

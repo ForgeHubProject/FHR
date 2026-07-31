@@ -9,12 +9,16 @@
 // inside segments ("%25", "%2F"). `label` always carries the raw display name;
 // the path is the escaped machine key.
 //
-// What this module deliberately does *not* read: the `before`/`after` values.
-// They are display strings in Blender coordinate space ("[1 2 -3]"), so deriving
-// a motion vector from them would mean string-parsing plus a coordinate-space
-// round trip. The renderer has both files loaded, so it takes old and new
-// transforms from the two scene graphs instead — exact, and immune to changes in
-// how the handler formats values.
+// What this module deliberately does *not* read: the `before`/`after` values of
+// a *measured* change. They are display strings in Blender coordinate space
+// ("[1 2 -3]"), so deriving a motion vector from them would mean string-parsing
+// plus a coordinate-space round trip. The renderer has both files loaded, so it
+// takes old and new transforms from the two scene graphs instead — exact, and
+// immune to changes in how the handler formats values.
+//
+// The one exception is a `renamed` change's `before` (#47), which is not a
+// measurement but the node's name in the base file — the only place that name
+// exists, and the only key that finds the node in the previous version.
 
 import type { StructuredDiff, DiffChange, ChangeKind } from "@fhr/types";
 import { unescapeSegment } from "./change-path.js";
@@ -44,6 +48,13 @@ export type NodeChange = {
    * has seen both the name and the path the handler paired it with.
    */
   path: string;
+  /**
+   * For a `renamed` change (#47), the name the *base* file uses for this node.
+   * `name` is always the head file's name, so anything that has to find the node
+   * in the previous version — the ghost, the motion vector — has to look it up
+   * under this one or find nothing at all.
+   */
+  oldName?: string;
 };
 
 /**
@@ -81,6 +92,8 @@ export function nodeChanges(diff: StructuredDiff | undefined): NodeChange[] {
       return;
     }
     const entry: NodeChange = { name, kind: change.kind, fields, path: change.path };
+    const oldName = previousNameOf(change);
+    if (oldName !== undefined) entry.oldName = oldName;
     seen.set(name, entry);
     out.push(entry);
   };
@@ -203,6 +216,17 @@ function collectionChanges(diff: StructuredDiff | undefined, collection: string)
 
   walk(diff.changes ?? []);
   return out;
+}
+
+/**
+ * The previous name carried by a `renamed` change, or undefined for every other
+ * kind. `before` is the bare old name and `after` is the new one *plus* the
+ * evidence the handler matched on ("Fender (matched by content, ~91% similar)"),
+ * so the new name is read from `label` and never parsed back out of `after`.
+ */
+function previousNameOf(change: DiffChange): string | undefined {
+  if (change.kind !== "renamed") return undefined;
+  return typeof change.before === "string" && change.before !== "" ? change.before : undefined;
 }
 
 /** True when a node moved/rotated/scaled and nothing else about it changed. */

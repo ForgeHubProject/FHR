@@ -248,7 +248,10 @@ export function buildOverlay(input: OverlayInput): Overlay {
 
   for (const change of changes) {
     const inHead = resolveNodeIndex(head.index, change.name);
-    const inBase = base ? resolveNodeIndex(base.index, change.name) : null;
+    // A renamed node is called something else in the previous version, so the
+    // base file has to be looked up under the old name — otherwise the ghost and
+    // the motion vector for "renamed and moved" silently find nothing.
+    const inBase = base ? resolveNodeIndex(base.index, change.oldName ?? change.name) : null;
     if (inHead.ambiguous) noteAmbiguity(change.name, inHead.all.length);
 
     const baseNodeIndex = inBase?.index ?? null;
