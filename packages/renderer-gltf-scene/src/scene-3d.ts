@@ -216,7 +216,57 @@ export type ModelSceneOptions = {
   onPick?: (name: string | null) => void;
   /** Change name → the one-line headline its callout shows (see review.ts). */
   headlines?: Record<string, string>;
+  /**
+   * The change that reaches a node through geometry the node does not own — a
+   * mesh several nodes instance, a material one of its primitives references
+   * (#51). Null for a node no change reaches.
+   *
+   * Supplied by the mount rather than derived here: the mount holds the name
+   * index the paint itself resolved through, so the caption over a painted node
+   * and the dot beside its structure-tree row cannot come from two answers.
+   */
+  changeOfNode?: (name: string) => string | null;
 };
+
+/** How framing a structure-tree row should read. */
+export type NodeFraming =
+  /** The diff names this node: behave exactly as the queue does for it. */
+  | { via: "change"; change: string }
+  /** Painted, but through a mesh or a material — the change has another name. */
+  | { via: "entity"; change: string }
+  /** The tree's root row, which is the glTF scene rather than a node. */
+  | { via: "scene" }
+  /** Genuinely untouched: the only case that may say so. */
+  | { via: "none" };
+
+/** The callout line over a node the diff does not reach. */
+export const NOT_IN_CHANGE_LIST = "not in the change list";
+
+/**
+ * What clicking a structure-tree row means, as a decision with no pixels in it.
+ *
+ * Split out because mounting the view needs WebGL and this is the part that can
+ * lie. `boxByChangeName` is keyed on *change* names, and #51's two change
+ * classes are named for a mesh or a material rather than for the node they
+ * paint — so asking that map "is this node in the change list" answers no for
+ * geometry the overlay has just painted orange, and the row that used to caption
+ * it "not in the change list" was contradicting the picture next to it.
+ */
+export function framingForNode(
+  name: string,
+  facts: {
+    isChangeName(name: string): boolean;
+    changeOfNode(name: string): string | null;
+    sceneRootName: string | null;
+  },
+): NodeFraming {
+  if (facts.isChangeName(name)) return { via: "change", change: name };
+  const entity = facts.changeOfNode(name);
+  if (entity !== null) return { via: "entity", change: entity };
+  // The root row must not borrow the unchanged node's headline: "not in the
+  // change list" over a model with changes reads as a claim about the file.
+  return name === facts.sceneRootName ? { via: "scene" } : { via: "none" };
+}
 
 /**
  * Mount the real model with the diff painted on. The overlay is already built
@@ -553,21 +603,37 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
       return applySelection(name, selectOptions.fly !== false);
     },
     frameNode(name: string): boolean {
-      // A change first: a node the diff touched should behave exactly as it does
-      // from the queue, or the two regions would disagree about what "selected"
-      // looks like.
-      if (overlay.boxByChangeName.has(name)) return applySelection(name, true);
+      const framing = framingForNode(name, {
+        isChangeName: (n) => overlay.boxByChangeName.has(n),
+        changeOfNode: options.changeOfNode ?? ((): null => null),
+        sceneRootName: overlay.sceneRootName,
+      });
+      // A node the diff names should behave exactly as it does from the queue,
+      // or the two regions would disagree about what "selected" looks like.
+      if (framing.via === "change") return applySelection(framing.change, true);
       const box = overlay.boxOfNode(name);
       if (!box) return false;
+      if (framing.via === "entity") {
+        // Painted through a mesh or a material: the clicked row's own box is
+        // framed, because one mesh can be instanced by nodes on opposite sides
+        // of the model and the reviewer asked about this one — but the caption
+        // and the isolation come from the change, which is what makes it orange.
+        mark(
+          {
+            name,
+            headline: options.headlines?.[framing.change] ?? "changed",
+            box,
+            isolate: overlay.objectsByChangeName.get(framing.change) ?? null,
+          },
+          true,
+        );
+        return true;
+      }
       // An unchanged node gets framed and named, and nothing is isolated. What a
       // *selected* unchanged node should do to the rest of the model — dim it,
       // leave it — is one of the questions #56 left open; this deliberately does
       // the least that still answers "which one is that".
-      //
-      // The tree's root row is the glTF scene, so it frames the whole model. It
-      // must not borrow the unchanged node's headline: "not in the change list"
-      // over a model with changes reads as a claim about the file.
-      const headline = name === overlay.sceneRootName ? "the whole model" : "not in the change list";
+      const headline = framing.via === "scene" ? "the whole model" : NOT_IN_CHANGE_LIST;
       mark({ name, headline, box, isolate: null }, true);
       return true;
     },
