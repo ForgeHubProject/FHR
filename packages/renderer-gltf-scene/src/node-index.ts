@@ -213,3 +213,18 @@ export function ambiguousNameMessage(label: string, count: number): string {
     `only the first is highlighted.`
   );
 }
+
+/**
+ * The same, for the name a rename left behind (#47). A rename records the bare
+ * old name and nothing more — the previous revision's array index would mean
+ * whatever sits at that number *now* — so when that name was shared, which side
+ * of the pair moved cannot be recovered from the diff. Said out loud, because the
+ * ghost drawn from the wrong twin is otherwise a confident picture of a move that
+ * did not happen.
+ */
+export function ambiguousPreviousNameMessage(label: string, count: number): string {
+  return (
+    `${count} nodes in the previous version are called "${label}", and a rename records only the old name — ` +
+    `so the ghost of where this one stood is drawn from the first of them.`
+  );
+}

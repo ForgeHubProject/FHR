@@ -46,6 +46,7 @@ import { KIND_COLOR, NEUTRAL } from "./palette.js";
 import { meshesIn, nodeIndexOfObject, objectsByNodeIndex, type AssociatedGltf } from "./associations.js";
 import {
   ambiguousNameMessage,
+  ambiguousPreviousNameMessage,
   resolveMaterialPrimitives,
   resolveMeshNodes,
   resolveNodeIndex,
@@ -241,8 +242,7 @@ export function buildOverlay(input: OverlayInput): Overlay {
   const movedGroup = new Group();
   movedGroup.name = "fhr-moved";
 
-  const noteAmbiguity = (name: string, count: number): void => {
-    const message = ambiguousNameMessage(name, count);
+  const note = (message: string): void => {
     if (!notes.includes(message)) notes.push(message);
   };
 
@@ -252,7 +252,10 @@ export function buildOverlay(input: OverlayInput): Overlay {
     // base file has to be looked up under the old name — otherwise the ghost and
     // the motion vector for "renamed and moved" silently find nothing.
     const inBase = base ? resolveNodeIndex(base.index, change.oldName ?? change.name) : null;
-    if (inHead.ambiguous) noteAmbiguity(change.name, inHead.all.length);
+    if (inHead.ambiguous) note(ambiguousNameMessage(change.name, inHead.all.length));
+    if (change.oldName !== undefined && inBase?.ambiguous) {
+      note(ambiguousPreviousNameMessage(change.oldName, inBase.all.length));
+    }
 
     const baseNodeIndex = inBase?.index ?? null;
     if (baseNodeIndex !== null) baseNodesInDiff.add(baseNodeIndex);
@@ -300,7 +303,18 @@ export function buildOverlay(input: OverlayInput): Overlay {
 
     // Moved/rotated/scaled → ghost at the old pose plus a motion vector, so the
     // pair reads as one object that moved rather than as two objects.
-    if (hasTransformChange(change) && baseTargets.length > 0 && headTargets.length > 0) {
+    //
+    // Never for a removal, whose transform rows are what the node *had*, not a
+    // move. It only comes up when the head file has an unrelated node of the same
+    // name — the previous version's "Wheel" was deleted and something else was
+    // renamed to "Wheel" — where the old node would otherwise get an arrow drawn
+    // from where it was to where the stranger that inherited its name now is.
+    if (
+      change.kind !== "removed" &&
+      hasTransformChange(change) &&
+      baseTargets.length > 0 &&
+      headTargets.length > 0
+    ) {
       for (const target of baseTargets) {
         const ghost = ghostCloneAt(target, movedMaterial);
         movedGroup.add(ghost);

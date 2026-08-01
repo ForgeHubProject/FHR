@@ -694,6 +694,66 @@ describe("meshes and materials, painted through the geometry that carries them",
     );
   });
 
+  it("says so when a rename's previous name matched several base nodes (#47)", async () => {
+    // `before` is the bare old name, which is all a rename can carry — an array
+    // index would name whatever sits at that number now. When the previous version
+    // spelled two nodes the same way, the ghost comes from the first of them, and
+    // that guess has to be visible rather than a confident picture of a move.
+    const head = await side({
+      nodes: [
+        { name: "Wheel", mesh: 0, translation: [1, 0, 0] },
+        { name: "Tire", mesh: 0, translation: [5, 0, 0] },
+      ],
+    });
+    const base = await side({
+      nodes: [
+        { name: "Wheel", mesh: 0, translation: [1, 0, 0] },
+        { name: "Wheel", mesh: 0, translation: [2, 0, 0] },
+      ],
+    });
+    const overlay = buildOverlay({
+      head,
+      base,
+      changes: [{ ...change("Tire", "renamed", ["translation"]), oldName: "Wheel" }],
+    });
+
+    expect(overlay.stats.moveGhosts).toBe(1);
+    expect(overlay.stats.motionVectors).toBe(1);
+    expect(overlay.notes.join(" ")).toContain('2 nodes in the previous version are called "Wheel"');
+  });
+
+  it("ghosts a deletion whose name a rename took over (#47)", async () => {
+    // The base file has A and B; the head file has one node, called B, that the
+    // authored id says used to be A. So "B" names two different objects across
+    // the pair: one renamed into it and one deleted out of it. The handler keeps
+    // the two changes on separate paths; the ghost has to come from the deleted
+    // node, and the node that merely inherited the name must not get an arrow
+    // drawn to it from where the dead one used to stand.
+    const head = await side({ nodes: [{ name: "B", mesh: 0, translation: [1, 0, 0] }] });
+    const base = await side({
+      nodes: [
+        { name: "A", mesh: 0, translation: [1, 0, 0] },
+        { name: "B", mesh: 0, translation: [8, 0, 0] },
+      ],
+    });
+    const overlay = buildOverlay({
+      head,
+      base,
+      changes: [
+        { name: "B", kind: "renamed", fields: [], path: "nodes/B", oldName: "A" },
+        { name: "B", kind: "removed", fields: ["translation", "mesh"], path: "nodes/B#1" },
+      ],
+    });
+
+    expect(overlay.stats.removedGhosts).toBe(1);
+    expect(overlay.stats.moveGhosts).toBe(0);
+    expect(overlay.stats.motionVectors).toBe(0);
+    expect(overlay.stats.unmatched).toBe(0);
+    // Ghosted from the node that was actually deleted — base "B", out at x=8.
+    const ghost = overlay.removedGroup!.children[0]!;
+    expect(ghost.matrix.elements[12]).toBeCloseTo(8);
+  });
+
   it("paints a rename with no transform change like a modification: tint, no ghost", async () => {
     const head = await side({ nodes: [{ name: "Fender", mesh: 0 }] });
     const base = await side({ nodes: [{ name: "Cube.003", mesh: 0 }] });
