@@ -548,6 +548,24 @@ func matchByContent(p pairing, base, head []entity) {
 	// cap this is one 8 MB allocation whatever the input does, where the map was
 	// an entry per surviving pair and the hashing that went with it.
 	score := make([]float64, len(leftBase)*len(leftHead))
+	// Each head candidate's own best base row, accumulated as the matrix is filled
+	// — the same walk, so it costs nothing extra.
+	//
+	// The mutual-best pass below needs this answer per row, and re-deriving it
+	// there is a full strided scan of one column per row: O(leftBase²), which the
+	// cap above does not bound. That cap bounds the *product* leftBase×leftHead,
+	// so a revision with one head leftover — 20 000 named parts deleted and one
+	// part added, which is an ordinary re-export, not an exotic input — lets
+	// leftBase reach a million, and with a single column every row trivially has a
+	// forward winner, so the back-check runs unconditionally. Measured at 100 000
+	// nodes that was 45 s native and, compiled to wasm and run in a browser tab,
+	// 46 s at 50 000 — the hung page the cap exists to prevent, arrived at from the
+	// other side. git, whose limit and threshold this borrows, likewise keeps each
+	// destination's best as it fills its matrix and never rescans.
+	cols := make([]bestTracker, len(leftHead))
+	for hj := range cols {
+		cols[hj].best = -1
+	}
 	for bi, si := range baseSig {
 		if !si.specific {
 			continue
@@ -559,6 +577,7 @@ func matchByContent(p pairing, base, head []entity) {
 			}
 			if s := similarity(si, sj); s >= renameThreshold {
 				row[hj] = s
+				cols[hj].add(bi, s)
 			}
 		}
 	}
@@ -572,7 +591,7 @@ func matchByContent(p pairing, base, head []entity) {
 		if !ok {
 			continue
 		}
-		back, _, ok := strictBest(len(leftBase), func(k int) float64 { return score[k*len(leftHead)+hj] })
+		back, _, ok := cols[hj].strict()
 		if !ok || back != bi {
 			continue
 		}
@@ -591,25 +610,48 @@ func signaturesOf(items []entity, which []int) []signature {
 	return out
 }
 
+// bestTracker is strictBest's state, exposed so a caller that already visits the
+// candidates in order — the matrix fill — can answer the same question without a
+// second pass. `best` must start at -1, as strictBest's does, so a tracker that
+// saw no candidate reports no position rather than position zero.
+type bestTracker struct {
+	best      int
+	bestScore float64
+	runnerUp  float64
+	found     bool
+}
+
+// add offers candidate `k`'s score. A score below the threshold is not a
+// candidate at all, and a tie leaves the incumbent in place — which is what makes
+// it stop being a strict winner.
+func (t *bestTracker) add(k int, s float64) {
+	if s < renameThreshold {
+		return
+	}
+	switch {
+	case !t.found || s > t.bestScore:
+		t.runnerUp = t.bestScore
+		t.best, t.bestScore, t.found = k, s, true
+	case s > t.runnerUp:
+		t.runnerUp = s
+	}
+}
+
+// strict returns the winner's position and score, and whether it beat its own
+// runner-up outright.
+func (t *bestTracker) strict() (int, float64, bool) {
+	return t.best, t.bestScore, t.found && t.bestScore > t.runnerUp
+}
+
 // strictBest returns the position of the highest-scoring counterpart among `n`
 // candidates scored by `at`, and whether it is a strict winner. A score below the
 // threshold is not a candidate at all: the matrix stores zero there.
 func strictBest(n int, at func(int) float64) (int, float64, bool) {
-	best, bestScore, runnerUp, found := -1, 0.0, 0.0, false
+	t := bestTracker{best: -1}
 	for k := range n {
-		s := at(k)
-		if s < renameThreshold {
-			continue
-		}
-		switch {
-		case !found || s > bestScore:
-			runnerUp = bestScore
-			best, bestScore, found = k, s, true
-		case s > runnerUp:
-			runnerUp = s
-		}
+		t.add(k, at(k))
 	}
-	return best, bestScore, found && bestScore > runnerUp
+	return t.strict()
 }
 
 // ── reporting ─────────────────────────────────────────────────────────────────
