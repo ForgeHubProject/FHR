@@ -8,71 +8,42 @@ const keys = selectionKeys([
   change("Wheel_FL", "nodes/Wheel_FL"),
   change("rig/hand", "nodes/rig%2Fhand"),
   change("node[3]", "nodes/node[3]"),
+  change("Paint", "materials/Paint"),
 ]);
 
 describe("selectionKeys", () => {
-  it("translates a change path to the node name the scene knows", () => {
-    expect(keys.nameOf("nodes/Wheel_FL")).toBe("Wheel_FL");
-    expect(keys.nameOf("nodes/rig%2Fhand")).toBe("rig/hand");
-    expect(keys.nameOf("nodes/node[3]")).toBe("node[3]");
+  it("resolves a change path to itself — both halves speak one key", () => {
+    expect(keys.changePathOf("nodes/Wheel_FL")).toBe("nodes/Wheel_FL");
+    expect(keys.changePathOf("nodes/rig%2Fhand")).toBe("nodes/rig%2Fhand");
+    expect(keys.changePathOf("nodes/node[3]")).toBe("nodes/node[3]");
+    expect(keys.changePathOf("materials/Paint")).toBe("materials/Paint");
   });
 
-  it("translates a field row to the object that owns it", () => {
+  it("resolves a field row to the object that owns it", () => {
     // Selecting "translation" under a node means selecting the node in 3D.
-    expect(keys.nameOf("nodes/Wheel_FL/translation")).toBe("Wheel_FL");
-    expect(keys.nameOf("nodes/rig%2Fhand/scale")).toBe("rig/hand");
+    expect(keys.changePathOf("nodes/Wheel_FL/translation")).toBe("nodes/Wheel_FL");
+    expect(keys.changePathOf("nodes/rig%2Fhand/scale")).toBe("nodes/rig%2Fhand");
   });
 
-  it("falls back to the path scheme for a node this diff never mentioned", () => {
-    // A host keying on node paths still lands somewhere sensible; the scene then
-    // reports that the name isn't painted.
-    expect(keys.nameOf("nodes/Unknown")).toBe("Unknown");
+  it("resolves nothing for a change this diff never mentioned", () => {
+    // The honest answer: there is no such change, so there is nothing to select.
+    expect(keys.changePathOf("nodes/Unknown")).toBeNull();
+    expect(keys.changePathOf("nodes/Unknown/translation")).toBeNull();
+    expect(keys.changePathOf("meshes/Tri/primitives")).toBeNull();
   });
 
-  it("has no name for a change that isn't about a node", () => {
-    expect(keys.nameOf("materials/Paint")).toBeNull();
-    expect(keys.nameOf("meshes/Tri/primitives")).toBeNull();
-  });
-
-  it("translates a picked node name back to the handler's own path", () => {
-    expect(keys.pathOf("rig/hand")).toBe("nodes/rig%2Fhand");
-    expect(keys.pathOf("Wheel_FL")).toBe("nodes/Wheel_FL");
-  });
-
-  it("builds a path for a picked node the diff never mentioned", () => {
-    expect(keys.pathOf("Bystander")).toBe("nodes/Bystander");
-  });
-
-  it("round-trips every change in the diff", () => {
-    for (const path of ["nodes/Wheel_FL", "nodes/rig%2Fhand", "nodes/node[3]"]) {
-      expect(keys.pathOf(keys.nameOf(path)!), path).toBe(path);
-    }
-  });
-
-  it("re-keys the lite bundle's headlines by node name for the callout", () => {
-    expect(
-      keys.headlinesByName({
-        "nodes/Wheel_FL": "moved 50 mm",
-        "nodes/rig%2Fhand": "scaled ×1.2",
-        "materials/Paint": "recoloured",
-      }),
-    ).toEqual({ "Wheel_FL": "moved 50 mm", "rig/hand": "scaled ×1.2" });
-  });
-
-  it("has no headlines to re-key when none were passed", () => {
-    expect(keys.headlinesByName(undefined)).toEqual({});
-  });
-
-  it("keeps the first path when one name is changed twice", () => {
-    const dup = selectionKeys([change("Cube", "nodes/Cube"), change("Cube", "nodes/Cube%20copy")]);
-    expect(dup.pathOf("Cube")).toBe("nodes/Cube");
+  it("keeps two changes that share a name apart (#47)", () => {
+    // The deletion, and the rename that took the name it vacated. Keyed by name
+    // one of the two was unreachable; keyed by path both resolve, to themselves.
+    const collided = selectionKeys([change("B", "nodes/B#1"), change("B", "nodes/B")]);
+    expect(collided.changePathOf("nodes/B#1")).toBe("nodes/B#1");
+    expect(collided.changePathOf("nodes/B")).toBe("nodes/B");
+    expect(collided.changePathOf("nodes/B#1/translation")).toBe("nodes/B#1");
   });
 });
 
-describe("emptyKeys (the fallback views, which have no diff to translate)", () => {
-  it("resolves nothing, and still builds a path for a name", () => {
-    expect(emptyKeys().nameOf("nodes/Wheel_FL")).toBeNull();
-    expect(emptyKeys().pathOf("Wheel_FL")).toBe("nodes/Wheel_FL");
-    expect(emptyKeys().headlinesByName({ a: "b" })).toEqual({});
+describe("emptyKeys (the fallback views, which have no diff to resolve against)", () => {
+  it("resolves nothing", () => {
+    expect(emptyKeys().changePathOf("nodes/Wheel_FL")).toBeNull();
   });
 });

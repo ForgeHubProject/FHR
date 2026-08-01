@@ -16,6 +16,7 @@ import { pathOfNodeName } from "./change-path.js";
 import { changeAtObject } from "./pick.js";
 import { KIND_COLOR, NEUTRAL } from "./palette.js";
 import { buildGltf, toArrayBuffer, toGlb, type FixtureSpec } from "./glb-fixture.js";
+import { selectionKeys } from "./selection-keys.js";
 
 async function side(spec: FixtureSpec): Promise<LoadedSide> {
   const bytes = toGlb(buildGltf(spec));
@@ -479,15 +480,15 @@ describe("framing boxes", () => {
     expect(overlay.changeBox.max.x).toBeGreaterThan(50);
   });
 
-  it("keeps a box per change name, so a change list can fly to one (#45)", async () => {
+  it("keeps a box per change path, so a change list can fly to one (#45)", async () => {
     const head = await side(TWO_NODES);
     const overlay = buildOverlay({
       head,
       changes: [change("Hood", "modified", ["mesh"]), change("Mirror", "added")],
     });
-    expect([...overlay.boxByChangeName.keys()].sort()).toEqual(["Hood", "Mirror"]);
-    expect(overlay.boxByChangeName.get("Mirror")!.min.x).toBeCloseTo(4);
-    expect(overlay.objectsByChangeName.get("Hood")).toHaveLength(1);
+    expect([...overlay.boxByChangePath.keys()].sort()).toEqual(["nodes/Hood", "nodes/Mirror"]);
+    expect(overlay.boxByChangePath.get("nodes/Mirror")!.min.x).toBeCloseTo(4);
+    expect(overlay.objectsByChangePath.get("nodes/Hood")).toHaveLength(1);
   });
 
   it("leaves changeBox empty when nothing was painted", async () => {
@@ -535,16 +536,16 @@ describe("the maps a click resolves through", () => {
   it("maps every painted head object to its change", async () => {
     const head = await side(TWO_NODES);
     const overlay = buildOverlay({ head, changes: [change("Hood", "modified", ["mesh"])] });
-    const objects = overlay.objectsByChangeName.get("Hood")!;
+    const objects = overlay.objectsByChangePath.get("nodes/Hood")!;
     expect(objects.length).toBeGreaterThan(0);
-    for (const object of objects) expect(overlay.changeNameByObject.get(object)).toBe("Hood");
+    for (const object of objects) expect(overlay.changePathByObject.get(object)).toBe("nodes/Hood");
   });
 
   it("resolves a click on a mesh inside a painted node", async () => {
     const head = await side(TWO_NODES);
     const overlay = buildOverlay({ head, changes: [change("Hood", "modified", ["mesh"])] });
     const hood = meshesIn(head.gltf.scene).find((m) => m.name === "Hood")!;
-    expect(changeAtObject(hood, { changeNameByObject: overlay.changeNameByObject })).toBe("Hood");
+    expect(changeAtObject(hood, { changePathByObject: overlay.changePathByObject })).toBe("nodes/Hood");
   });
 
   it("resolves a click on the ghost of a removed part, which no association covers", async () => {
@@ -554,8 +555,8 @@ describe("the maps a click resolves through", () => {
     const ghost = overlay.removedGroup!.children[0]!;
     // The clone is in no glTF association — the loader never made it.
     expect(overlay.nodeIndexOfObject(ghost)).toBeNull();
-    expect(changeAtObject(meshesIn(ghost)[0] ?? ghost, { changeNameByObject: overlay.changeNameByObject })).toBe(
-      "Mirror",
+    expect(changeAtObject(meshesIn(ghost)[0] ?? ghost, { changePathByObject: overlay.changePathByObject })).toBe(
+      "nodes/Mirror",
     );
   });
 
@@ -563,7 +564,7 @@ describe("the maps a click resolves through", () => {
     const head = await side(TWO_NODES);
     const overlay = buildOverlay({ head, changes: [change("Hood", "modified", ["mesh"])] });
     const mirror = meshesIn(head.gltf.scene).find((m) => m.name === "Mirror")!;
-    expect(changeAtObject(mirror, { changeNameByObject: overlay.changeNameByObject })).toBeNull();
+    expect(changeAtObject(mirror, { changePathByObject: overlay.changePathByObject })).toBeNull();
   });
 
   it("offers the loader's node association as the fallback path", async () => {
@@ -572,15 +573,15 @@ describe("the maps a click resolves through", () => {
     const mirror = meshesIn(head.gltf.scene).find((m) => m.name === "Mirror")!;
     const index = overlay.nodeIndexOfObject(mirror);
     expect(index).not.toBeNull();
-    expect(overlay.changeNameByNodeIndex.get(index!)).toBe("Mirror");
+    expect(overlay.changePathByNodeIndex.get(index!)).toBe("nodes/Mirror");
     // The same answer, reached without the painted map.
     expect(
       changeAtObject(mirror, {
-        changeNameByObject: new Map(),
+        changePathByObject: new Map(),
         nodeIndexOf: overlay.nodeIndexOfObject,
-        changeNameByNodeIndex: overlay.changeNameByNodeIndex,
+        changePathByNodeIndex: overlay.changePathByNodeIndex,
       }),
-    ).toBe("Mirror");
+    ).toBe("nodes/Mirror");
   });
 });
 
@@ -609,9 +610,9 @@ describe("meshes and materials, painted through the geometry that carries them",
     const overlay = buildOverlay({ head, changes: [], meshes: [entity("WheelMesh")] });
 
     expect(overlay.stats.tinted).toBe(3);
-    expect(overlay.objectsByChangeName.get("WheelMesh")).toHaveLength(3);
+    expect(overlay.objectsByChangePath.get("meshes/WheelMesh")).toHaveLength(3);
     // The framing box spans all three, so the camera doesn't fly to one wheel.
-    const box = overlay.boxByChangeName.get("WheelMesh")!;
+    const box = overlay.boxByChangePath.get("meshes/WheelMesh")!;
     expect(box.max.x - box.min.x).toBeGreaterThan(3);
   });
 
@@ -629,7 +630,7 @@ describe("meshes and materials, painted through the geometry that carries them",
     });
     // Trim is on one primitive of three: the trim lights up, not the whole part.
     expect(overlay.stats.tinted).toBe(1);
-    expect(overlay.objectsByChangeName.get("Trim")).toHaveLength(1);
+    expect(overlay.objectsByChangePath.get("materials/Trim")).toHaveLength(1);
   });
 
   it("narrows a mesh change to the primitive ordinal it names", async () => {
@@ -765,7 +766,7 @@ describe("meshes and materials, painted through the geometry that carries them",
     expect(overlay.stats.tinted).toBe(1);
     expect(overlay.stats.moveGhosts).toBe(0);
     expect(overlay.stats.removedGhosts).toBe(0);
-    expect(overlay.objectsByChangeName.has("Fender")).toBe(true);
+    expect(overlay.objectsByChangePath.has("nodes/Fender")).toBe(true);
   });
 
   it("merges a node's own change with one on the mesh it instances", async () => {
@@ -779,8 +780,142 @@ describe("meshes and materials, painted through the geometry that carries them",
     });
     // Both are reported: the node moved and its geometry changed.
     expect(overlay.stats.moveGhosts).toBe(1);
-    expect(overlay.objectsByChangeName.has("Body")).toBe(true);
-    expect(overlay.objectsByChangeName.has("Tri")).toBe(true);
+    expect(overlay.objectsByChangePath.has("nodes/Body")).toBe(true);
+    expect(overlay.objectsByChangePath.has("meshes/Tri")).toBe(true);
     expect(overlay.stats.unpaintable).toBe(0);
+  });
+});
+
+// A name is not a change's identity (#47), and the overlay is where that stops
+// being an abstract claim: two changes about two different objects can carry the
+// same name, and every map the viewport reads has to keep them apart.
+//
+// The pair below is the one the handler emits for the stamped-file case the whole
+// issue exists for — base [B, A(fhr_uid=u1)], head [B(fhr_uid=u1)] — where "B" is
+// at once a node that was deleted and the name an unrelated node was renamed into.
+// The removal is emitted FIRST here, which is the order that made keying by name
+// lose the rename; the reverse order lost the deletion. Both are pinned.
+describe("two changes, one name (#47)", () => {
+  const COLLIDED_HEAD: FixtureSpec = { nodes: [{ name: "B", mesh: 0, translation: [1, 0, 0] }] };
+  const COLLIDED_BASE: FixtureSpec = {
+    nodes: [
+      { name: "A", mesh: 0, translation: [1, 0, 0] },
+      { name: "B", mesh: 0, translation: [8, 0, 0] },
+    ],
+  };
+  const REMOVED_FIRST: NodeChange[] = [
+    { name: "B", kind: "removed", fields: ["translation", "mesh"], path: "nodes/B#1" },
+    { name: "B", kind: "renamed", fields: [], path: "nodes/B", oldName: "A" },
+  ];
+  const RENAME_FIRST: NodeChange[] = [REMOVED_FIRST[1]!, REMOVED_FIRST[0]!];
+
+  /**
+   * The #45 round trip the host drives, in the three lookups scene-3d.ts makes:
+   * a row selected by path → the objects, the box and the callout it selects.
+   */
+  const select = (overlay: ReturnType<typeof buildOverlay>, changes: NodeChange[], path: string) => {
+    const resolved = selectionKeys(changes).changePathOf(path);
+    if (resolved === null) return null;
+    const headlines: Record<string, string> = {
+      "nodes/B#1": "removed",
+      "nodes/B": "renamed A → B",
+    };
+    return {
+      objects: overlay.objectsByChangePath.get(resolved) ?? [],
+      box: overlay.boxByChangePath.get(resolved) ?? null,
+      label: overlay.labelByChangePath.get(resolved) ?? resolved,
+      headline: headlines[resolved] ?? "changed",
+    };
+  };
+
+  for (const [order, changes] of [
+    ["removal first", REMOVED_FIRST],
+    ["rename first", RENAME_FIRST],
+  ] as const) {
+    it(`selects the surviving node for the rename's row, ${order}`, async () => {
+      const overlay = buildOverlay({
+        head: await side(COLLIDED_HEAD),
+        base: await side(COLLIDED_BASE),
+        changes,
+      });
+      const hit = select(overlay, changes, "nodes/B")!;
+      // The head node that inherited the name, at x=1 — NOT the ghost of the
+      // deleted node out at x=8, which is what a name-keyed lookup returned.
+      expect(hit.objects).toHaveLength(1);
+      expect(overlay.removedGroup!.children).not.toContain(hit.objects[0]);
+      expect(hit.box!.min.x).toBeCloseTo(1); // the fixture triangle spans x=0..1
+      expect(hit.label).toBe("B");
+      expect(hit.headline).toBe("renamed A → B");
+    });
+
+    it(`selects the deleted node's ghost for the removal's row, ${order}`, async () => {
+      const overlay = buildOverlay({
+        head: await side(COLLIDED_HEAD),
+        base: await side(COLLIDED_BASE),
+        changes,
+      });
+      const hit = select(overlay, changes, "nodes/B#1")!;
+      expect(hit.objects).toEqual([overlay.removedGroup!.children[0]]);
+      expect(hit.box!.min.x).toBeCloseTo(8);
+      // The label is the name; the "#1" belongs to the key, not to the reviewer.
+      expect(hit.label).toBe("B");
+      expect(hit.headline).toBe("removed");
+    });
+
+    it(`gives the removal no claim on the head node it doesn't own, ${order}`, async () => {
+      const head = await side(COLLIDED_HEAD);
+      const overlay = buildOverlay({ head, base: await side(COLLIDED_BASE), changes });
+      // The pick fallback: clicking the surviving node reports the rename, and the
+      // node is tinted as renamed rather than in the deletion's colour.
+      const mesh = meshesIn(head.gltf.scene)[0]!;
+      const index = overlay.nodeIndexOfObject(mesh);
+      expect(overlay.changePathByNodeIndex.get(index!)).toBe("nodes/B");
+      expect(overlay.stats.tinted).toBe(1);
+      expect(distanceTo(mesh, KIND_COLOR["renamed"]!)).toBeLessThan(
+        distanceTo(mesh, KIND_COLOR["removed"]!),
+      );
+    });
+  }
+
+  // Same collision one level down: a mesh (or material) deleted while another is
+  // renamed into the name it vacated. The removed one is not in the head file, so
+  // resolving its name there could only ever find the survivor — and painting it
+  // put the removal's colour on living geometry, on top of the rename's own paint,
+  // with nothing reported as unpaintable.
+  it("does not paint surviving geometry for a removed mesh whose name a rename took", async () => {
+    const head = await side({ nodes: [{ name: "Part", mesh: 0 }], meshName: "Body" });
+    const meshes = [
+      { name: "Body", kind: "removed" as const, fields: [], path: "meshes/Body#1", primitives: [] },
+      { name: "Body", kind: "renamed" as const, fields: [], path: "meshes/Body", primitives: [] },
+    ];
+    const overlay = buildOverlay({ head, changes: [], meshes });
+
+    expect(overlay.stats.tinted).toBe(1); // once, by the rename
+    expect(overlay.objectsByChangePath.has("meshes/Body")).toBe(true);
+    expect(overlay.objectsByChangePath.has("meshes/Body#1")).toBe(false);
+    // Counted, so the banner says the deleted mesh isn't on this model.
+    expect(overlay.stats.unpaintable).toBe(1);
+    const mesh = meshesIn(head.gltf.scene)[0]!;
+    expect(distanceTo(mesh, KIND_COLOR["renamed"]!)).toBeLessThan(
+      distanceTo(mesh, KIND_COLOR["removed"]!),
+    );
+  });
+
+  it("does not paint surviving geometry for a removed material whose name a rename took", async () => {
+    const head = await side({ nodes: [{ name: "Part", mesh: 0 }], materialNames: ["Body"] });
+    const materials = [
+      { name: "Body", kind: "removed" as const, fields: [], path: "materials/Body#1", primitives: [] },
+      { name: "Body", kind: "renamed" as const, fields: [], path: "materials/Body", primitives: [] },
+    ];
+    const overlay = buildOverlay({ head, changes: [], materials });
+
+    expect(overlay.stats.tinted).toBe(1);
+    expect(overlay.objectsByChangePath.has("materials/Body")).toBe(true);
+    expect(overlay.objectsByChangePath.has("materials/Body#1")).toBe(false);
+    expect(overlay.stats.unpaintable).toBe(1);
+    const mesh = meshesIn(head.gltf.scene)[0]!;
+    expect(distanceTo(mesh, KIND_COLOR["renamed"]!)).toBeLessThan(
+      distanceTo(mesh, KIND_COLOR["removed"]!),
+    );
   });
 });

@@ -1,62 +1,43 @@
-// Path ⇄ node-name translation for the selection round trip (#45).
+// Selection-path resolution for the round trip in #45.
 //
-// The two halves of the linkage speak different keys, on purpose:
+// Both halves speak one key now — the handler's fully-qualified change path. The
+// lite bundle and the host key a diff row and the host's selection state on it,
+// and the 3D overlay keys its boxes, its painted objects and its pick map on it
+// too (model-overlay.ts). That is not cosmetic. The translation this module used
+// to do — path → glTF node *name*, and the callout's headline map re-keyed to
+// match — is exactly what #47 broke: a name stopped identifying a change the
+// moment one revision could delete "Wheel" while renaming something else *to*
+// "Wheel". Two changes, two objects, one name, and whichever was written second
+// won: one row became unreachable and both were labelled with the other's news.
 //
-//   the lite bundle and the host   fully-qualified change paths ("nodes/Wheel_FL")
-//                                  — what a diff row and a host's selection state
-//                                    are keyed on
-//   the 3D scene                   glTF node names ("Wheel_FL") — what the
-//                                  overlay's maps are keyed on
+// What is left here is the one thing paths still need reconciling on: a selection
+// may address a *field* of a change ("nodes/Cube/translation") while the scene
+// only ever paints whole objects, so a field path resolves to its object. A path
+// this diff never mentioned resolves to nothing, which is the honest answer —
+// there is no such change to select.
 //
-// `nodeChanges` is the one place that has seen the pairing the handler wrote, so
-// the translation is built from it and neither half re-derives an escaping rule.
 // Pure: no three.js, no DOM.
 
-import type { NodeChange } from "./diff-map.js";
-import { entityPath, nodeNameOfPath, pathOfNodeName } from "./change-path.js";
+import { entityPath } from "./change-path.js";
 
 export type SelectionKeys = {
-  /** The node name a selection path refers to, or null if this diff has none. */
-  nameOf(path: string): string | null;
-  /** The selection path for a node name (the handler's own escaped path). */
-  pathOf(name: string): string;
-  /** Re-key the lite bundle's path→headline map by node name for the callout. */
-  headlinesByName(byPath: Record<string, string> | undefined): Record<string, string>;
+  /** The change path a selection path selects, or null when this diff has none. */
+  changePathOf(path: string): string | null;
 };
 
 export function emptyKeys(): SelectionKeys {
-  return {
-    nameOf: () => null,
-    pathOf: (name) => pathOfNodeName(name),
-    headlinesByName: () => ({}),
-  };
+  return { changePathOf: () => null };
 }
 
-export function selectionKeys(changes: NodeChange[]): SelectionKeys {
-  const nameByPath = new Map<string, string>();
-  const pathByName = new Map<string, string>();
-  for (const change of changes) {
-    nameByPath.set(change.path, change.name);
-    if (!pathByName.has(change.name)) pathByName.set(change.name, change.path);
-  }
+/** Resolution over the changes the overlay was built from (nodes, meshes, materials). */
+export function selectionKeys(changes: readonly { path: string }[]): SelectionKeys {
+  const known = new Set<string>();
+  for (const change of changes) known.add(change.path);
   return {
-    nameOf(path: string): string | null {
-      // A field row ("nodes/Cube/translation") selects its object; a path this
-      // diff never mentioned resolves through the scheme, so a host that keys on
-      // node paths still lands somewhere sensible.
-      return nameByPath.get(path) ?? nameByPath.get(entityPath(path)) ?? nodeNameOfPath(path);
-    },
-    pathOf(name: string): string {
-      return pathByName.get(name) ?? pathOfNodeName(name);
-    },
-    headlinesByName(byPath: Record<string, string> | undefined): Record<string, string> {
-      const out: Record<string, string> = {};
-      if (!byPath) return out;
-      for (const [path, line] of Object.entries(byPath)) {
-        const name = nameByPath.get(path);
-        if (name !== undefined) out[name] = line;
-      }
-      return out;
+    changePathOf(path: string): string | null {
+      if (known.has(path)) return path;
+      const entity = entityPath(path);
+      return entity !== path && known.has(entity) ? entity : null;
     },
   };
 }

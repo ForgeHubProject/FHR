@@ -28,19 +28,23 @@ type Theme = "light" | "dark";
 export type SceneHandle = {
   dispose(): void;
   /**
-   * Frame a named change (the change-list ⇄ 3D wiring in #45 calls this).
-   * Returns false when the name isn't one of the painted changes.
+   * Frame one change, by the handler's change path (the change-list ⇄ 3D wiring
+   * in #45 calls this). Returns false when the path isn't a painted change.
    */
-  flyToChange?(name: string): boolean;
+  flyToChange?(path: string): boolean;
   /** Frame every change at once — what the view does on load. */
   flyToChanges?(): void;
   /**
-   * Select a change by name: fly to it, isolate it, and call it out (#45). null
+   * Select a change by path: fly to it, isolate it, and call it out (#45). null
    * clears the selection. `fly: false` selects without moving the camera — what a
    * click *in* the viewport does, since the reviewer is already looking at it.
-   * Returns false when the name isn't one of the painted changes.
+   * Returns false when the path isn't one of the painted changes.
+   *
+   * By path and not by name: since #47 two changes in one diff can share a name
+   * and mean different objects (a deletion and a rename into the name it
+   * vacated), and the path is what tells them apart — see model-overlay.ts.
    */
-  selectChange?(name: string | null, options?: { fly?: boolean }): boolean;
+  selectChange?(path: string | null, options?: { fly?: boolean }): boolean;
 };
 
 const deg2rad = (d: number): number => (d * Math.PI) / 180;
@@ -161,12 +165,12 @@ export type ModelSceneOptions = {
   /** Fly to the changes once mounted (the reveal on load). Default: on. */
   flyToChangesOnLoad?: boolean;
   /**
-   * The viewer clicked geometry: the change name they hit, or null for a click
-   * that landed on unchanged geometry or on nothing. The scene has already
+   * The viewer clicked geometry: the path of the change they hit, or null for a
+   * click that landed on unchanged geometry or on nothing. The scene has already
    * applied the selection's visuals by the time this runs.
    */
-  onPick?: (name: string | null) => void;
-  /** Change name → the one-line headline its callout shows (see review.ts). */
+  onPick?: (path: string | null) => void;
+  /** Change path → the one-line headline its callout shows (see review.ts). */
   headlines?: Record<string, string>;
 };
 
@@ -264,19 +268,21 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     selectedBox = null;
   };
 
-  const applySelection = (name: string | null, fly: boolean): boolean => {
-    if (name === null) {
+  const applySelection = (path: string | null, fly: boolean): boolean => {
+    if (path === null) {
       clearSelection();
       return true;
     }
-    const box = overlay.boxByChangeName.get(name);
-    const objects = overlay.objectsByChangeName.get(name);
+    const box = overlay.boxByChangePath.get(path);
+    const objects = overlay.objectsByChangePath.get(path);
     if (!box || box.isEmpty() || !objects || objects.length === 0) {
       clearSelection();
       return false;
     }
     isolator.isolate(objects);
-    callout.show(name, options.headlines?.[name] ?? "changed");
+    // The path is the key; the label is what a reviewer reads. They differ for a
+    // change the handler had to disambiguate ("nodes/Wheel#1" labelled "Wheel").
+    callout.show(overlay.labelByChangePath.get(path) ?? path, options.headlines?.[path] ?? "changed");
     selectedBox = box;
     if (fly) flyTo.to(box);
     return true;
@@ -315,14 +321,14 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     const ndc = ndcFromPointer(event, rect);
     raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), viewport.camera);
     const hits = raycaster.intersectObjects(pickTargets, true);
-    const name = changeAtHits(hits, {
-      changeNameByObject: overlay.changeNameByObject,
-      changeNameByNodeIndex: overlay.changeNameByNodeIndex,
+    const path = changeAtHits(hits, {
+      changePathByObject: overlay.changePathByObject,
+      changePathByNodeIndex: overlay.changePathByNodeIndex,
       nodeIndexOf: overlay.nodeIndexOfObject,
     });
     // Selecting without flying: the reviewer is already looking at what they hit.
-    applySelection(name, false);
-    options.onPick?.(name);
+    applySelection(path, false);
+    options.onPick?.(path);
   };
   canvas.addEventListener("pointerdown", onPointerDown as EventListener);
   canvas.addEventListener("pointerup", onPointerUp as EventListener);
@@ -341,8 +347,8 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
       viewport.dispose();
       overlay.dispose();
     },
-    flyToChange(name: string): boolean {
-      const box = overlay.boxByChangeName.get(name);
+    flyToChange(path: string): boolean {
+      const box = overlay.boxByChangePath.get(path);
       if (!box || box.isEmpty()) return false;
       flyTo.to(box);
       return true;
@@ -350,8 +356,8 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     flyToChanges(): void {
       flyTo.to(overlay.changeBox);
     },
-    selectChange(name: string | null, selectOptions: { fly?: boolean } = {}): boolean {
-      return applySelection(name, selectOptions.fly !== false);
+    selectChange(path: string | null, selectOptions: { fly?: boolean } = {}): boolean {
+      return applySelection(path, selectOptions.fly !== false);
     },
   };
 }

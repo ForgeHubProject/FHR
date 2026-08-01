@@ -159,6 +159,25 @@ describe("diffChangeTypes", () => {
   it("returns an empty map for no diff", () => {
     expect(diffChangeTypes(undefined).size).toBe(0);
   });
+
+  // The outline is a box per node of the HEAD file, and a `removed` node is
+  // exactly the one that isn't in it. Since #47 a name can carry two changes —
+  // the deletion of one node and the rename of another *into* the name it
+  // vacated — and either may be emitted first, so diff order cannot decide which
+  // colours the row. Taking the first painted a node that still exists as
+  // deleted whenever the removal happened to sort first.
+  it("colours a name a deletion and a rename share by the change that survives", () => {
+    const removal = { path: "nodes/B#1", label: "B", kind: "removed" } as const;
+    const rename = { path: "nodes/B", label: "B", kind: "renamed", before: "A" } as const;
+    expect(diffChangeTypes(diffOf(removal, rename)).get("B")).toBe("renamed");
+    expect(diffChangeTypes(diffOf(rename, removal)).get("B")).toBe("renamed");
+  });
+
+  it("still colours a name only a deletion claims as removed", () => {
+    expect(
+      diffChangeTypes(diffOf({ path: "nodes/Gone", label: "Gone", kind: "removed" })).get("Gone"),
+    ).toBe("removed");
+  });
 });
 
 describe("transform-change classification (drives the move ghost)", () => {

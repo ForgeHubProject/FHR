@@ -34,12 +34,12 @@ import { emptyKeys, selectionKeys, type SelectionKeys } from "./selection-keys.j
 /**
  * What the lite bundle wires into the scene: the selection round trip (#45).
  *
- * The two halves speak different keys, on purpose. The lite bundle and the host
- * speak the handler's fully-qualified *paths*, which are what a diff row and a
- * host's selection state are keyed on. The scene speaks *node names*, which is
- * what the overlay's maps are keyed on (model-overlay.ts). This module owns the
- * translation, because `nodeChanges` is the one place that has seen the pairing
- * the handler wrote — so neither half has to re-derive an escaping rule.
+ * Both halves speak the handler's fully-qualified change *paths* — what a diff
+ * row, a host's selection state and (since #47) the overlay's own maps are all
+ * keyed on. A name is not a change's identity: one diff can carry a deletion and
+ * a rename that share a name and mean different objects, so translating to node
+ * names here merged them and lost one. All that is left to reconcile is a
+ * selection that names a field of a change (see selection-keys.ts).
  */
 export type SceneHooks = {
   /** The viewer clicked geometry: the change's path, or null for "nothing". */
@@ -85,8 +85,8 @@ export async function mount3d(
     selectChange(path: string | null, options?: { fly?: boolean }): boolean {
       if (!handle?.selectChange) return false;
       if (path === null) return handle.selectChange(null, options);
-      const name = keys.nameOf(path);
-      return name === null ? false : handle.selectChange(name, options);
+      const changePath = keys.changePathOf(path);
+      return changePath === null ? false : handle.selectChange(changePath, options);
     },
   });
 
@@ -165,8 +165,8 @@ export async function mount3d(
       overlay,
       theme,
       blink: overlay.baseSolidGroup !== null,
-      headlines: keys.headlinesByName(hooks.headlines),
-      onPick: (name) => hooks.onPick?.(name === null ? null : keys.pathOf(name)),
+      headlines: hooks.headlines ?? {},
+      onPick: (path) => hooks.onPick?.(path),
     }),
   );
 }
