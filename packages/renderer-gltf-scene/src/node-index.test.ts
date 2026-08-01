@@ -191,6 +191,64 @@ describe("indirectNodeChanges — where a mesh or material change lands on the n
     expect(found.byChange.get("wheel-mesh")).toEqual(["Wheel_FL", "Wheel_FR"]);
   });
 
+  it("dedups in constant time per node, not by rescanning the keys it has kept", () => {
+    // The complexity pin. `indirectPaint` runs on the critical path to first
+    // frame — index-3d.ts calls it before `createChrome` and before the canvas
+    // exists, in the real view and in the fallback — and one change can reach
+    // *every* node in the file: one bolt mesh instanced 20 000 times, one
+    // "Steel" material on every primitive. Nothing upstream bounds that
+    // (limits.ts caps blob bytes, which says nothing about node count), so a
+    // `keys.includes(key)` dedup here was O(nodes²): 8.1 s of blocking work for
+    // one material change on a 50 000-node assembly, 16× what MAX_ROWS exists to
+    // avoid — and MAX_ROWS can't help, it runs downstream of this.
+    // Counting the linear scans rather than timing keeps the pin deterministic.
+    const scansDuring = (run: () => void): number => {
+      const proto = Array.prototype as unknown as Record<string, unknown>;
+      const saved = (["includes", "indexOf", "lastIndexOf"] as const).map((m) => [m, proto[m]] as const);
+      let scans = 0;
+      for (const [name, fn] of saved) {
+        proto[name] = function (this: unknown[], ...args: unknown[]): unknown {
+          scans++;
+          return (fn as (this: unknown[], ...a: unknown[]) => unknown).apply(this, args);
+        };
+      }
+      try {
+        run();
+      } finally {
+        for (const [name, fn] of saved) proto[name] = fn;
+      }
+      return scans;
+    };
+
+    const assembly = (count: number): GltfDocument => ({
+      asset: { version: "2.0" },
+      scene: 0,
+      scenes: [{ nodes: Array.from({ length: count }, (_, i) => i) }],
+      nodes: Array.from({ length: count }, (_, i) => ({ name: `Bolt_${i}`, mesh: 0 })),
+      meshes: [{ name: "BoltMesh", primitives: [{ material: 0 }] }],
+      materials: [{ name: "Steel" }],
+    });
+    const small = buildNameIndex(assembly(200));
+    const large = buildNameIndex(assembly(20_000));
+    const mesh = [entity("BoltMesh", "meshes/BoltMesh")];
+    const material = [entity("Steel", "materials/Steel")];
+
+    // Same number of scans for a file 100× larger: whatever this does per node,
+    // it isn't walking the keys it has already kept.
+    expect(scansDuring(() => indirectNodeChanges(large, mesh, []))).toBe(
+      scansDuring(() => indirectNodeChanges(small, mesh, [])),
+    );
+    expect(scansDuring(() => indirectNodeChanges(large, [], material))).toBe(
+      scansDuring(() => indirectNodeChanges(small, [], material)),
+    );
+
+    // …and it still reaches every node, deduped, in document order.
+    const found = indirectNodeChanges(large, mesh, []);
+    expect(found.byChange.get("BoltMesh")).toHaveLength(20_000);
+    expect(found.byChange.get("BoltMesh")!.slice(0, 2)).toEqual(["Bolt_0", "Bolt_1"]);
+    expect(found.byNode.size).toBe(20_000);
+  });
+
   it("names an unnamed node the way the handler would", () => {
     const anonymous: GltfDocument = {
       asset: { version: "2.0" },
