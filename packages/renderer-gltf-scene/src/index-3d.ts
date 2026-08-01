@@ -30,6 +30,7 @@ import { preflightGltf, unreadablePreflight, type Preflight } from "./gltf-prefl
 import { createBanners, textureFailureMessage, type BannerList } from "./banner.js";
 import { allowGhostBase, ghostBaseSkippedMessage } from "./limits.js";
 import { emptyKeys, selectionKeys, type SelectionKeys } from "./selection-keys.js";
+import { entityPath } from "./change-path.js";
 import { availableModes, createModeState, defaultMode } from "./presentation.js";
 import { boxSize, defaultSplit, type SplitOrientation } from "./split.js";
 import { createChrome, type Chrome } from "./chrome.js";
@@ -107,17 +108,7 @@ export async function mount3d(
     flyToChange: handle?.flyToChange?.bind(handle),
     flyToChanges: handle?.flyToChanges?.bind(handle),
     selectChange(path: string | null, options?: { fly?: boolean }): boolean {
-      // The one place a selection from *outside* the 3D view lands — a tree row,
-      // an `n`/`p` step, a host push — so it is also the one place the chrome's
-      // two regions are brought back into agreement with it. The queue is keyed
-      // on whole changes, so a field row ("…/translation") is routed to the stop
-      // that owns it rather than dropping the position readout.
-      const name = path === null ? null : keys.nameOf(path);
-      chrome?.selectChange(name === null ? null : keys.pathOf(name));
-      chrome?.highlightNode(name);
-      if (!handle?.selectChange) return false;
-      if (path === null) return handle.selectChange(null, options);
-      return name === null ? false : handle.selectChange(name, options);
+      return routeSelection({ chrome, keys, handle }, path, options);
     },
   });
 
@@ -258,6 +249,45 @@ export async function mount3d(
     },
   });
   return withCleanup(scene);
+}
+
+/** The three surfaces one selection has to reach. Null before the mount built them. */
+export type SelectionSurfaces = {
+  chrome: Chrome | null;
+  keys: SelectionKeys;
+  handle: SceneHandle | null;
+};
+
+/**
+ * Route a selection that arrived from *outside* the 3D view — a change-tree row,
+ * an `n`/`p` step, a host push — to the surfaces that have to agree about it.
+ *
+ * **Each surface is given the key it is itself keyed on; neither key is derived
+ * from the other.** The queue is keyed on `DiffChange.path`, so it gets the path
+ * this call was handed, normalised to the object that owns it (a field row
+ * "…/translation" selects its stop rather than dropping the position readout).
+ * Re-deriving that path from the node name instead is neither total nor
+ * injective: it is null for every change with no node behind it — an animation,
+ * a material — which would clear the highlight and reset the readout to the size
+ * of the job, and it lands on the wrong row whenever a mesh and a node share a
+ * name, which exporters produce routinely. The node name is the structure tree's
+ * and the scene's key, and only theirs.
+ *
+ * Exported because mounting the real view needs WebGL, and this routing is what
+ * keeps the queue's position honest on every route into it.
+ */
+export function routeSelection(
+  surfaces: SelectionSurfaces,
+  path: string | null,
+  options?: { fly?: boolean },
+): boolean {
+  const { chrome, keys, handle } = surfaces;
+  const name = path === null ? null : keys.nameOf(path);
+  chrome?.selectChange(path === null ? null : entityPath(path));
+  chrome?.highlightNode(name);
+  if (!handle?.selectChange) return false;
+  if (path === null) return handle.selectChange(null, options);
+  return name === null ? false : handle.selectChange(name, options);
 }
 
 /** The centre's top-left line: what this view is showing, in two numbers. */
