@@ -676,7 +676,9 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
       raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), viewport.camera);
       const hits = raycaster.intersectObjects(heatTargets, false);
       const front = hits.find((hit) => isVisibleInTree(hit.object));
-      const reading = front ? heatmap.readAt(front.object, front.face) : null;
+      // With the hit POINT, not just the face: the readout is the value under
+      // the pointer, and a face is a whole triangle wide (heatmap.ts `faceValue`).
+      const reading = front ? heatmap.readAt(front.object, front.face, front.point) : null;
       if (reading) legend.setReading(reading.label, reading.value);
       else legend.clearReading();
     });

@@ -54,7 +54,7 @@
 // pair, so switching the heatmap off and back on, or leaving overlay and
 // returning, costs one pointer swap per painted mesh.
 
-import { BufferAttribute, Matrix4 } from "three";
+import { BufferAttribute, Matrix4, Vector3 } from "three";
 import type { BufferGeometry, Color, Material, Object3D } from "three";
 import type { GeometryChange } from "./diff-map.js";
 import { buildSurfaceIndexChunked } from "./closest-point.js";
@@ -125,13 +125,19 @@ export type Heatmap = {
   /** The objects a hover raycast should be aimed at. */
   targets(): Object3D[];
   /**
-   * The reading under a raycast hit: the mesh's name and the deviation at the
-   * nearest corner of the face that was hit. Null for anything not heatmapped.
+   * The reading under a raycast hit: the mesh's name and the deviation AT THE
+   * HIT POINT — the face's three corner measurements blended by that point's
+   * barycentric coordinates, which is the same blend the shader interpolates the
+   * ramp with, so the number and the colour under the pointer always agree. See
+   * `faceValue` for what happens without a point. Null for anything not
+   * heatmapped.
    */
-  readAt(object: Object3D, face: { a: number; b: number; c: number } | null | undefined): {
-    label: string;
-    value: number;
-  } | null;
+  readAt(
+    object: Object3D,
+    face: { a: number; b: number; c: number } | null | undefined,
+    /** Where on the face, in WORLD space — three's `Intersection.point`. */
+    point?: { x: number; y: number; z: number } | null,
+  ): { label: string; value: number } | null;
   dispose(): { materials: number; attributes: number };
 };
 
@@ -454,7 +460,7 @@ export function createHeatmap(input: HeatmapInput): Heatmap | null {
     targets(): Object3D[] {
       return pairs.flatMap((p) => p.objects);
     },
-    readAt(object, face): { label: string; value: number } | null {
+    readAt(object, face, point): { label: string; value: number } | null {
       const geometry = geometryOf(object);
       if (!geometry) return null;
       const result = byGeometry.get(geometry.uuid);
@@ -464,12 +470,12 @@ export function createHeatmap(input: HeatmapInput): Heatmap | null {
       // useful answer: the mesh's own maximum, which is the number its panel row
       // carries. Better than blanking the readout as the pointer crosses a seam.
       if (!face) return { label, value: result.max };
-      const value = Math.max(
+      const corners: readonly [number, number, number] = [
         result.values[face.a] ?? 0,
         result.values[face.b] ?? 0,
         result.values[face.c] ?? 0,
-      );
-      return { label, value };
+      ];
+      return { label, value: faceValue(object, geometry, face, corners, point) };
     },
     dispose(): { materials: number; attributes: number } {
       if (signal) signal.cancelled = true;
@@ -534,6 +540,96 @@ const geometryOf = (object: Object3D): BufferGeometry | null =>
   (object as { geometry?: BufferGeometry }).geometry ?? null;
 
 /**
+ * A POSITION accessor, read one component at a time and never off `.array` —
+ * see `readPositions` for the interleaving trap that makes that mandatory.
+ */
+type PositionAttribute = {
+  count: number;
+  getX(i: number): number;
+  getY(i: number): number;
+  getZ(i: number): number;
+};
+
+const positionsOf = (geometry: BufferGeometry): PositionAttribute | undefined =>
+  geometry.getAttribute("position") as PositionAttribute | undefined;
+
+/**
+ * The deviation at the point on the face that was actually hit.
+ *
+ * The ramp is a per-vertex attribute, so the colour a reviewer sees at a pixel
+ * is the face's three corner measurements blended by that pixel's barycentric
+ * coordinates. The number printed beside the picture is that same blend, because
+ * anything else disagrees with the shading it is standing next to — and on the
+ * coarse box-and-extrusion geometry that most CAD glTF is made of, disagrees by
+ * the full spread of a triangle. (The demo's own car body has side panels whose
+ * lower corners did not move and whose upper corners moved 12 mm: reporting the
+ * face's largest corner, as this once did, printed "12 mm" everywhere on a panel
+ * the heatmap paints at the dead foot of the ramp.)
+ *
+ * Barycentric coordinates are affine-invariant, so they are computed in the
+ * geometry's own space — the world-space hit point brought back through the
+ * object's world matrix — and neither the node chain's scale nor which instance
+ * of a shared geometry was hit can change them.
+ *
+ * Without a point, and on a degenerate face where the coordinates are 0/0, the
+ * fallback is the face's MEAN rather than any one corner: the pointer is
+ * somewhere in the triangle, and the middle of it is wrong by at most half the
+ * face's spread where a corner can be wrong by all of it.
+ */
+function faceValue(
+  object: Object3D,
+  geometry: BufferGeometry,
+  face: { a: number; b: number; c: number },
+  corners: readonly [number, number, number],
+  point: { x: number; y: number; z: number } | null | undefined,
+): number {
+  const mean = (corners[0] + corners[1] + corners[2]) / 3;
+  const position = positionsOf(geometry);
+  if (!point || !position) return mean;
+  // The reading must not depend on where in the frame it was asked for, so the
+  // chain is brought up to date here rather than trusted to have been walked
+  // already — it is one hover per frame, against a render that does the same
+  // work for every object on screen.
+  object.updateWorldMatrix(true, false);
+  const local = new Vector3(point.x, point.y, point.z).applyMatrix4(
+    new Matrix4().copy(object.matrixWorld).invert(),
+  );
+
+  const ax = position.getX(face.a);
+  const ay = position.getY(face.a);
+  const az = position.getZ(face.a);
+  const v0x = position.getX(face.b) - ax;
+  const v0y = position.getY(face.b) - ay;
+  const v0z = position.getZ(face.b) - az;
+  const v1x = position.getX(face.c) - ax;
+  const v1y = position.getY(face.c) - ay;
+  const v1z = position.getZ(face.c) - az;
+  const v2x = local.x - ax;
+  const v2y = local.y - ay;
+  const v2z = local.z - az;
+  const d00 = v0x * v0x + v0y * v0y + v0z * v0z;
+  const d01 = v0x * v1x + v0y * v1y + v0z * v1z;
+  const d11 = v1x * v1x + v1y * v1y + v1z * v1z;
+  const d20 = v2x * v0x + v2y * v0y + v2z * v0z;
+  const d21 = v2x * v1x + v2y * v1y + v2z * v1z;
+  const denom = d00 * d11 - d01 * d01;
+  if (denom === 0) return mean; // a zero-area face has no interior to place it in
+
+  // Clamped and renormalised: the hit lies on the face, but float error at an
+  // edge — or a `point` a caller measured slightly off the plane — can push a
+  // coordinate past its end, and the reading would then leave the range the
+  // legend's two labels promise.
+  const b = clamp01((d11 * d20 - d01 * d21) / denom);
+  const c = clamp01((d00 * d21 - d01 * d20) / denom);
+  const a = clamp01(1 - b - c);
+  const total = a + b + c;
+  if (!(total > 0) || !Number.isFinite(total)) return mean;
+  return (a * corners[0] + b * corners[1] + c * corners[2]) / total;
+}
+
+const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/**
  * Every head Mesh drawing this geometry, across every node instancing the mesh.
  * Found by geometry identity rather than by re-resolving names — GLTFLoader
  * shares one BufferGeometry between a mesh's instances, so identity is exactly
@@ -567,9 +663,7 @@ function allInstancesOf(
  * Walking that as if it were positions produces a mesh made of garbage, silently.
  */
 function readPositions(geometry: BufferGeometry, linear: Matrix4): Float32Array | null {
-  const attribute = geometry.getAttribute("position") as
-    | { count: number; getX(i: number): number; getY(i: number): number; getZ(i: number): number }
-    | undefined;
+  const attribute = positionsOf(geometry);
   if (!attribute || attribute.count === 0) return null;
   const e = linear.elements;
   const out = new Float32Array(attribute.count * 3);
