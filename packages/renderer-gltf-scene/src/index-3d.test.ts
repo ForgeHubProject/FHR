@@ -7,8 +7,11 @@
 // on-screen lists can disagree about.
 
 import { describe, it, expect } from "vitest";
-import { routeSelection, type SelectionSurfaces } from "./index-3d.js";
+import { indirectPaint, routeSelection, structureRows, type SelectionSurfaces } from "./index-3d.js";
 import { selectionKeys } from "./selection-keys.js";
+import { buildNameIndex } from "./node-index.js";
+import type { GltfDocument } from "./gltf-parse.js";
+import type { ChangeKind, DiffChange, MountProps } from "@fhr/types";
 import type { EntityChange, NodeChange } from "./diff-map.js";
 import type { Chrome } from "./chrome.js";
 import type { SceneHandle } from "./scene-3d.js";
@@ -122,5 +125,111 @@ describe("routeSelection", () => {
     expect(routeSelection({ ...s, handle: null }, "nodes/Base")).toBe(false);
     expect(s.queued).toEqual(["nodes/Base"]);
     expect(routeSelection({ ...s, chrome: null, handle: null }, "nodes/Base")).toBe(false);
+  });
+});
+
+// #56 + #51: a mesh or material change is named for the mesh or the material,
+// and the structure tree's rows are nodes. The mount resolves one to the other;
+// without it every step through a worklist of such changes handed the tree a
+// name it has no row for, and the tree cleared instead of following.
+describe("routeSelection — the tree row for a change named after geometry", () => {
+  const rows = (s: Surfaces, rowOf: (name: string) => string): SelectionSurfaces => ({ ...s, rowOf });
+
+  it("highlights the node a mesh change paints, not the mesh's own name", () => {
+    const s = surfaces([entity("BodyMesh", "meshes/BodyMesh")], ["BodyMesh"]);
+    routeSelection(rows(s, (name) => (name === "BodyMesh" ? "Body" : name)), "meshes/BodyMesh");
+    expect(s.queued).toEqual(["meshes/BodyMesh"]);
+    expect(s.highlighted).toEqual(["Body"]);
+    // The scene is still keyed on change names — only the tree is re-keyed.
+    expect(s.framed).toEqual(["BodyMesh"]);
+  });
+
+  it("leaves a node change's name alone", () => {
+    const s = surfaces([node("Base", "nodes/Base")], ["Base"]);
+    routeSelection(rows(s, (name) => name), "nodes/Base");
+    expect(s.highlighted).toEqual(["Base"]);
+  });
+
+  it("still clears the tree for a null selection", () => {
+    const s = surfaces([entity("BodyMesh", "meshes/BodyMesh")], ["BodyMesh"]);
+    routeSelection(rows(s, () => "Body"), null);
+    expect(s.highlighted).toEqual([null]);
+  });
+});
+
+// The regression #56 made harmful by promoting the tree to a permanent region:
+// `diffChangeTypes` is the node-level changes alone, so a diff that reaches the
+// model through a mesh or a material annotated nothing. Every row of a
+// regenerated-topology diff — the case presentation.ts is built around — read
+// "unchanged" beside a viewport painting that geometry orange.
+describe("structureRows — every row the viewport paints admits it", () => {
+  const car: GltfDocument = {
+    asset: { version: "2.0" },
+    scene: 0,
+    scenes: [{ name: "Car", nodes: [0, 1, 2] }],
+    nodes: [
+      { name: "Body", mesh: 0 },
+      { name: "Wheel_FL", mesh: 1 },
+      { name: "Wheel_FR", mesh: 1 },
+    ],
+    meshes: [
+      { name: "BodyMesh", primitives: [{ material: 0 }] },
+      { name: "WheelMesh", primitives: [{ material: 1 }] },
+    ],
+    materials: [{ name: "Paint" }, { name: "Rubber" }],
+  };
+
+  const collection = (collectionName: string, entries: [string, ChangeKind][]): DiffChange => ({
+    path: collectionName,
+    label: collectionName,
+    kind: "modified",
+    children: entries.map(([name, kind]) => ({
+      path: `${collectionName}/${name}`,
+      label: name,
+      kind,
+      children: [],
+    })),
+  });
+
+  const rowsFor = (changes: DiffChange[]): Map<string, string> => {
+    const props: MountProps = { mode: "diff", diff: { version: "1.0", format: "gltf-scene", changes } };
+    const index = buildNameIndex(car);
+    const rows = structureRows(car, props, indirectPaint(index, props));
+    return new Map(rows.map((row) => [row.name, row.kind]));
+  };
+
+  it("marks every node instancing a changed mesh", () => {
+    const kinds = rowsFor([collection("meshes", [["WheelMesh", "modified"]])]);
+    expect(kinds.get("Wheel_FL")).toBe("modified");
+    expect(kinds.get("Wheel_FR")).toBe("modified");
+    // Nothing else moves: the tree is the whole model, not the change list.
+    expect(kinds.get("Body")).toBe("unchanged");
+  });
+
+  it("marks the nodes a changed material actually reaches", () => {
+    const kinds = rowsFor([collection("materials", [["Paint", "modified"]])]);
+    expect(kinds.get("Body")).toBe("modified");
+    expect(kinds.get("Wheel_FL")).toBe("unchanged");
+  });
+
+  it("keeps a node's own change when a mesh change reaches it too", () => {
+    // The node change is the more specific fact, and the one the queue is keyed
+    // on — a row that reported the mesh's kind instead would disagree with it.
+    const kinds = rowsFor([
+      collection("nodes", [["Body", "added"]]),
+      collection("meshes", [["BodyMesh", "modified"]]),
+    ]);
+    expect(kinds.get("Body")).toBe("added");
+  });
+
+  it("leaves an untouched file untouched", () => {
+    const kinds = rowsFor([]);
+    expect([...kinds.values()].every((kind) => kind === "unchanged")).toBe(true);
+  });
+
+  it("degrades to no rows rather than failing the mount", () => {
+    const props: MountProps = { mode: "diff" };
+    const broken = { asset: { version: "2.0" } } as GltfDocument;
+    expect(structureRows(broken, props, indirectPaint(buildNameIndex(broken), props))).toEqual([]);
   });
 });

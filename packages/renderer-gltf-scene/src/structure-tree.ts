@@ -6,10 +6,16 @@
 // up padded with structural wrappers just to stay navigable. Splitting them lets
 // the tree be the whole model and the queue stay scannable.
 //
-// The data is `buildSceneGraph()`'s, unchanged: it already walks the file's node
-// hierarchy and already annotates every node with its change kind. Until #56 that
-// annotated tree was wired only to the box-scene fallback, so a reviewer saw it
-// exactly when the model *failed* to load. Here it is a persistent region.
+// The data is `buildSceneGraph()`'s: the file's node hierarchy with a change
+// kind on each row. Until #56 that annotated tree was wired only to the
+// box-scene fallback, so a reviewer saw it exactly when the model *failed* to
+// load. Here it is a persistent region.
+//
+// The annotation is only as complete as the map handed to `buildSceneGraph`,
+// and a map of the *node* changes alone is not complete: a mesh or a material
+// change paints geometry through the nodes carrying it (#51), and a row marked
+// "unchanged" beside a viewport that has it painted orange is a lie in the more
+// prominent of the two. index-3d.ts's `annotationKinds` is what folds those in.
 //
 // "The whole model" up to a row cap (MAX_ROWS): being on every mount means this
 // is now on the critical path to first frame, and an unbounded row-per-node list

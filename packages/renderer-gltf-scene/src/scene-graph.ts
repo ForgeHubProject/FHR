@@ -73,6 +73,15 @@ function kindFor(
   return changeMap.get(name) ?? byNormalized.get(normalizeName(name));
 }
 
+/**
+ * Annotate a parsed entity list from a name→kind map.
+ *
+ * `changeMap` is every change that *reaches* a node, not only the ones the diff
+ * named a node for: a mesh or material change paints through the nodes carrying
+ * it (#51), so a map built from `diffChangeTypes` alone marks painted geometry
+ * "unchanged". index-3d.ts's `annotationKinds` builds the complete one; this
+ * function has no file in hand and cannot do the resolution itself.
+ */
 export function buildSceneGraph(entities: Entity[], changeMap: Map<string, ChangeKind>): SceneNode[] {
   const byNormalized = normalizedKinds(changeMap);
   // parseGltf emits parents before children, so one forward pass can resolve a

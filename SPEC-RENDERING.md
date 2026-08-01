@@ -226,7 +226,12 @@ renderers should reach for first, is three regions:
   left tree is the whole artifact, including the parts that did *not* change, so
   a reviewer can reach one for context; the right stays short and scannable.
   Where the change list is the only navigation, it ends up padded with
-  structural wrappers just to stay usable.
+  structural wrappers just to stay usable. A row's change mark MUST account for
+  changes that reach the node *indirectly* — in glTF, an edit to a mesh or a
+  material, which the viewport paints on every node carrying it. A tree built
+  from the node-level changes alone marks that geometry unchanged beside a
+  picture that has it highlighted, and whichever region the reviewer believes,
+  one of them lied to them.
 - **The right region is a worklist, not a properties panel.** This is the
   divergence from the authoring tools whose outliner/viewport/properties layout
   this borrows: a review tool's job is sequencing — get me through N changes,
