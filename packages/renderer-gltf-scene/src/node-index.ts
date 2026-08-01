@@ -241,11 +241,18 @@ export function indirectNodeChanges(
   const byNode = new Map<string, EntityChange>();
   const byChange = new Map<string, string[]>();
 
+  // `seen` does the membership test, `keys` only carries the order. One change
+  // can reach every node in the file — one material named "Steel", one bolt mesh
+  // instanced 20 000 times — and nothing upstream bounds that (limits.ts caps
+  // blob *bytes*, which says nothing about node count). A `keys.includes` here
+  // would be a linear scan per node, and this runs before the canvas exists.
   const record = (change: EntityChange, nodeIndices: Iterable<number>): void => {
     const keys: string[] = [];
+    const seen = new Set<string>();
     for (const node of nodeIndices) {
       const key = index.keyByIndex[node];
-      if (key === undefined || keys.includes(key)) continue;
+      if (key === undefined || seen.has(key)) continue;
+      seen.add(key);
       keys.push(key);
       if (!byNode.has(key)) byNode.set(key, change);
     }
