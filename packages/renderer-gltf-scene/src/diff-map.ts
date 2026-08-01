@@ -61,14 +61,22 @@ export type NodeChange = {
  * Per-node change kinds, keyed by node name. Kept for the scene-graph outline
  * view and for callers that only need the colour; `nodeChanges` carries detail.
  *
- * One kind per name, first one wins: an outline row is a name and a name can now
- * carry two changes (see `nodeChanges`). The outline draws the head file, so the
- * first — which is the base-order change, the one the head node inherited its
- * name from — is the one that is about the row being coloured.
+ * One kind per name, and a name can now carry two changes (see `nodeChanges`).
+ * The tie-break is not diff order — a removal may be emitted first or second, and
+ * taking the first painted a node that still exists in the removal colour. It is
+ * what the view being coloured draws: the outline is built from the HEAD file's
+ * scene graph, and a `removed` node is precisely the one that is not in it. So
+ * every other kind outranks `removed`, which keeps a name only while nothing
+ * about a surviving node claims it.
  */
 export function diffChangeTypes(diff: StructuredDiff | undefined): Map<string, ChangeKind> {
   const acc = new Map<string, ChangeKind>();
-  for (const change of nodeChanges(diff)) if (!acc.has(change.name)) acc.set(change.name, change.kind);
+  for (const change of nodeChanges(diff)) {
+    const held = acc.get(change.name);
+    if (held === undefined || (held === "removed" && change.kind !== "removed")) {
+      acc.set(change.name, change.kind);
+    }
+  }
   return acc;
 }
 

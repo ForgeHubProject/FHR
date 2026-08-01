@@ -3,7 +3,7 @@
 // Two steps, both pure, so both are tested without a browser:
 //
 //   pointer → normalised device coordinates   (ndcFromPointer)
-//   ray hits → the change that owns them      (changeAtHits)
+//   ray hits → the change that owns them      (changeAtHits, by change path)
 //
 // The second step is the interesting one. A raycast hits a *Mesh*, which is
 // rarely the thing the diff talks about: GLTFLoader builds a Group per glTF node
@@ -42,12 +42,12 @@ export function ndcFromPointer(pointer: Pointer, rect: Rect): { x: number; y: nu
 export type Hit = { object: Object3D };
 
 export type ChangeLookup = {
-  /** Objects the overlay painted for a change → that change's name. */
-  changeNameByObject: Map<Object3D, string>;
+  /** Objects the overlay painted for a change → that change's path. */
+  changePathByObject: Map<Object3D, string>;
   /** The glTF node an object belongs to, walking up (see associations.ts). */
   nodeIndexOf?: (object: Object3D) => number | null;
-  /** Node index → change name, for changed nodes the overlay tinted in place. */
-  changeNameByNodeIndex?: Map<number, string>;
+  /** Node index → change path, for changed nodes the overlay tinted in place. */
+  changePathByNodeIndex?: Map<number, string>;
 };
 
 /**
@@ -64,8 +64,8 @@ export type ChangeLookup = {
 export function changeAtHits(hits: readonly Hit[], lookup: ChangeLookup): string | null {
   for (const hit of hits) {
     if (!isVisibleInTree(hit.object)) continue;
-    const name = changeAtObject(hit.object, lookup);
-    if (name !== null) return name;
+    const path = changeAtObject(hit.object, lookup);
+    if (path !== null) return path;
   }
   return null;
 }
@@ -78,19 +78,19 @@ export function isVisibleInTree(object: Object3D | null): boolean {
   return true;
 }
 
-/** The change that owns `object` or one of its ancestors, or null. */
+/** The change path that owns `object` or one of its ancestors, or null. */
 export function changeAtObject(object: Object3D | null, lookup: ChangeLookup): string | null {
   for (let current: Object3D | null = object; current; current = current.parent) {
-    const painted = lookup.changeNameByObject.get(current);
+    const painted = lookup.changePathByObject.get(current);
     if (painted !== undefined) return painted;
   }
   // Nothing painted in this chain. The loader's associations are the fallback:
   // they survive the name mangling that the diff's labels don't (node-index.ts).
-  if (lookup.nodeIndexOf && lookup.changeNameByNodeIndex) {
+  if (lookup.nodeIndexOf && lookup.changePathByNodeIndex) {
     const index = lookup.nodeIndexOf(object as Object3D);
     if (index !== null) {
-      const name = lookup.changeNameByNodeIndex.get(index);
-      if (name !== undefined) return name;
+      const path = lookup.changePathByNodeIndex.get(index);
+      if (path !== undefined) return path;
     }
   }
   return null;

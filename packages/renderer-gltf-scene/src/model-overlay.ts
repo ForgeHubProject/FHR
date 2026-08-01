@@ -116,19 +116,33 @@ export type Overlay = {
   changeBox: Box3;
   /** Whole-scene bounds, for the initial framing. */
   sceneBox: Box3;
-  /** Per-change bounding box, so a change list can fly the camera to one (#45). */
-  boxByChangeName: Map<string, Box3>;
+  /**
+   * Per-change bounding box, so a change list can fly the camera to one (#45).
+   *
+   * Keyed by the change's PATH, not its name, all the way down this file. Since
+   * #47 a name is not a change's identity: the previous version's "Wheel" can be
+   * deleted while an unrelated node is renamed *to* "Wheel", which is one removal
+   * and one rename about two different objects, and the handler gives each its
+   * own path ("nodes/Wheel#1", "nodes/Wheel") precisely so a consumer can tell
+   * them apart. Keyed by name, one of the two rows became unreachable and both
+   * were mislabelled — selecting the rename framed the dead node. The path is
+   * what the host, the change tree and the diff map already key on, so this is
+   * also one fewer translation in the selection round trip.
+   */
+  boxByChangePath: Map<string, Box3>;
   /** Per-change objects, for selection/highlight in #45. */
-  objectsByChangeName: Map<string, Object3D[]>;
+  objectsByChangePath: Map<string, Object3D[]>;
+  /** A change's display name, for the callout — the path is a machine key. */
+  labelByChangePath: Map<string, string>;
   /**
    * Every object this overlay painted → the change it was painted for. The
    * raycast-picking direction (#45): a click walks up from the Mesh it hit until
    * it finds an entry here. It covers the ghost clones too, which appear in no
    * glTF association because the loader never made them.
    */
-  changeNameByObject: Map<Object3D, string>;
-  /** Head-model node index → change name, the fallback when nothing was painted. */
-  changeNameByNodeIndex: Map<number, string>;
+  changePathByObject: Map<Object3D, string>;
+  /** Head-model node index → change path, the fallback when nothing was painted. */
+  changePathByNodeIndex: Map<number, string>;
   /** The head model's glTF node for an object (associations.ts), or null. */
   nodeIndexOfObject(object: Object3D): number | null;
   stats: OverlayStats;
@@ -227,10 +241,11 @@ export function buildOverlay(input: OverlayInput): Overlay {
     unpaintable: 0,
   };
   const changeBox = new Box3();
-  const boxByChangeName = new Map<string, Box3>();
-  const objectsByChangeName = new Map<string, Object3D[]>();
-  const changeNameByObject = new Map<Object3D, string>();
-  const changeNameByNodeIndex = new Map<number, string>();
+  const boxByChangePath = new Map<string, Box3>();
+  const objectsByChangePath = new Map<string, Object3D[]>();
+  const labelByChangePath = new Map<string, string>();
+  const changePathByObject = new Map<Object3D, string>();
+  const changePathByNodeIndex = new Map<number, string>();
   const paintedHeadMeshes = new Set<Object3D>();
   /** Base nodes that get their own grammar, so the plain ghost skips them. */
   const baseNodesWithOwnGrammar = new Set<number>();
@@ -247,19 +262,27 @@ export function buildOverlay(input: OverlayInput): Overlay {
   };
 
   for (const change of changes) {
-    const inHead = resolveNodeIndex(head.index, change.name);
+    // A removed node is not in the head file — that is what "removed" means — so
+    // the head is never asked about one. Since #47 its name may nonetheless
+    // resolve there, because a rename can move an unrelated node into the name the
+    // deletion vacated; every hit is that stranger. Looking anyway tinted the
+    // survivor in the removal's colour, gave the removal the survivor's box, and
+    // handed the removal the head node's pick entry, so the rename's own row
+    // became unreachable.
+    const inHead = change.kind === "removed" ? null : resolveNodeIndex(head.index, change.name);
     // A renamed node is called something else in the previous version, so the
     // base file has to be looked up under the old name — otherwise the ghost and
     // the motion vector for "renamed and moved" silently find nothing.
     const inBase = base ? resolveNodeIndex(base.index, change.oldName ?? change.name) : null;
-    if (inHead.ambiguous) note(ambiguousNameMessage(change.name, inHead.all.length));
+    if (inHead?.ambiguous) note(ambiguousNameMessage(change.name, inHead.all.length));
     if (change.oldName !== undefined && inBase?.ambiguous) {
       note(ambiguousPreviousNameMessage(change.oldName, inBase.all.length));
     }
 
     const baseNodeIndex = inBase?.index ?? null;
     if (baseNodeIndex !== null) baseNodesInDiff.add(baseNodeIndex);
-    const headTargets = inHead.index === null ? [] : headObjects.get(inHead.index) ?? [];
+    const headNodeIndex = inHead?.index ?? null;
+    const headTargets = headNodeIndex === null ? [] : headObjects.get(headNodeIndex) ?? [];
     const baseTargets = baseNodeIndex === null ? [] : baseObjects.get(baseNodeIndex) ?? [];
 
     if (headTargets.length === 0 && baseTargets.length === 0) {
@@ -305,10 +328,9 @@ export function buildOverlay(input: OverlayInput): Overlay {
     // pair reads as one object that moved rather than as two objects.
     //
     // Never for a removal, whose transform rows are what the node *had*, not a
-    // move. It only comes up when the head file has an unrelated node of the same
-    // name — the previous version's "Wheel" was deleted and something else was
-    // renamed to "Wheel" — where the old node would otherwise get an arrow drawn
-    // from where it was to where the stranger that inherited its name now is.
+    // move; a removal has no head targets at all (see `inHead` above), so the
+    // arrow can no longer be drawn from where a deleted node was to where the
+    // stranger that inherited its name now is.
     if (
       change.kind !== "removed" &&
       hasTransformChange(change) &&
@@ -336,19 +358,20 @@ export function buildOverlay(input: OverlayInput): Overlay {
 
     if (!box.isEmpty()) {
       changeBox.union(box);
-      boxByChangeName.set(change.name, box);
+      boxByChangePath.set(change.path, box);
     }
     if (painted.length > 0) {
-      objectsByChangeName.set(change.name, painted);
-      for (const object of painted) changeNameByObject.set(object, change.name);
+      objectsByChangePath.set(change.path, painted);
+      for (const object of painted) changePathByObject.set(object, change.path);
     }
-    if (inHead.index !== null && !changeNameByNodeIndex.has(inHead.index)) {
-      changeNameByNodeIndex.set(inHead.index, change.name);
+    labelByChangePath.set(change.path, change.name);
+    if (headNodeIndex !== null && !changePathByNodeIndex.has(headNodeIndex)) {
+      changePathByNodeIndex.set(headNodeIndex, change.path);
     }
   }
 
   /**
-   * Paint some of a node's primitives and record the result under `name`.
+   * Paint some of a node's primitives and record the result under `path`.
    *
    * `ordinals` empty means every primitive of the node. GLTFLoader emits one Mesh
    * per primitive in primitive order, so an ordinal indexes straight into the
@@ -359,7 +382,7 @@ export function buildOverlay(input: OverlayInput): Overlay {
     nodeIndex: number,
     ordinals: readonly number[],
     kind: string,
-    name: string,
+    path: string,
   ): Object3D[] => {
     const color = KIND_COLOR[kind] ?? NEUTRAL;
     const hit: Object3D[] = [];
@@ -373,15 +396,17 @@ export function buildOverlay(input: OverlayInput): Overlay {
         stats.tinted++;
         hit.push(mesh);
       }
-      if (!changeNameByNodeIndex.has(nodeIndex)) changeNameByNodeIndex.set(nodeIndex, name);
+      if (!changePathByNodeIndex.has(nodeIndex)) changePathByNodeIndex.set(nodeIndex, path);
     }
     return hit;
   };
 
   const recordEntityPaint = (change: EntityChange, painted: Object3D[]): void => {
+    labelByChangePath.set(change.path, change.name);
     if (painted.length === 0) {
       // The key resolved to nothing this file draws — an unreferenced mesh, a
-      // material no primitive uses. Counted so the banner can own it.
+      // material no primitive uses, a removed one that is not in this file at all.
+      // Counted so the banner can own it.
       stats.unpaintable++;
       return;
     }
@@ -389,19 +414,27 @@ export function buildOverlay(input: OverlayInput): Overlay {
     for (const object of painted) box.union(worldBox(object));
     if (!box.isEmpty()) {
       changeBox.union(box);
-      boxByChangeName.set(change.name, box);
+      boxByChangePath.set(change.path, box);
     }
-    objectsByChangeName.set(change.name, painted);
-    for (const object of painted) changeNameByObject.set(object, change.name);
+    objectsByChangePath.set(change.path, painted);
+    for (const object of painted) changePathByObject.set(object, change.path);
   };
 
   // A mesh is drawn once per node instancing it, so one geometry edit can have
   // several places on screen — four wheels sharing one WheelMesh is the ordinary
   // case, and painting just the first would be a lie about where the change is.
+  //
+  // A *removed* mesh or material is not in the head file, so it is never resolved
+  // there — the node loop's rule one level up, for the same #47 reason. A mesh's
+  // name can now be vacated by a deletion and taken over by a rename in the same
+  // revision, and the removal resolving through that name painted surviving
+  // geometry in the removal colour, on top of the rename's own paint, while
+  // reporting nothing unpaintable. It is unpaintable: this file doesn't have it.
   for (const change of input.meshes ?? []) {
     const painted: Object3D[] = [];
-    for (const nodeIndex of resolveMeshNodes(head.index, change.name)) {
-      painted.push(...paintNodePrimitives(nodeIndex, change.primitives, change.kind, change.name));
+    const nodes = change.kind === "removed" ? [] : resolveMeshNodes(head.index, change.name);
+    for (const nodeIndex of nodes) {
+      painted.push(...paintNodePrimitives(nodeIndex, change.primitives, change.kind, change.path));
     }
     recordEntityPaint(change, painted);
   }
@@ -413,13 +446,15 @@ export function buildOverlay(input: OverlayInput): Overlay {
   for (const change of input.materials ?? []) {
     const painted: Object3D[] = [];
     const byNode = new Map<number, number[]>();
-    for (const ref of resolveMaterialPrimitives(head.index, change.name)) {
+    const refs =
+      change.kind === "removed" ? [] : resolveMaterialPrimitives(head.index, change.name);
+    for (const ref of refs) {
       const list = byNode.get(ref.node);
       if (list) list.push(ref.primitive);
       else byNode.set(ref.node, [ref.primitive]);
     }
     for (const [nodeIndex, ordinals] of byNode) {
-      painted.push(...paintNodePrimitives(nodeIndex, ordinals, change.kind, change.name));
+      painted.push(...paintNodePrimitives(nodeIndex, ordinals, change.kind, change.path));
     }
     recordEntityPaint(change, painted);
   }
@@ -523,10 +558,11 @@ export function buildOverlay(input: OverlayInput): Overlay {
     movedGroup: hasMoved ? movedGroup : null,
     changeBox,
     sceneBox,
-    boxByChangeName,
-    objectsByChangeName,
-    changeNameByObject,
-    changeNameByNodeIndex,
+    boxByChangePath,
+    objectsByChangePath,
+    labelByChangePath,
+    changePathByObject,
+    changePathByNodeIndex,
     nodeIndexOfObject: (object: Object3D): number | null => nodeIndexOfObject(object, head.gltf),
     stats,
     notes,
