@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -1035,6 +1036,69 @@ func TestContentMatchingIsSkippedOverTheRenameLimit(t *testing.T) {
 		t.Errorf("over the limit, nodes/New_0: kind = %q, want %q", got, Added)
 	}
 	assertUniquePaths(t, over)
+}
+
+// The cap bounds the score matrix — leftBase × leftHead — and nothing else, so
+// every pass over the leftovers has to stay inside it.
+//
+// The one that didn't was the mutual-best back-check, which re-derived each head
+// candidate's best base row by rescanning that column per row: O(leftBase²), and
+// the cap permits leftBase to reach renameLimit² when leftHead is small. The
+// trigger is an ordinary revision, not a crafted one — a lot of named parts
+// sharing one mesh deleted, one part drawing that mesh added — and with a single
+// head candidate every row has a forward winner, so the rescan ran unconditionally.
+// Measured on the branch that shipped the cap: 100 000 nodes took 45 s natively
+// and, compiled to wasm and driven single-threaded as a browser tab runs it,
+// 50 000 took 46 s. That is the hung page the cap exists to prevent.
+//
+// The shape is built here rather than diffed from a document so the test measures
+// the pass and not glTF parsing. The budget is deliberately loose: the pass this
+// pins is milliseconds, and the quadratic it replaces is minutes.
+func TestContentMatchingDoesNotRescanThePerCandidateColumn(t *testing.T) {
+	// One head candidate, and every base element clears the threshold against it
+	// — they all draw the shared mesh and differ only in where they sit. Exactly
+	// one also matches its placement, so the column has a strict winner and the
+	// other 99 999 rows are the back-check's cost and nothing else.
+	const n = 100_000
+	const winner = n / 2
+	part := func(place string) func() signature {
+		return func() signature {
+			return signature{
+				fields: []sigField{
+					{"mesh:Hull", meshWeight, stated},
+					{place, 5, stated},
+				},
+				specific: true,
+			}
+		}
+	}
+	base := make([]entity, n)
+	for i := range base {
+		key := fmt.Sprintf("Old_%d", i)
+		place := "elsewhere"
+		if i == winner {
+			place = "here"
+		}
+		base[i] = entity{key: key, name: key, sig: part(place)}
+	}
+	head := []entity{{key: "New_0", name: "New_0", sig: part("here")}}
+
+	p := pairing{headOf: map[int]int{}, baseOf: map[int]int{}, how: map[int]matchEvidence{}}
+	start := time.Now()
+	matchByContent(p, base, head)
+	elapsed := time.Since(start)
+
+	// The answer first: the cheaper pass must be the same pass.
+	if got, ok := p.headOf[winner]; !ok || got != 0 {
+		t.Errorf("base[%d] paired with head %d (ok = %v); want head 0", winner, got, ok)
+	}
+	if len(p.headOf) != 1 {
+		t.Errorf("pairs = %d, want 1: only the strict column winner may pair", len(p.headOf))
+	}
+	if budget := 10 * time.Second; elapsed > budget {
+		t.Errorf("matchByContent over %d base leftovers and one head candidate took %v, over the %v "+
+			"budget — the per-row column rescan is back", n, elapsed, budget)
+	}
 }
 
 // ── materials and meshes ──────────────────────────────────────────────────────
