@@ -198,6 +198,21 @@ export type MountProps = {
    * Undefined means "the host isn't driving selection"; null means "nothing".
    */
   selectedChangePath?: string | null;
+  /**
+   * What the handler that produced `diff` declares about itself — the same
+   * `capabilities` object it exposes on `ArtifactHandler`, surfaced to the
+   * renderer so a presentation can be chosen honestly.
+   *
+   * The one that matters today is `semanticCompare`. A renderer with several
+   * presentations (SPEC-RENDERING §2e) opens on a structural one when semantic
+   * comparison is meaningful for this format, and on a see-for-yourself one
+   * (side-by-side) when it is not — instead of showing a structural diff that
+   * says "everything changed" because the topology was regenerated.
+   *
+   * Optional, and a renderer MUST have a sensible default without it: a host
+   * that doesn't plumb the handler's declaration through is not an error.
+   */
+  capabilities?: HandlerCapabilities;
   /** Host callback for renderer-emitted events (selection, resolution, error). */
   onEvent?: (e: RendererEvent) => void;
 };

@@ -14,7 +14,8 @@
 // superset of every mangling above. Downstream code deals only in indices, which
 // no layer can rewrite. Pure: no three.js, no DOM.
 
-import type { GltfDocument, GltfNode } from "./gltf-parse.js";
+import type { EntityChange } from "./diff-map.js";
+import { sceneRootName, type GltfDocument, type GltfNode } from "./gltf-parse.js";
 
 /**
  * The display key the handler uses for a node: its name, or `node[i]` when the
@@ -52,6 +53,13 @@ export type NameIndex = {
   byKey: Map<string, number[]>;
   /** Normalised key → node indices, document order. */
   byNormalized: Map<string, number[]>;
+  /**
+   * Node index → its display key: `byKey` read the other way. The mesh and
+   * material maps below resolve to *indices*, and everything that annotates a
+   * row or highlights one speaks node names, so the trip back has to exist
+   * somewhere; here it is one array built in the pass that already computes it.
+   */
+  keyByIndex: string[];
   /** Node count, so callers can sanity-check an index. */
   nodeCount: number;
   /**
@@ -68,6 +76,13 @@ export type NameIndex = {
    */
   materialToPrimitives: Map<string, PrimitiveRef[]>;
   materialToPrimitivesNormalized: Map<string, PrimitiveRef[]>;
+  /**
+   * The name the outline's synthetic root row carries, or null when the file
+   * gets no such row (gltf-parse.ts `sceneRootName`). It is deliberately NOT in
+   * `byKey`: it names a glTF scene, which has no node index, and putting it
+   * there would let a diff label resolve to a node that does not exist.
+   */
+  sceneRootName: string | null;
 };
 
 /** How a label was resolved to a node index. */
@@ -113,8 +128,10 @@ export function buildNameIndex(doc: GltfDocument): NameIndex {
   const nodes = doc.nodes ?? [];
   const byKey = new Map<string, number[]>();
   const byNormalized = new Map<string, number[]>();
+  const keyByIndex: string[] = new Array<string>(nodes.length);
   for (let i = 0; i < nodes.length; i++) {
     const key = nodeKey(nodes[i], i);
+    keyByIndex[i] = key;
     push(byKey, key, i);
     push(byNormalized, normalizeName(key), i);
   }
@@ -153,11 +170,13 @@ export function buildNameIndex(doc: GltfDocument): NameIndex {
   return {
     byKey,
     byNormalized,
+    keyByIndex,
     nodeCount: nodes.length,
     meshToNodes,
     meshToNodesNormalized,
     materialToPrimitives,
     materialToPrimitivesNormalized,
+    sceneRootName: sceneRootName(doc),
   };
 }
 
@@ -181,6 +200,73 @@ export function resolveMaterialPrimitives(index: NameIndex, label: string): Prim
     index.materialToPrimitivesNormalized.get(normalizeName(label)) ??
     []
   );
+}
+
+/**
+ * Where a mesh or material change lands on the *node* list, both ways round.
+ *
+ * A mesh or a material has no place of its own on screen: it is drawn by the
+ * nodes instancing it and by the primitives referencing it (#51 paints exactly
+ * that geometry). So a change against one is a change to a set of nodes, and
+ * every surface keyed on node names — the structure tree's rows and their dots,
+ * the highlight the queue moves — needs this translation or it silently reports
+ * the geometry as untouched while the picture beside it is painted.
+ */
+export type IndirectPaint = {
+  /**
+   * Node display key → the change that reaches it. First in diff order wins, so
+   * a node carrying both a changed mesh and a changed material is described by
+   * the one the reviewer meets first in the list.
+   */
+  byNode: Map<string, EntityChange>;
+  /**
+   * Change key → the node display keys it reaches, in document order. Empty for
+   * a change nothing in this file draws (an unreferenced mesh) — those have no
+   * row to point at, which `model-overlay` already counts as unpaintable.
+   */
+  byChange: Map<string, string[]>;
+};
+
+/**
+ * Resolve mesh and material changes onto this file's nodes.
+ *
+ * Meshes before materials, matching the order `buildOverlay` paints them in, so
+ * the two never disagree about which change a node is described by.
+ */
+export function indirectNodeChanges(
+  index: NameIndex,
+  meshes: readonly EntityChange[],
+  materials: readonly EntityChange[],
+): IndirectPaint {
+  const byNode = new Map<string, EntityChange>();
+  const byChange = new Map<string, string[]>();
+
+  // `seen` does the membership test, `keys` only carries the order. One change
+  // can reach every node in the file — one material named "Steel", one bolt mesh
+  // instanced 20 000 times — and nothing upstream bounds that (limits.ts caps
+  // blob *bytes*, which says nothing about node count). A `keys.includes` here
+  // would be a linear scan per node, and this runs before the canvas exists.
+  const record = (change: EntityChange, nodeIndices: Iterable<number>): void => {
+    const keys: string[] = [];
+    const seen = new Set<string>();
+    for (const node of nodeIndices) {
+      const key = index.keyByIndex[node];
+      if (key === undefined || seen.has(key)) continue;
+      seen.add(key);
+      keys.push(key);
+      if (!byNode.has(key)) byNode.set(key, change);
+    }
+    if (keys.length > 0) byChange.set(change.name, keys);
+  };
+
+  for (const change of meshes) record(change, resolveMeshNodes(index, change.name));
+  for (const change of materials) {
+    record(
+      change,
+      resolveMaterialPrimitives(index, change.name).map((ref) => ref.node),
+    );
+  }
+  return { byNode, byChange };
 }
 
 function push(map: Map<string, number[]>, key: string, value: number): void {

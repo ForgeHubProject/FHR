@@ -9,10 +9,19 @@
 // lost. What it can't prove is the raycast against live geometry, the tween's
 // feel, or that a browser dispatches the pointer events — those need a browser.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type { MountProps, RendererEvent, StructuredDiff } from "@fhr/types";
 import { createFakeDocument, asElement, type FakeElement } from "./fake-dom.js";
 import { createLiveView, type Scene3D, type SceneHooks, type SceneMounter } from "./live-view.js";
+import { buildQueue } from "./queue.js";
+
+// The 3D view's queue is built lazily, and "lazily" is only observable as a call
+// count. The spy delegates to the real implementation, so every other test in
+// this file sees the module it always saw.
+vi.mock("./queue.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./queue.js")>();
+  return { ...actual, buildQueue: vi.fn(actual.buildQueue) };
+});
 
 const diff: StructuredDiff = {
   version: "1.0",
@@ -204,6 +213,40 @@ describe("createLiveView — the 3D half", () => {
     });
   });
 
+  it("hands the scene a formatted review queue for its change-queue region", async () => {
+    const { container, mounts } = setup();
+    button(container).fire("click");
+    await settle();
+    const queue = mounts[0]!.hooks.queue!;
+    // The worklist arrives in review order, already formatted: the 3D chunk
+    // renders a queue rather than re-interpreting a diff.
+    expect(queue.map((e) => e.path)).toEqual(["nodes/Wheel_FL", "nodes/Mirror_L", "materials/Paint"]);
+    expect(queue[0]!.headline).toBe("moved 50 mm");
+    expect(queue[0]!.details.map((d) => d.label)).toEqual(["translation"]);
+    expect(queue[1]!.details).toEqual([]);
+  });
+
+  it("steps the review path when the 3D chrome's queue asks it to", async () => {
+    const { container, mounts, view, events } = setup();
+    button(container).fire("click");
+    await settle();
+    mounts[0]!.hooks.onStep!(1);
+    expect(view.selected).toBe("nodes/Wheel_FL");
+    // A step is a viewer action, so it flies the scene and reaches the host.
+    expect(mounts[0]!.selections).toEqual([{ path: "nodes/Wheel_FL", fly: true }]);
+    expect(events).toEqual([{ type: "select", changePath: "nodes/Wheel_FL" }]);
+  });
+
+  it("ignores a step from a scene that outlived the view", async () => {
+    const { container, mounts, view } = setup();
+    button(container).fire("click");
+    await settle();
+    const step = mounts[0]!.hooks.onStep!;
+    view.dispose();
+    step(1);
+    expect(view.selected).toBeNull();
+  });
+
   it("flies the scene to a change selected from the tree", async () => {
     const { container, mounts } = setup();
     button(container).fire("click");
@@ -281,6 +324,42 @@ describe("createLiveView — the 3D half", () => {
     await settle();
     await settle();
     expect(mounts[0]!.disposals).toBe(1);
+  });
+});
+
+describe("createLiveView — what a plain mount pays for", () => {
+  // This function runs on every lite-bundle mount, on every host, whether or not
+  // anyone ever opens the 3D view. Formatting the queue there re-walks every
+  // detail row the change tree just formatted — roughly doubling mount-time
+  // formatting work for a region most mounts never build.
+  const builds = (): number => vi.mocked(buildQueue).mock.calls.length;
+
+  it("does not format the 3D queue until the 3D view is opened", async () => {
+    vi.mocked(buildQueue).mockClear();
+    const { container } = setup();
+    expect(builds()).toBe(0);
+    button(container).fire("click");
+    await settle();
+    expect(builds()).toBe(1);
+  });
+
+  it("formats it once, however often the scene is opened and closed", async () => {
+    const { container } = setup();
+    button(container).fire("click");
+    await settle();
+    vi.mocked(buildQueue).mockClear();
+    button(container).fire("click");
+    button(container).fire("click");
+    await settle();
+    expect(builds()).toBe(0);
+  });
+
+  it("never formats it in a mode that has no 3D view at all", () => {
+    // "merge" returns before the "View in 3D" button exists, so the queue built
+    // at mount time was discarded four lines later.
+    vi.mocked(buildQueue).mockClear();
+    setup({ mode: "merge" });
+    expect(builds()).toBe(0);
   });
 });
 

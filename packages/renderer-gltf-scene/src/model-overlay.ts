@@ -24,6 +24,13 @@
 //     other, which is a sorting soup; unchanged head geometry is desaturated
 //     instead, which reads the same way and stays opaque.
 //
+// The tint and the desaturation land on the head model's OWN materials, in
+// place: they are not a separate group that can be hidden, because the colour
+// has to be on the geometry the file describes. So every swap is recorded and
+// `setPaint(false)` puts the file's materials back — that is the only way a
+// pane labelled "Current version" can show the current version rather than the
+// diff drawn over it (#56 side-by-side).
+//
 // three.js is used here for scene assembly and math only — no renderer, no
 // canvas — so all of it is exercised in the headless tests.
 
@@ -130,6 +137,33 @@ export type Overlay = {
   changeNameByNodeIndex: Map<number, string>;
   /** The head model's glTF node for an object (associations.ts), or null. */
   nodeIndexOfObject(object: Object3D): number | null;
+  /**
+   * World box of a node of the *current* version by name, whether or not the
+   * diff touched it. `boxByChangeName` only knows about changes; the structure
+   * tree (#56) can reach an unchanged part for context, which is the point of
+   * having it, and framing one needs a box nothing painted. Also answers for
+   * `sceneRootName`, which is a row of that tree but not a node. Returns null
+   * for a name this file's scene graph doesn't have.
+   */
+  boxOfNode(name: string): Box3 | null;
+  /**
+   * The structure tree's root row, when that row is the glTF *scene* rather than
+   * a node (gltf-parse.ts `sceneRootName`); null when the tree has no such row.
+   * Callers need it to tell "the whole model" from "one part of it" — the two
+   * mean different things to a reviewer even though both frame a box.
+   */
+  sceneRootName: string | null;
+  /**
+   * Put the diff paint on the current version (`true`) or take it off, back to
+   * the materials the file itself carries (`false`). Idempotent, and cheap: the
+   * two material sets are both already built, so this is a pointer swap per
+   * painted mesh and nothing recompiles.
+   *
+   * Side-by-side is why this exists. Its panes are labelled with versions, and a
+   * pane can only keep that promise while the head model is unpainted — see the
+   * note at the top of this file.
+   */
+  setPaint(on: boolean): void;
   stats: OverlayStats;
   /** Plain-language notes for the banner list (ambiguity, unmatched names). */
   notes: string[];
@@ -207,9 +241,21 @@ export function buildOverlay(input: OverlayInput): Overlay {
   // back in the same visual register as the thing it distinguishes it from.
   const arrowheadMaterial = new MeshBasicMaterial({ color: KIND_COLOR["modified"] });
 
-  /** Originals we replaced; nothing references them any more, so they must go. */
+  /**
+   * Every material this overlay displaced: the file's originals and the
+   * intermediates a twice-painted mesh left behind. They are this overlay's to
+   * free even while `setPaint(false)` has some of them back on the model, since
+   * nothing outside the overlay's lifetime holds them.
+   */
   const orphaned = new Set<Material>();
   const tintCache = new Map<string, Material>();
+  /**
+   * Head meshes this overlay repainted → what was on them and what it put there.
+   * The FIRST material a mesh had is the file's own; a later one is an
+   * intermediate of ours (a node change and then a material change can both
+   * reach one primitive), which must never become the "original".
+   */
+  const headPaint = new Map<Object3D, PaintSwap>();
 
   const headObjects = objectsByNodeIndex(head.gltf);
   const baseObjects = base ? objectsByNodeIndex(base.gltf) : new Map<number, Object3D[]>();
@@ -274,7 +320,7 @@ export function buildOverlay(input: OverlayInput): Overlay {
       const color = KIND_COLOR[change.kind] ?? NEUTRAL;
       for (const target of headTargets) {
         for (const mesh of meshesIn(target)) {
-          replaceMaterial(mesh, (material) => tint(material, color, tintCache), orphaned);
+          replaceMaterial(mesh, (material) => tint(material, color, tintCache), orphaned, headPaint);
           paintedHeadMeshes.add(mesh);
           stats.tinted++;
         }
@@ -351,7 +397,7 @@ export function buildOverlay(input: OverlayInput): Overlay {
       const chosen = ordinals.length === 0 ? primitives : ordinals.map((o) => primitives[o]);
       for (const mesh of chosen) {
         if (!mesh) continue;
-        replaceMaterial(mesh, (material) => tint(material, color, tintCache), orphaned);
+        replaceMaterial(mesh, (material) => tint(material, color, tintCache), orphaned, headPaint);
         paintedHeadMeshes.add(mesh);
         stats.tinted++;
         hit.push(mesh);
@@ -418,10 +464,22 @@ export function buildOverlay(input: OverlayInput): Overlay {
   if (paintApplied) {
     for (const mesh of meshesIn(head.gltf.scene)) {
       if (paintedHeadMeshes.has(mesh)) continue;
-      replaceMaterial(mesh, (material) => desaturate(material, tintCache), orphaned);
+      replaceMaterial(mesh, (material) => desaturate(material, tintCache), orphaned, headPaint);
       stats.desaturated++;
     }
   }
+
+  // Paint on or off, in one pointer write per repainted mesh. Guarded so
+  // side-by-side, which asks once per pane per frame, pays two comparisons a
+  // frame rather than a full re-materialise of the model.
+  let painting = true;
+  const setPaint = (on: boolean): void => {
+    if (on === painting) return;
+    painting = on;
+    for (const [mesh, swap] of headPaint) {
+      (mesh as { material?: Material | Material[] }).material = on ? swap.painted : swap.original;
+    }
+  };
 
   root.add(headGroup);
   const hasRemoved = removedGroup.children.length > 0;
@@ -511,11 +569,30 @@ export function buildOverlay(input: OverlayInput): Overlay {
     changeNameByObject,
     changeNameByNodeIndex,
     nodeIndexOfObject: (object: Object3D): number | null => nodeIndexOfObject(object, head.gltf),
+    boxOfNode(name: string): Box3 | null {
+      const resolved = resolveNodeIndex(head.index, name);
+      if (resolved.index === null) {
+        // The tree's root row names the glTF *scene*, which resolves through no
+        // node index — but it does mean something on screen, namely all of the
+        // current version. Answering null there made the first and most
+        // prominent row of the tree click into nothing.
+        return name === head.index.sceneRootName ? nonEmpty(worldBox(headGroup)) : null;
+      }
+      const targets = headObjects.get(resolved.index) ?? [];
+      if (targets.length === 0) return null;
+      const box = new Box3();
+      for (const target of targets) box.union(worldBox(target));
+      return nonEmpty(box);
+    },
+    sceneRootName: head.index.sceneRootName,
+    setPaint,
     stats,
     notes,
     dispose(): DisposeReport {
-      // The shared overlay materials are attached to objects in the tree, so the
-      // walk finds them; `orphaned` carries the originals tinting swapped out.
+      // Put the paint back first: the walk frees what is *attached*, and with the
+      // paint off the tinted clones hang off nothing. `orphaned` carries the
+      // file's own materials either way.
+      setPaint(true);
       return disposeTree(root, orphaned);
     },
   };
@@ -526,24 +603,42 @@ function worldBox(object: Object3D): Box3 {
   return new Box3().setFromObject(object);
 }
 
-/** Swap a mesh's material(s) through `make`, remembering what was displaced. */
+/** A box only if it encloses something — an empty one frames nothing. */
+function nonEmpty(box: Box3): Box3 | null {
+  return box.isEmpty() ? null : box;
+}
+
+/** What a repainted mesh wore before this overlay touched it, and after. */
+type PaintSwap = { original: Material | Material[]; painted: Material | Material[] };
+
+/**
+ * Swap a mesh's material(s) through `make`, remembering what was displaced —
+ * both for disposal (`orphaned`) and so the paint can be taken back off
+ * (`swaps`, keyed by mesh).
+ */
 function replaceMaterial(
   mesh: Object3D,
   make: (material: Material) => Material,
   orphaned: Set<Material>,
+  swaps: Map<Object3D, PaintSwap>,
 ): void {
   const holder = mesh as { material?: Material | Material[] };
   const current = holder.material;
   if (!current) return;
+  let next: Material | Material[];
   if (Array.isArray(current)) {
-    holder.material = current.map((m) => {
+    next = current.map((m) => {
       orphaned.add(m);
       return make(m);
     });
-    return;
+  } else {
+    orphaned.add(current);
+    next = make(current);
   }
-  orphaned.add(current);
-  holder.material = make(current);
+  const swap = swaps.get(mesh);
+  if (swap) swap.painted = next;
+  else swaps.set(mesh, { original: current, painted: next });
+  holder.material = next;
 }
 
 type Tintable = {
