@@ -380,6 +380,8 @@ type StructuredDiff = {
 
 **`renamed`** — one entity that kept its identity and changed its name. `path` and `label` use the entity's **new** name (a consumer selecting by path is always addressing the file in front of it); `before` is the bare old name and `after` the new name plus the evidence the handler matched on, e.g. `Fender (matched by content, ~91% similar)`. Anything else that changed at the same time hangs off it as a child, so a rename plus a move is one change with the move under it.
 
+**`path` identifies one change.** No two changes in a diff share a path, and a consumer may key on it. Renames make that worth stating, because they break the assumption that a name identifies an element across a pair of revisions: the previous version's `Wheel` can be deleted while an unrelated element is renamed *to* `Wheel`, which is two changes about two different objects that a name-keyed consumer would merge — losing the deletion. A handler whose two sides collide on a key disambiguates the **base-side** one (`nodes/Wheel#1`, the same `#` disambiguator duplicate names take) and leaves `label` as the element's key in its own file, so a label still resolves against the revision its change is about.
+
 `ChangeKind` is an **open** union in practice: it may gain members without a `version` or `fhrVersion` bump, and consumers must carry a kind they do not recognise rather than drop it (count it in summaries, render it with a neutral marker). The `@fhr/renderer-sdk` change tree does exactly this, which is why `renamed` needed no SDK change to appear in a summary bar.
 
 ### Stable entity identity — the `fhr_uid` convention

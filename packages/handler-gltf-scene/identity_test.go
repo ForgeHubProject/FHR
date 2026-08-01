@@ -865,6 +865,178 @@ func TestRenamedParentDoesNotReparentItsChildren(t *testing.T) {
 	}
 }
 
+// `before` and `after` are the elements' bare *names* (SPEC.md §7), never
+// uniqueKeys' disambiguated key. Duplicate names are the ordinary case uniqueKeys
+// exists for and an authored id is what pairs them across a rename, so this is
+// the feature's own target file — and `Wheel#1` in `before` sends a consumer
+// looking for a node the previous revision does not have: it has two called
+// `Wheel` and none called `Wheel#1`. The renderer's base-file lookup is keyed on
+// raw names and misses outright, taking the removed ghost and the motion vector
+// for "renamed and moved" with it.
+func TestRenameOfADuplicateNamedElementReportsBareNames(t *testing.T) {
+	t.Run("the duplicate is on the base side", func(t *testing.T) {
+		base := nodesDoc(t,
+			withUID("u1", map[string]any{"name": "Wheel", "translation": []float64{1, 0, 0}}),
+			withUID("u2", map[string]any{"name": "Wheel", "translation": []float64{-1, 0, 0}}),
+		)
+		head := nodesDoc(t,
+			withUID("u1", map[string]any{"name": "Wheel", "translation": []float64{1, 0, 0}}),
+			withUID("u2", map[string]any{"name": "Tire", "translation": []float64{-1, 0, 0}}),
+		)
+
+		c := mustRename(t, diffOf(t, base, head), "nodes/Tire", "Wheel")
+		if got := afterText(c); strings.Contains(got, "#") {
+			t.Errorf("after = %q, want no disambiguated key in it", got)
+		}
+	})
+
+	// The mirror: the head file is the one with two `Wheel`s, so the *new* name is
+	// the one whose key was suffixed. The path still carries the key — it has to
+	// address one element — but `after` is the name.
+	t.Run("the duplicate is on the head side", func(t *testing.T) {
+		base := nodesDoc(t,
+			withUID("u1", map[string]any{"name": "Spoke", "translation": []float64{1, 0, 0}}),
+			withUID("u2", map[string]any{"name": "Wheel", "translation": []float64{-1, 0, 0}}),
+		)
+		head := nodesDoc(t,
+			withUID("u2", map[string]any{"name": "Wheel", "translation": []float64{-1, 0, 0}}),
+			withUID("u1", map[string]any{"name": "Wheel", "translation": []float64{1, 0, 0}}),
+		)
+
+		c := mustRename(t, diffOf(t, base, head), "nodes/Wheel#1", "Spoke")
+		if got, want := afterText(c), "Wheel (matched by "+uidExtrasKey+")"; got != want {
+			t.Errorf("after = %q, want %q", got, want)
+		}
+	})
+
+	// An element with no name at all has no bare name to report, and its key is
+	// the only thing it is called anywhere in the diff — so that one stays.
+	t.Run("an unnamed side keeps its key", func(t *testing.T) {
+		base := nodesDoc(t, withUID("u1", map[string]any{"translation": []float64{1, 0, 0}}))
+		head := nodesDoc(t, withUID("u1", map[string]any{"name": "Wheel", "translation": []float64{1, 0, 0}}))
+
+		mustRename(t, diffOf(t, base, head), "nodes/Wheel", "node[0]")
+	})
+}
+
+// ── one path per change ───────────────────────────────────────────────────────
+
+// A matched element is reported under the *head* key and an unmatched base
+// element under the *base* key, and the two namespaces are independent — which
+// they were not before this layer, when both sides were walked in one merged key
+// order. Base [A(id=1), B] against head [B(id=1)] therefore put the rename A→B
+// and the removal of the old B at the same path.
+//
+// Two different elements at one path is not a cosmetic collision. Every consumer
+// keys on it — the change tree's rows, the review callout's headline map, the
+// renderer's per-node facts — so one of the two rows is silently dropped, and the
+// one that loses is the deletion.
+func TestSiblingChangesNeverShareAPath(t *testing.T) {
+	t.Run("nodes", func(t *testing.T) {
+		base := meshedDoc(t,
+			withUID("u1", map[string]any{"name": "A", "mesh": 0, "translation": []float64{1, 0, 0}}),
+			withUID("u2", map[string]any{"name": "B", "mesh": 1, "translation": []float64{2, 0, 0}}),
+		)
+		head := meshedDoc(t,
+			withUID("u1", map[string]any{"name": "B", "mesh": 0, "translation": []float64{1, 0, 0}}),
+		)
+
+		d := diffOf(t, base, head)
+		mustRename(t, d, "nodes/B", "A")
+		assertUniquePaths(t, d)
+
+		removed := mustChange(t, d, "nodes/B#1")
+		if removed.Kind != Removed {
+			t.Errorf("nodes/B#1: kind = %q, want %q", removed.Kind, Removed)
+		}
+		// The label is what the element is called in the file the change is about,
+		// so a consumer resolving it against the previous revision still finds it.
+		// Only the path — the addressing key, which has to be unique — is suffixed.
+		if removed.Label != "B" {
+			t.Errorf("nodes/B#1: label = %q, want %q", removed.Label, "B")
+		}
+		if findChange(d, "nodes/B#1/mesh") == nil {
+			t.Error("the removed node's own properties must hang off its own path")
+		}
+	})
+
+	t.Run("materials", func(t *testing.T) {
+		mats := func(list ...map[string]any) []byte {
+			items := make([]any, len(list))
+			for i, m := range list {
+				items[i] = m
+			}
+			return doc(t, map[string]any{"materials": items})
+		}
+		base := mats(
+			withUID("u1", map[string]any{"name": "A", "emissiveFactor": []float64{0.4, 0.1, 0}}),
+			withUID("u2", map[string]any{"name": "B", "doubleSided": true}),
+		)
+		head := mats(
+			withUID("u1", map[string]any{"name": "B", "emissiveFactor": []float64{0.4, 0.1, 0}}),
+		)
+
+		d := diffOf(t, base, head)
+		mustRename(t, d, "materials/B", "A")
+		assertUniquePaths(t, d)
+		if got := kindAt(d, "materials/B#1"); got != Removed {
+			t.Errorf("materials/B#1: kind = %q, want %q", got, Removed)
+		}
+	})
+}
+
+// assertUniquePaths is the property the collision above breaks, checked over the
+// whole tree rather than at the two paths one fixture happens to produce.
+func assertUniquePaths(t *testing.T, d StructuredDiff) {
+	t.Helper()
+	seen := make(map[string]bool)
+	for _, p := range paths(d) {
+		if seen[p] {
+			t.Errorf("path %q is emitted twice; a path addresses one change", p)
+		}
+		seen[p] = true
+	}
+}
+
+// ── the cost of tier 3 ────────────────────────────────────────────────────────
+
+// Content matching is quadratic in the leftovers, and the case that makes every
+// element a leftover is ordinary: any pipeline step that rewrites all the names
+// at once — an FBX round trip, a namespace prefix on import — clears tiers 1 and
+// 2 outright. Unbounded, 8k nodes took four minutes and a gigabyte, in a package
+// that also runs single-threaded in a browser tab.
+//
+// So above git's renameLimit the tier is skipped and its leftovers are reported
+// as the removals and additions they are. Both halves are pinned here: the limit
+// is a cap on the work, not a change to the answer below it.
+func TestContentMatchingIsSkippedOverTheRenameLimit(t *testing.T) {
+	// Every node draws one shared mesh and sits at its own translation, so each
+	// base node has exactly one head node it matches perfectly and tier 3 pairs
+	// all of them — until the cap says otherwise.
+	side := func(prefix string, n int) []byte {
+		nodes := make([]map[string]any, n)
+		for i := range nodes {
+			nodes[i] = map[string]any{
+				"name": fmt.Sprintf("%s%d", prefix, i), "mesh": 0,
+				"translation": []float64{float64(i + 1), 0, 0},
+			}
+		}
+		return meshListDoc(t, []string{"Hull"}, nodes...)
+	}
+
+	at := diffOf(t, side("Old_", renameLimit), side("New_", renameLimit))
+	mustRename(t, at, "nodes/New_0", "Old_0")
+
+	over := diffOf(t, side("Old_", renameLimit+1), side("New_", renameLimit+1))
+	if got := kindAt(over, "nodes/Old_0"); got != Removed {
+		t.Errorf("over the limit, nodes/Old_0: kind = %q, want %q", got, Removed)
+	}
+	if got := kindAt(over, "nodes/New_0"); got != Added {
+		t.Errorf("over the limit, nodes/New_0: kind = %q, want %q", got, Added)
+	}
+	assertUniquePaths(t, over)
+}
+
 // ── materials and meshes ──────────────────────────────────────────────────────
 
 func TestMaterialRename(t *testing.T) {
@@ -947,6 +1119,84 @@ func TestUntexturedMaterialRenameStillPairsOnWhatItStates(t *testing.T) {
 	}
 }
 
+// Dropping the fields nobody wrote shrinks the denominator, and with equal
+// weights that promoted whatever survived: two materials whose only common ground
+// was `doubleSided: true` landed on exactly the threshold however far apart their
+// colours were, and two that stated nothing else at all scored a perfect 1.0. The
+// weights say what a field can distinguish (a colour is four numbers; a flag is
+// one of two states) and the floor says a material is at least its colour.
+func TestMaterialsDoNotPairOnOneLowInformationField(t *testing.T) {
+	rgba := func(r, g, b float64) map[string]any {
+		return map[string]any{"baseColorFactor": []float64{r, g, b, 1}}
+	}
+	tests := []struct {
+		name       string
+		base, head map[string]any
+	}{
+		{
+			name: "opposite colours, both double-sided",
+			base: map[string]any{"name": "Leaf", "pbrMetallicRoughness": rgba(0, 1, 0), "doubleSided": true},
+			head: map[string]any{"name": "Wire", "pbrMetallicRoughness": rgba(1, 0, 0), "doubleSided": true},
+		},
+		{
+			name: "opposite emissive, both double-sided",
+			base: map[string]any{"name": "Glow", "emissiveFactor": []float64{1, 0, 0}, "doubleSided": true},
+			head: map[string]any{"name": "Spark", "emissiveFactor": []float64{0, 0, 1}, "doubleSided": true},
+		},
+		{
+			// The realistic one: artists set metallic and roughness on everything, so
+			// two unrelated plastics routinely agree on both and differ only in colour.
+			name: "different colour, same metallic and roughness",
+			base: map[string]any{"name": "RedPlastic", "pbrMetallicRoughness": map[string]any{
+				"baseColorFactor": []float64{0.9, 0.1, 0.1, 1}, "metallicFactor": 0.0, "roughnessFactor": 0.4,
+			}},
+			head: map[string]any{"name": "BluePlastic", "pbrMetallicRoughness": map[string]any{
+				"baseColorFactor": []float64{0.1, 0.1, 0.9, 1}, "metallicFactor": 0.0, "roughnessFactor": 0.4,
+			}},
+		},
+		{
+			name: "nothing stated but the flag, and they agree on it",
+			base: map[string]any{"name": "Leaf", "doubleSided": true},
+			head: map[string]any{"name": "Wire", "doubleSided": true},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			base := doc(t, map[string]any{"materials": []any{tc.base}})
+			head := doc(t, map[string]any{"materials": []any{tc.head}})
+			d := diffOf(t, base, head)
+			if got := kindAt(d, "materials/"+tc.base["name"].(string)); got != Removed {
+				t.Errorf("%s: kind = %q, want %q", tc.base["name"], got, Removed)
+			}
+			if got := kindAt(d, "materials/"+tc.head["name"].(string)); got != Added {
+				t.Errorf("%s: kind = %q, want %q", tc.head["name"], got, Added)
+			}
+		})
+	}
+}
+
+// The other side of those weights. A texture slot resolves to image content — a
+// URI, or a mime type plus a hash of the pixels — which is the one material
+// property two unrelated materials cannot agree on by coincidence, so a shared
+// one carries a rename on its own even though every factor around it is a default
+// the floor keeps in the denominator.
+func TestTexturedMaterialRenamePairsOnTheSharedImage(t *testing.T) {
+	textured := func(name string) []byte {
+		return doc(t, map[string]any{
+			"images":   []any{map[string]any{"uri": "body-albedo.png"}},
+			"textures": []any{map[string]any{"source": 0}},
+			"materials": []any{map[string]any{"name": name, "pbrMetallicRoughness": map[string]any{
+				"baseColorTexture": map[string]any{"index": 0},
+			}}},
+		})
+	}
+
+	c := mustRename(t, diffOf(t, textured("Paint"), textured("BodyPaint")), "materials/BodyPaint", "Paint")
+	if got := afterText(c); !strings.Contains(got, "matched by content") || strings.Contains(got, "%") {
+		t.Errorf("after = %q, want an exact content match with no similarity figure", got)
+	}
+}
+
 // A default material describes nothing, so it never pairs on content — the same
 // rule that keeps two empty nodes apart.
 func TestDefaultMaterialsNeverPairOnContent(t *testing.T) {
@@ -960,6 +1210,53 @@ func TestDefaultMaterialsNeverPairOnContent(t *testing.T) {
 	if got := kindAt(d, "materials/BodyPaint"); got != Added {
 		t.Errorf("materials/BodyPaint: kind = %q, want %q", got, Added)
 	}
+}
+
+// A reference is compared by identity, not by the key it renders to. Renaming the
+// referent changes that string for everyone pointing at it, so a string compare
+// asserts a structural edit nobody made — the same mistake the parent compare
+// avoids, and the one that makes a mesh rename read as "every node drawing it was
+// pointed at different geometry" and a material rename as "every primitive using
+// it was reassigned".
+func TestRenamingAReferentDoesNotEditWhatPointsAtIt(t *testing.T) {
+	t.Run("a renamed mesh", func(t *testing.T) {
+		side := func(mesh string) []byte {
+			return meshListDoc(t, []string{mesh},
+				map[string]any{"name": "Body", "mesh": 0, "translation": []float64{0, 1, 0}},
+				map[string]any{"name": "Shadow", "mesh": 0},
+			)
+		}
+
+		d := diffOf(t, side("BodyMesh"), side("HullMesh"))
+		mustRename(t, d, "meshes/HullMesh", "BodyMesh")
+		for _, path := range []string{"nodes", "nodes/Body", "nodes/Body/mesh", "nodes/Shadow"} {
+			if c := findChange(d, path); c != nil {
+				t.Errorf("no node's mesh reference changed; got %s = %+v", path, c)
+			}
+		}
+	})
+
+	t.Run("a renamed material", func(t *testing.T) {
+		side := func(material string) []byte {
+			return doc(t, map[string]any{
+				"scene":  0,
+				"scenes": []any{map[string]any{"nodes": []int{0}}},
+				"nodes":  []any{map[string]any{"name": "Body", "mesh": 0}},
+				"meshes": []any{map[string]any{"name": "BodyMesh", "primitives": []any{
+					map[string]any{"attributes": map[string]any{}, "material": 0},
+				}}},
+				"materials": []any{map[string]any{
+					"name": material, "emissiveFactor": []float64{0.4, 0.1, 0}, "doubleSided": true,
+				}},
+			})
+		}
+
+		d := diffOf(t, side("Paint"), side("BodyPaint"))
+		mustRename(t, d, "materials/BodyPaint", "Paint")
+		if c := findChange(d, "meshes/BodyMesh/primitives/0/material"); c != nil {
+			t.Errorf("no primitive was reassigned; got %+v", c)
+		}
+	})
 }
 
 // A renamed mesh matches on the same primitive descriptors the geometry compare
@@ -1088,12 +1385,19 @@ func TestSimilarityAndStrictBest(t *testing.T) {
 		t.Errorf("a floor below the live weight must not bind: similarity = %v, want 0.5", got)
 	}
 
-	score := map[[2]int]float64{{0, 10}: 0.9, {0, 11}: 0.9}
-	if _, _, ok := strictBest(0, []int{10, 11}, score, false); ok {
+	row := []float64{0.9, 0.9}
+	at := func(k int) float64 { return row[k] }
+	if _, _, ok := strictBest(len(row), at); ok {
 		t.Error("a tie must not produce a winner")
 	}
-	score[[2]int{0, 11}] = 0.6
-	if best, _, ok := strictBest(0, []int{10, 11}, score, false); !ok || best != 10 {
-		t.Errorf("strictBest = %d, ok = %v; want 10, true", best, ok)
+	row[1] = 0.6
+	if best, _, ok := strictBest(len(row), at); !ok || best != 0 {
+		t.Errorf("strictBest = %d, ok = %v; want 0, true", best, ok)
+	}
+	// A score below the threshold is not a candidate: the matrix stores zero for
+	// every pair the build loop turned away, and a zero must not win by default.
+	row[0], row[1] = 0, 0.4
+	if _, _, ok := strictBest(len(row), at); ok {
+		t.Error("nothing at or above the threshold must not produce a winner")
 	}
 }
