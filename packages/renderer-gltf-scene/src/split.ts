@@ -112,6 +112,52 @@ export function splitPanes(
   ];
 }
 
+/**
+ * The renderer calls one side-by-side frame makes. Structural and narrow, so
+ * this module stays three.js-free and the *order* of those calls — the part that
+ * decides whether the gutter is ever written — is testable without a GL context.
+ */
+export type SplitTarget = {
+  setScissorTest(on: boolean): void;
+  setScissor(x: number, y: number, width: number, height: number): void;
+  setViewport(x: number, y: number, width: number, height: number): void;
+  clear(): void;
+};
+
+/**
+ * Draw one side-by-side frame: clear the whole canvas, then draw each pane
+ * inside its own scissor rect.
+ *
+ * The unscissored clear is not redundant with three.js's autoclear. Autoclear
+ * runs *inside* WebGLRenderer.render() — WebGLBackground → renderer.clear() →
+ * gl.clear — and gl.clear obeys the scissor box. With the scissor test already
+ * on, nothing in the frame ever writes the `SPLIT_GAP` strip between the panes.
+ * The renderer is opaque (alpha:false, so the chrome's CSS cannot show through)
+ * and does not preserve its drawing buffer, so those pixels are undefined after
+ * a swap: in practice the last full-canvas frame drawn before the mode switch,
+ * flickering as the two buffers alternate. `splitPanes` above rounds precisely
+ * to avoid an unpainted seam column that "looks like a rendering bug" — leaving
+ * the deliberate gutter unpainted is that same bug, spelled differently.
+ */
+export function drawSplit(
+  target: SplitTarget,
+  size: { width: number; height: number },
+  panes: readonly Pane[],
+  drawPane: (pane: Pane) => void,
+): void {
+  target.setScissorTest(false);
+  target.setViewport(0, 0, size.width, size.height);
+  target.clear();
+  target.setScissorTest(true);
+  for (const pane of panes) {
+    target.setViewport(pane.gl.x, pane.gl.y, pane.gl.width, pane.gl.height);
+    target.setScissor(pane.gl.x, pane.gl.y, pane.gl.width, pane.gl.height);
+    drawPane(pane);
+  }
+  target.setScissorTest(false);
+  target.setViewport(0, 0, size.width, size.height);
+}
+
 function pane(side: PaneSide, gl: Rect, cssTop: number): Pane {
   return {
     side,
