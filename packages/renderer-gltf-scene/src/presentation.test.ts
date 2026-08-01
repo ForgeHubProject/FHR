@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import type { HandlerCapabilities } from "@fhr/types";
-import { availableModes, createModeState, defaultMode, MODE_ORDER } from "./presentation.js";
+import {
+  availableModes,
+  createModeState,
+  defaultMode,
+  MODE_ORDER,
+  versionLayers,
+} from "./presentation.js";
 
 const caps = (semanticCompare: boolean): HandlerCapabilities => ({ semanticCompare, semanticMerge: false });
 
@@ -30,6 +36,57 @@ describe("availableModes", () => {
     // Overlay and side-by-side both draw the previous version; a toggle to a
     // mode that can only show what is already on screen is a broken promise.
     expect(availableModes({ bothVersionsResident: false })).toEqual(["structural"]);
+  });
+});
+
+describe("versionLayers", () => {
+  it("gives a side-by-side pane its version and nothing else", () => {
+    // Including the paint. It is the only part of the grammar that is not a
+    // group, so it is the only part a pane cannot drop by hiding something —
+    // and a "Current version" pane showing the diff's tint shows the reviewer
+    // the highlight instead of the new colour underneath it.
+    expect(versionLayers({ side: "head", grammar: false, mode: "side-by-side" })).toEqual({
+      head: true,
+      baseSolid: false,
+      baseGhost: false,
+      removed: false,
+      moved: false,
+      paint: false,
+    });
+    expect(versionLayers({ side: "base", grammar: false, mode: "side-by-side" })).toEqual({
+      head: false,
+      baseSolid: true,
+      baseGhost: false,
+      removed: false,
+      moved: false,
+      paint: false,
+    });
+  });
+
+  it("carries the whole grammar in a single viewport", () => {
+    expect(versionLayers({ side: "head", grammar: true, mode: "structural" })).toEqual({
+      head: true,
+      baseSolid: false,
+      baseGhost: false,
+      removed: true,
+      moved: true,
+      paint: true,
+    });
+  });
+
+  it("adds the previous version underneath in overlay, and only there", () => {
+    expect(versionLayers({ side: "head", grammar: true, mode: "overlay" }).baseGhost).toBe(true);
+    expect(versionLayers({ side: "head", grammar: true, mode: "structural" }).baseGhost).toBe(false);
+  });
+
+  it("keeps the paint on the version the blink hides, so the swap back is instant", () => {
+    // Holding Space in a single viewport shows the previous version; the current
+    // one is still painted, just not drawn, so releasing costs no re-materialise.
+    expect(versionLayers({ side: "base", grammar: true, mode: "structural" })).toMatchObject({
+      head: false,
+      baseSolid: true,
+      paint: true,
+    });
   });
 });
 

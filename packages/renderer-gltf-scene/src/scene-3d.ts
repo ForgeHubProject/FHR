@@ -32,7 +32,7 @@ import { createCallout, projectToScreen } from "./callout.js";
 import { changeAtHits, isClickGesture, ndcFromPointer } from "./pick.js";
 import { withPaneAspect } from "./camera-sync.js";
 import { splitPanes, type Pane, type PaneSide, type SplitOrientation } from "./split.js";
-import type { PresentationMode } from "./presentation.js";
+import { versionLayers, type PresentationMode } from "./presentation.js";
 
 type Theme = "light" | "dark";
 
@@ -251,21 +251,21 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
   let blinking = false;
 
   /**
-   * Show exactly one version.
-   *
-   * `grammar` is what separates a single-viewport mode from a side-by-side pane.
-   * With it, the current version carries the whole diff grammar — the ghosts of
-   * what was removed, the old poses of what moved, and (in overlay) the entire
-   * previous version underneath. Without it, a pane shows one version and only
-   * that version, which is the promise its label makes.
+   * Show exactly one version. What `grammar` means, and why the paint is part of
+   * it rather than something a hidden group takes care of, is `versionLayers`
+   * in presentation.ts — the decision is pure and tested there; this only writes
+   * the answer onto the scene.
    */
   const showVersion = (side: PaneSide, grammar: boolean): void => {
-    const head = side === "head";
-    overlay.headGroup.visible = head;
-    if (overlay.baseSolidGroup) overlay.baseSolidGroup.visible = !head;
-    if (overlay.baseGhostGroup) overlay.baseGhostGroup.visible = head && grammar && mode === "overlay";
-    if (overlay.removedGroup) overlay.removedGroup.visible = head && grammar;
-    if (overlay.movedGroup) overlay.movedGroup.visible = head && grammar;
+    const layers = versionLayers({ side, grammar, mode });
+    overlay.headGroup.visible = layers.head;
+    if (overlay.baseSolidGroup) overlay.baseSolidGroup.visible = layers.baseSolid;
+    if (overlay.baseGhostGroup) overlay.baseGhostGroup.visible = layers.baseGhost;
+    if (overlay.removedGroup) overlay.removedGroup.visible = layers.removed;
+    if (overlay.movedGroup) overlay.movedGroup.visible = layers.moved;
+    // A material swap, not a traversal, and guarded against no-ops — side-by-side
+    // asks once per pane per frame.
+    overlay.setPaint(layers.paint);
   };
 
   // ── A/B blink ───────────────────────────────────────────────────────────────
@@ -563,7 +563,12 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
       // *selected* unchanged node should do to the rest of the model — dim it,
       // leave it — is one of the questions #56 left open; this deliberately does
       // the least that still answers "which one is that".
-      mark({ name, headline: "not in the change list", box, isolate: null }, true);
+      //
+      // The tree's root row is the glTF scene, so it frames the whole model. It
+      // must not borrow the unchanged node's headline: "not in the change list"
+      // over a model with changes reads as a claim about the file.
+      const headline = name === overlay.sceneRootName ? "the whole model" : "not in the change list";
+      mark({ name, headline, box, isolate: null }, true);
       return true;
     },
     setMode(next: PresentationMode): void {
