@@ -19,6 +19,14 @@ export type FixtureSpec = {
   sceneNodes?: number[];
   /** Primitives on mesh 0 (>1 makes the loader build a Group of Meshes). */
   primitives?: number;
+  /**
+   * Vertex positions for mesh 0, 3 floats per vertex. Default: one triangle.
+   * The deviation tests need two files whose POSITION data genuinely differs —
+   * everything else here builds documents that differ only in structure.
+   */
+  positions?: readonly number[];
+  /** Triangle indices for mesh 0. Omitted builds a non-indexed primitive. */
+  indices?: readonly number[];
   /** Name of mesh 0. Default "Tri". */
   meshName?: string;
   /** Material names, in document order. Default a single "Mat". */
@@ -51,13 +59,48 @@ export function buildGltf(spec: FixtureSpec = {}): Fixture {
   for (const n of nodes) for (const c of n.children ?? []) childIndices.add(c);
   const sceneNodes = spec.sceneNodes ?? nodes.map((_, i) => i).filter((i) => !childIndices.has(i));
 
-  const bin = new Uint8Array(TRIANGLE.buffer.slice(0));
+  const verts = spec.positions ? Float32Array.from(spec.positions) : TRIANGLE;
+  const vertexCount = Math.floor(verts.length / 3);
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (let v = 0; v < vertexCount; v++) {
+    for (let k = 0; k < 3; k++) {
+      const value = verts[v * 3 + k]!;
+      if (value < min[k]!) min[k] = value;
+      if (value > max[k]!) max[k] = value;
+    }
+  }
+
+  const positionBytes = new Uint8Array(verts.buffer.slice(verts.byteOffset, verts.byteOffset + verts.byteLength));
+  const indexData = spec.indices ? Uint32Array.from(spec.indices) : null;
+  const indexOffset = align4(positionBytes.byteLength);
+  const bin = indexData
+    ? (() => {
+        const out = new Uint8Array(indexOffset + indexData.byteLength);
+        out.set(positionBytes, 0);
+        out.set(new Uint8Array(indexData.buffer), indexOffset);
+        return out;
+      })()
+    : positionBytes;
+
   const primitiveCount = spec.primitives ?? 1;
   const primitives = Array.from({ length: primitiveCount }, (_, i) => ({
     attributes: { POSITION: 0 },
+    ...(indexData ? { indices: 1 } : {}),
     material: spec.primitiveMaterials?.[i] ?? 0,
   }));
   const materialNames = spec.materialNames ?? ["Mat"];
+
+  const accessors: Record<string, unknown>[] = [
+    { bufferView: 0, componentType: 5126, count: vertexCount, type: "VEC3", min, max },
+  ];
+  const bufferViews: Record<string, unknown>[] = [
+    { buffer: 0, byteOffset: 0, byteLength: positionBytes.byteLength },
+  ];
+  if (indexData) {
+    bufferViews.push({ buffer: 0, byteOffset: indexOffset, byteLength: indexData.byteLength });
+    accessors.push({ bufferView: 1, componentType: 5125, count: indexData.length, type: "SCALAR" });
+  }
 
   const json: Record<string, unknown> = {
     asset: { version: "2.0", generator: "fhr test fixture" },
@@ -69,10 +112,8 @@ export function buildGltf(spec: FixtureSpec = {}): Fixture {
       name,
       pbrMetallicRoughness: { baseColorFactor: [0.8, 0.8, 0.8, 1] },
     })),
-    accessors: [
-      { bufferView: 0, componentType: 5126, count: 3, type: "VEC3", min: [0, 0, 0], max: [1, 1, 0] },
-    ],
-    bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: bin.byteLength }],
+    accessors,
+    bufferViews,
     buffers: [
       spec.externalBufferUri
         ? { uri: spec.externalBufferUri, byteLength: bin.byteLength }

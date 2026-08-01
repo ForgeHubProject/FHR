@@ -216,6 +216,70 @@ describe("the mode toggle", () => {
   });
 });
 
+describe("the deviation toggle", () => {
+  const heatButton = (container: FakeElement): FakeElement | undefined =>
+    container.byAttr("data-heatmap", "1")[0];
+
+  it("is absent — not disabled — when there is nothing to measure", () => {
+    // No vertex-data edit, or no previous version. A control that is there but
+    // refuses cannot be told apart from a broken one; the banners already say
+    // why the previous version is missing, so nothing is left unexplained.
+    expect(heatButton(setup().container)).toBeUndefined();
+    expect(heatButton(setup({ heatmap: false }).container)).toBeUndefined();
+  });
+
+  it("appears only in overlay, the mode it is a sub-view of", () => {
+    const { container, chrome } = setup({ heatmap: true });
+    const button = heatButton(container)!;
+    expect(button.getAttribute("hidden")).toBe("hidden");
+    chrome.setMode("overlay");
+    expect(button.getAttribute("hidden")).toBeNull();
+    chrome.setMode("side-by-side");
+    expect(button.getAttribute("hidden")).toBe("hidden");
+  });
+
+  it("reports each toggle once and tracks its own pressed state", () => {
+    const asked: boolean[] = [];
+    const { container, chrome } = setup({ heatmap: true, onHeatmap: (on) => asked.push(on) });
+    const button = heatButton(container)!;
+    chrome.setMode("overlay");
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    button.fire("click");
+    expect(asked).toEqual([true]);
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    button.fire("click");
+    expect(asked).toEqual([true, false]);
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("keeps its pressed state across a trip through another mode", () => {
+    // The scene suspends the heatmap while the reviewer is elsewhere and brings
+    // it back on return, so the button must not forget — a reset one would
+    // disagree with the picture the moment they came back.
+    const asked: boolean[] = [];
+    const { container, chrome } = setup({ heatmap: true, onHeatmap: (on) => asked.push(on) });
+    const button = heatButton(container)!;
+    chrome.setMode("overlay");
+    button.fire("click");
+    chrome.setMode("side-by-side");
+    chrome.setMode("overlay");
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(asked).toEqual([true]);
+  });
+
+  it("puts a measured deviation on the selected change's panel row", () => {
+    const { container, chrome } = setup({ heatmap: true });
+    chrome.selectChange("nodes/Wheel_FL");
+    expect(container.byAttr("data-field", "max deviation")).toHaveLength(0);
+    chrome.setDeviations(new Map([["nodes/Wheel_FL", "12.0 mm"]]));
+    const row = container.byAttr("data-field", "max deviation")[0]!;
+    expect(row.allText()).toContain("12.0 mm");
+    // A change the heatmap never measured shows nothing rather than a zero.
+    chrome.selectChange("nodes/Mirror_L");
+    expect(container.byAttr("data-field", "max deviation")).toHaveLength(0);
+  });
+});
+
 describe("collapsing", () => {
   it("collapses a region to a rail when the viewer asks", () => {
     const { container } = setup();
