@@ -14,6 +14,7 @@ package main
 // build, and build their documents in memory.
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -400,6 +401,199 @@ func TestMeshlessNodesSharingNothingAreARemovalAndAnAddition(t *testing.T) {
 	if got := kindAt(d, "nodes/Lamp_Pivot"); got != Added {
 		t.Errorf("nodes/Lamp_Pivot: kind = %q, want %q", got, Added)
 	}
+}
+
+// riggedDoc parents one meshless node under a named `Armature`, optionally with
+// grandchildren of its own. Two nodes tested through it share the one thing every
+// sibling of a rig shares and nothing else, which is the configuration the whole
+// feature is aimed at: a node's parent is unstated only at the scene root, and
+// joints, lights and cameras are parented by definition.
+func riggedDoc(t *testing.T, subject map[string]any, grandkids ...string) []byte {
+	t.Helper()
+	nodes := make([]any, 0, len(grandkids)+2)
+	kids := make([]int, len(grandkids))
+	for i, name := range grandkids {
+		kids[i] = i
+		nodes = append(nodes, map[string]any{
+			"name": name, "translation": []float64{float64(i) + 1, 0, 0},
+		})
+	}
+	if len(kids) > 0 {
+		subject["children"] = kids
+	}
+	nodes = append(nodes, subject)
+	nodes = append(nodes, map[string]any{"name": "Armature", "children": []int{len(grandkids)}})
+	return doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{len(grandkids) + 1}}},
+		"nodes":  nodes,
+	})
+}
+
+// Two meshless nodes under one *named* parent. Dropping the mesh field left the
+// placement fields the two nodes happened to write carrying the whole score, and
+// `parent=Armature` — a value every joint under that armature holds, so evidence
+// of nothing — was half of it: exactly renameThreshold, so an ordinary skeleton's
+// deleted joint was renamed into an unrelated added one. With a child count as
+// well it reached a perfect 1.0, reported at full confidence with no similarity
+// hedge to mark it as a guess. Scored over the whole placement (signature.floor)
+// they are 1 of 5 and 2 of 5.
+func TestMeshlessSiblingsUnderOneParentDoNotPair(t *testing.T) {
+	tests := []struct {
+		name             string
+		base, head       map[string]any
+		baseKids, kids   []string
+		removed, addedTo string
+	}{
+		{
+			name: "joints of an ordinary skeleton",
+			base: map[string]any{"name": "Bone_Tail", "translation": []float64{0, -0.4, 0.05}},
+			head: map[string]any{"name": "Bone_Horn", "translation": []float64{0, 0.9, 1.9}},
+		},
+		{
+			name:     "mid-chain joints, one child each",
+			base:     map[string]any{"name": "Bone_Tail", "translation": []float64{0, 2, 0}},
+			baseKids: []string{"Tip_Tail"},
+			head:     map[string]any{"name": "Bone_Neck", "translation": []float64{0, 3, -1}},
+			kids:     []string{"Tip_Neck"},
+		},
+		{
+			name:     "groups at the parent's origin, two children each",
+			base:     map[string]any{"name": "Ctrl_Old"},
+			baseKids: []string{"Ctl_1", "Ctl_2"},
+			head:     map[string]any{"name": "Camera_Main"},
+			kids:     []string{"Lamp_Key", "Lamp_Fill"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			base := riggedDoc(t, tc.base, tc.baseKids...)
+			head := riggedDoc(t, tc.head, tc.kids...)
+
+			d := diffOf(t, base, head)
+			// The grandchildren share a translation apiece and would pair on the
+			// same too-thin evidence, so no rename anywhere in the tree.
+			walk(d.Changes, func(c *DiffChange, _ int) {
+				if c.Kind == Renamed {
+					t.Errorf("a shared parent is not evidence of identity: %+v", c)
+				}
+			})
+			if got := kindAt(d, "nodes/"+tc.base["name"].(string)); got != Removed {
+				t.Errorf("the deleted node: kind = %q, want %q", got, Removed)
+			}
+			if got := kindAt(d, "nodes/"+tc.head["name"].(string)); got != Added {
+				t.Errorf("the added node: kind = %q, want %q", got, Added)
+			}
+		})
+	}
+}
+
+// The same defect with no parent at all to lean on: at the scene root the parent
+// is unstated, so a child *count* was the entire surviving descriptor and two
+// unrelated groups agreed on "two children" for a perfect 1.0.
+func TestGroupNodesDoNotPairOnAChildCountAlone(t *testing.T) {
+	group := func(name string, kids ...string) []byte {
+		nodes := make([]any, 0, len(kids)+1)
+		idx := make([]int, len(kids))
+		for i, kid := range kids {
+			idx[i] = i
+			nodes = append(nodes, map[string]any{
+				"name": kid, "translation": []float64{float64(i) + 1, 0, 0},
+			})
+		}
+		nodes = append(nodes, map[string]any{"name": name, "children": idx})
+		return doc(t, map[string]any{
+			"scene":  0,
+			"scenes": []any{map[string]any{"nodes": []int{len(kids)}}},
+			"nodes":  nodes,
+		})
+	}
+	base := group("Empty_Ctrl", "Ctl_1", "Ctl_2")
+	head := group("Light_Rig", "Lamp_Key", "Lamp_Fill")
+
+	d := diffOf(t, base, head)
+	walk(d.Changes, func(c *DiffChange, _ int) {
+		if c.Kind == Renamed {
+			t.Errorf("a child count is not evidence of identity: %+v", c)
+		}
+	})
+	if got := kindAt(d, "nodes/Empty_Ctrl"); got != Removed {
+		t.Errorf("nodes/Empty_Ctrl: kind = %q, want %q", got, Removed)
+	}
+	if got := kindAt(d, "nodes/Light_Rig"); got != Added {
+		t.Errorf("nodes/Light_Rig: kind = %q, want %q", got, Added)
+	}
+}
+
+// The other half of the floor, and the reason it covers the placement rather
+// than the whole descriptor: a meshless node that really was renamed still pairs
+// on what it states. This one agrees on four of its five placement fields — same
+// spot, same scale, same parent, same two children — which is as much as a node
+// with no geometry can say about itself, and comfortably over the threshold.
+func TestMeshlessRenameStillPairsOnAFullPlacementMatch(t *testing.T) {
+	ctrl := func(name string) []byte {
+		return riggedDoc(t, map[string]any{
+			"name": name, "translation": []float64{2, 0, 0}, "scale": []float64{2, 2, 2},
+		}, "Kid1", "Kid2")
+	}
+
+	d := diffOf(t, ctrl("Ctrl_Old"), ctrl("Pivot_Hand"))
+	c := mustRename(t, d, "nodes/Pivot_Hand", "Ctrl_Old")
+	if got := afterText(c); !strings.Contains(got, "matched by content") {
+		t.Errorf("after = %q, want the content evidence", got)
+	}
+	if findChange(d, "nodes/Ctrl_Old") != nil {
+		t.Error("the old name must not appear as a separate change")
+	}
+}
+
+// A rename says the *name* changed, and the diff key is not the name: uniqueKeys
+// disambiguates duplicates into Wheel, Wheel#1, Wheel#2, so two elements that are
+// both called "Wheel" can be paired correctly across a reorder and still hold
+// different keys. Reporting one as renamed to the other puts `Wheel#1` in
+// `before`, which SPEC.md §7 defines as the bare old *name* — the base file has
+// nothing under that string, it has two elements named "Wheel".
+//
+// Reachable exactly where this feature is aimed. Duplicate names are the ordinary
+// case uniqueKeys exists for, an authored id is what pairs the two across the
+// swap, and an exporter reordering the array is the whole edit.
+func TestDuplicateNamedElementsPairedByIDAreNotRenamed(t *testing.T) {
+	wheel := func(uid string, z float64) map[string]any {
+		return withUID(uid, map[string]any{
+			"name": "Wheel", "mesh": 0, "translation": []float64{1.3, 0.45, z},
+		})
+	}
+
+	t.Run("reordered", func(t *testing.T) {
+		base := meshedDoc(t, wheel("u-a", 0.75), wheel("u-b", -0.75))
+		head := meshedDoc(t, wheel("u-b", -0.75), wheel("u-a", 0.75))
+
+		d := diffOf(t, base, head)
+		if len(d.Changes) != 0 {
+			t.Errorf("the same two elements in a different order is not a change; got %+v", d.Changes)
+		}
+	})
+
+	// The pairing itself is the feature working, so an edit under it must still
+	// land on the element the id says it belongs to.
+	t.Run("reordered and edited", func(t *testing.T) {
+		base := meshedDoc(t, wheel("u-a", 0.75), wheel("u-b", -0.75))
+		head := meshedDoc(t, wheel("u-b", -0.75), wheel("u-a", 9))
+
+		d := diffOf(t, base, head)
+		walk(d.Changes, func(c *DiffChange, _ int) {
+			if c.Kind == Renamed {
+				t.Errorf("both elements are named Wheel in both files: %+v", c)
+			}
+		})
+		if got := kindAt(d, "nodes/Wheel#1"); got != Modified {
+			t.Errorf("nodes/Wheel#1: kind = %q, want %q", got, Modified)
+		}
+		c := mustChange(t, d, "nodes/Wheel#1/translation")
+		if !strings.Contains(fmt.Sprint(c.Before), "0.75") {
+			t.Errorf("before = %v, want the id's own previous translation", c.Before)
+		}
+	})
 }
 
 // A node's mesh is the heaviest thing its content descriptor knows about it
@@ -875,6 +1069,23 @@ func TestSimilarityAndStrictBest(t *testing.T) {
 	// elements, so it never scores — but its weight holds the denominator up.
 	if got := similarity(kinded(stated, opaque), kinded(stated, opaque)); got != 0.5 {
 		t.Errorf("identical opaque values must not agree: similarity = %v, want 0.5", got)
+	}
+	// A floor holds it up the other way: the fields an element has whether or not
+	// anyone wrote them stay in the denominator, so dropping four of five cannot
+	// promote the one that survived from a fifth of the score to all of it.
+	floored := func(floor int, kinds ...fieldKind) signature {
+		s := kinded(kinds...)
+		s.floor = floor
+		return s
+	}
+	one := floored(5, stated, unstated, unstated, unstated, unstated)
+	if got := similarity(one, one); got != 0.2 {
+		t.Errorf("one stated field of five: similarity = %v, want 0.2", got)
+	}
+	// It is a floor and not a denominator: a descriptor with more weight in play
+	// than the floor is scored over what is in play.
+	if got := similarity(floored(1, stated, stated), floored(1, stated, unstated)); got != 0.5 {
+		t.Errorf("a floor below the live weight must not bind: similarity = %v, want 0.5", got)
 	}
 
 	score := map[[2]int]float64{{0, 10}: 0.9, {0, 11}: 0.9}

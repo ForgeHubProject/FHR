@@ -46,6 +46,15 @@ package main
 // — so scoring shared absence as agreement paired arbitrary deleted elements with
 // arbitrary added ones.
 //
+// Dropping a field shrinks the denominator too, though, which promotes whatever
+// survives: a meshless node scored over the one or two placement fields it
+// happened to write turned `parent=Armature` — a value every joint under that
+// armature shares — into half its evidence. So a descriptor may declare a floor
+// under its denominator (signature.floor) covering the fields the element has
+// whether or not anyone wrote them. A node's placement is five such fields, and
+// they were weighted against meshWeight on the assumption that all five are in
+// play; the floor is what keeps that true once the mesh drops out.
+//
 // Unnamed elements never *rename*. They are keyed by array index (node[3]), so
 // there is no name for one of them to have changed, and the index cascade an
 // insertion causes is issue #42's — not this layer's. Tier 3 leaves them alone
@@ -119,7 +128,8 @@ const (
 	// sides that are both unstated have told us nothing and the field drops out
 	// of the comparison altogether: it neither scores nor counts against. Against
 	// a stated value it counts and disagrees, because written and not-written is
-	// a real difference.
+	// a real difference. Dropping is per field; whether the denominator may shrink
+	// with it is the descriptor's own call (signature.floor).
 	//
 	// Dropping out rather than scoring is the whole point. Under equality alone a
 	// node with no mesh agreed with every other meshless node in the file on the
@@ -159,6 +169,15 @@ type sigField struct {
 // signatures are compared positionally.
 type signature struct {
 	fields []sigField
+	// floor is the least descriptor weight a score may be measured over, whatever
+	// dropped out as unstated. It is the weight of the fields the element has
+	// regardless of whether anyone wrote them — a node is somewhere, under
+	// something, with some number of children — as against the ones it may simply
+	// not have, where there is nothing to compare at all. Without it an element
+	// that stated almost nothing was scored over almost nothing, and one shared
+	// field became the whole comparison. Zero for a descriptor with no such
+	// fields; see nodeSignature for the one that has them.
+	floor int
 	// specific is false for a descriptor that describes nothing — an empty node
 	// at the origin, a material at every default. Such an element matches every
 	// other empty element perfectly, so it never participates in content matching.
@@ -171,7 +190,9 @@ type signature struct {
 //
 // Only a stated field can agree (fieldKind). A field neither side stated is not
 // counted at all, so the score is measured over what the two elements actually
-// say about themselves rather than over how much they both left blank.
+// say about themselves rather than over how much they both left blank — but
+// never over less than the descriptor's floor, so what survives keeps the share
+// of the whole it was weighted for instead of inheriting the dropped fields'.
 func similarity(a, b signature) float64 {
 	total, same := 0, 0
 	for i := range max(len(a.fields), len(b.fields)) {
@@ -191,6 +212,7 @@ func similarity(a, b signature) float64 {
 			}
 		}
 	}
+	total = max(total, a.floor, b.floor)
 	if total == 0 {
 		return 0
 	}
@@ -223,18 +245,41 @@ const meshWeight = 6
 // is a missed rename, whereas inserting a mesh upstream renumbers every mesh after
 // it and hands a node that draws something else a *perfect* score against whatever
 // used to sit at its number, which is a false one at full confidence.
+//
+// The five placement fields are the descriptor's floor and the mesh is not,
+// because a node always has a placement and may genuinely have no mesh. glTF
+// gives translation, rotation and scale defaults; every node sits under something
+// or at the root; "no children" is a child count. Two nodes both at the origin
+// have therefore compared a field and found the value nearly every node in the
+// file holds — no agreement (unstated), but not nothing to compare either. An
+// absent mesh is the other thing: there is no geometry on either side, so the
+// field drops out of the score entirely.
+//
+// Measuring a meshless node over only the placement it happened to write is what
+// the floor exists to stop. Two joints under one armature stated their parent and
+// their translation, agreed on the parent — which every sibling shares — and
+// landed on exactly renameThreshold, so an ordinary skeleton's deleted joint was
+// renamed into an unrelated added one; two group nodes whose only stated fields
+// were a shared parent and "2 children" scored a perfect 1.0. Over the whole
+// placement those are 1 of 5 and 2 of 5, and both are the removal plus the
+// addition they always were.
 func nodeSignature(ix *nodeIndex, i int) signature {
 	n := ix.nodes[i]
 	t, r, s := n.TranslationOrDefault(), n.RotationOrDefault(), n.ScaleOrDefault()
+	placement := []sigField{
+		{"translation=" + fmtVec3(t), 1, unstatedIf(nearEq3(t, gltf.DefaultTranslation))},
+		{"rotation=" + fmtRot(r), 1, unstatedIf(nearEq4(r, gltf.DefaultRotation))},
+		{"scale=" + fmtVec3(s), 1, unstatedIf(nearEq3(s, gltf.DefaultScale))},
+		ix.parentField(i),
+		{fmt.Sprintf("children=%d", len(n.Children)), 1, unstatedIf(len(n.Children) == 0)},
+	}
+	floor := 0
+	for _, f := range placement {
+		floor += f.weight
+	}
 	return signature{
-		fields: []sigField{
-			ix.meshField(n.Mesh),
-			{"translation=" + fmtVec3(t), 1, unstatedIf(nearEq3(t, gltf.DefaultTranslation))},
-			{"rotation=" + fmtRot(r), 1, unstatedIf(nearEq4(r, gltf.DefaultRotation))},
-			{"scale=" + fmtVec3(s), 1, unstatedIf(nearEq3(s, gltf.DefaultScale))},
-			ix.parentField(i),
-			{fmt.Sprintf("children=%d", len(n.Children)), 1, unstatedIf(len(n.Children) == 0)},
-		},
+		fields: append([]sigField{ix.meshField(n.Mesh)}, placement...),
+		floor:  floor,
 		specific: n.Mesh != nil || len(n.Children) > 0 ||
 			!nearEq3(t, gltf.DefaultTranslation) || !nearEq4(r, gltf.DefaultRotation) ||
 			!nearEq3(s, gltf.DefaultScale),
@@ -513,23 +558,33 @@ func strictBest(from int, others []int, score map[[2]int]float64, transposed boo
 // isRename reports whether the key change between two paired elements is a name
 // edit, and so reportable as a rename at all.
 //
-// An unnamed element is keyed by its array index (node[3]), so when neither side
-// has a name the two keys differ only because something upstream was inserted or
-// removed. That is the index cascade issue #42 owns, not a rename: nothing was
-// renamed, and reporting one would put a synthetic key in `before`, which SPEC.md
-// defines as the bare old *name* — a consumer that resolves it against the
-// previous revision finds nothing there under that string.
+// The name and not the key decides it. A key is uniqueKeys' *disambiguated* name
+// — Wheel, Wheel#1, Wheel#2 — so two elements whose names are identical can still
+// hold different keys, and in the file this feature is aimed at they routinely
+// do: duplicate names are the normal case uniqueKeys exists for, an exporter
+// reordering the array swaps which one gets the bare name, and an authored id
+// pairs them correctly across the swap. Nothing was renamed there. Reporting one
+// would put `Wheel#1` in `before`, and SPEC.md defines `before` as the bare old
+// *name* — a consumer that resolves it against the previous revision finds
+// nothing under that string, because the previous revision has two elements
+// named `Wheel` and none named `Wheel#1`.
 //
-// The pairing itself stands. An authored id is still the strongest evidence there
-// is that two array slots hold the same element — it is what makes the properties
-// get compared against the right one, which is the whole point of stamping a file
-// whose names a pipeline tool dropped. Only the rename label is withheld.
+// The unnamed case is the same rule read the other way. An unnamed element is
+// keyed by its array index (node[3]), so when neither side has a name both names
+// are "" and the keys differ only because something upstream was inserted or
+// removed — the index cascade issue #42 owns, and another synthetic `before`.
+//
+// The pairing itself stands in both. An authored id is still the strongest
+// evidence there is that two array slots hold the same element — it is what makes
+// the properties get compared against the right one, which is the whole point of
+// stamping a file whose names a pipeline tool dropped. Only the rename label is
+// withheld.
 //
 // A name on one side only is a real edit — a name was added or removed — and the
 // unnamed side's key is the only thing that element is called anywhere else in
 // the diff, so that pair is still reported as the rename it is.
 func isRename(a, b entity) bool {
-	return a.key != b.key && (a.name != "" || b.name != "")
+	return a.key != b.key && a.name != b.name
 }
 
 // renameAfter renders a rename's `after` value: the new name, plus the evidence
