@@ -286,17 +286,46 @@ func nodeSignature(ix *nodeIndex, i int) signature {
 	}
 }
 
+// Material descriptor weights. A material is a bag of independent properties with
+// no single one that *is* the material, but they are not therefore worth the
+// same, and weighting them equally is decisive at a 50% threshold: two materials
+// whose only common ground was `doubleSided: true` — one pure green, one pure red
+// — scored exactly 0.5 and were reported as one material renamed.
+//
+// The currency is the one meshWeight already counts in: how much a field can tell
+// one material apart from another. A colour is four numbers a viewer shows; a
+// metallic factor is one number artists set to 0, 0.5 or 1; an alpha mode is one
+// of four states and double-sidedness one of two, so agreeing on either is nearly
+// free.
+const (
+	colorWeight    = 4 // baseColorFactor, an RGBA tuple
+	emissiveWeight = 3 // emissiveFactor, an RGB tuple
+	// textureWeight — a resolved image reference: a URI, or a mime type plus a
+	// content hash of the pixels, with the sampler that reads it. At least as
+	// identifying as the colour it usually stands in for, and the one material
+	// property that cannot be arrived at by coincidence.
+	textureWeight = colorWeight
+	// factorWeight — one number, one enum, one flag.
+	factorWeight = 1
+)
+
 // materialSignature describes a material by the same descriptors
 // diffMaterialProps compares, so "the content is identical" here means exactly
-// what "no changes" means there. Every component is worth the same: a material is
-// a bag of independent properties with no single one that *is* the material.
+// what "no changes" means there.
 //
-// Which is why every one of them has to be classified against the default
-// material: with eleven equal fields and a 50% threshold, three or four
-// properties nobody touched — an empty texture slot is the commonest material
-// property there is — were enough to pair any two materials in an untextured
-// scene. A material is scored on what it says about itself, not on the defaults
-// it shares with every other material ever exported.
+// Every component is classified against the default material: with a 50%
+// threshold, three or four properties nobody touched — an empty texture slot is
+// the commonest material property there is — were enough to pair any two
+// materials in an untextured scene. A material is scored on what it says about
+// itself, not on the defaults it shares with every other material ever exported.
+//
+// The floor is a colour's weight, for nodeSignature's reason one level up: every
+// material has a base colour whether or not anyone wrote one — glTF's default is
+// a real value the renderer uses — where it may genuinely have no normal map at
+// all. It is the largest thing a material always has, so it is the least a
+// material may be scored over. Without it a pair that stated nothing but
+// `doubleSided: true` had agreed on everything in play and scored a perfect 1.0,
+// which is a coin flip on a boolean dressed up as a rename.
 func materialSignature(doc *gltf.Document, m *gltf.Material) signature {
 	fields := materialFields(doc, m)
 	defaults := materialFields(doc, &gltf.Material{})
@@ -308,21 +337,21 @@ func materialSignature(doc *gltf.Document, m *gltf.Material) signature {
 			specific = true
 		}
 	}
-	return signature{fields: fields, specific: specific}
+	return signature{fields: fields, floor: colorWeight, specific: specific}
 }
 
 func materialFields(doc *gltf.Document, m *gltf.Material) []sigField {
 	pbr := pbrOrDefault(m)
 	fields := []sigField{
-		{"baseColorFactor=" + fmtVec4(pbr.BaseColorFactorOrDefault()), 1, stated},
-		{"metallicFactor=" + fmtF(pbr.MetallicFactorOrDefault()), 1, stated},
-		{"roughnessFactor=" + fmtF(pbr.RoughnessFactorOrDefault()), 1, stated},
-		{"emissiveFactor=" + fmtVec3(m.EmissiveFactor), 1, stated},
-		{"alphaMode=" + m.AlphaMode.String(), 1, stated},
-		{fmt.Sprintf("doubleSided=%v", m.DoubleSided), 1, stated},
+		{"baseColorFactor=" + fmtVec4(pbr.BaseColorFactorOrDefault()), colorWeight, stated},
+		{"metallicFactor=" + fmtF(pbr.MetallicFactorOrDefault()), factorWeight, stated},
+		{"roughnessFactor=" + fmtF(pbr.RoughnessFactorOrDefault()), factorWeight, stated},
+		{"emissiveFactor=" + fmtVec3(m.EmissiveFactor), emissiveWeight, stated},
+		{"alphaMode=" + m.AlphaMode.String(), factorWeight, stated},
+		{fmt.Sprintf("doubleSided=%v", m.DoubleSided), factorWeight, stated},
 	}
 	for _, slot := range textureSlots {
-		fields = append(fields, sigField{slot.label + "=" + slot.describe(doc, m), 1, stated})
+		fields = append(fields, sigField{slot.label + "=" + slot.describe(doc, m), textureWeight, stated})
 	}
 	return fields
 }
@@ -462,6 +491,27 @@ func uidIndex(items []entity) (first map[string]int, duplicated map[string]bool)
 	return first, duplicated
 }
 
+// renameLimit caps tier 3's search, in candidates per side.
+//
+// Content matching compares every leftover base element against every leftover
+// head one, and nothing upstream bounds a document's element count. The leftovers
+// are usually a handful, but the case that makes *every* element one is not
+// exotic: any pipeline step that rewrites all the names at once — an FBX round
+// trip, a namespace prefix on import, a re-export that suffixes — clears tiers 1
+// and 2 completely. At 8000 nodes that took four minutes and a gigabyte of score
+// matrix, in a package that is also compiled to wasm and run in a browser tab
+// (wasm.go), where a single-threaded block that long is a hung page and the
+// allocation is an OOM rather than a slow diff.
+//
+// The number and the shape of the test are git's — diff.renameLimit, default
+// 1000, applied as sources × destinations against limit², after which git skips
+// inexact rename detection outright — for renameThreshold's reason: git's rename
+// detection is the one with two decades of production tuning behind it. Over the
+// limit the leftovers are reported as the removals and additions they are, which
+// is the same answer this layer already gives whenever the evidence is not good
+// enough, and the safe direction to fail in.
+const renameLimit = 1000
+
 // matchByContent pairs what tiers 1 and 2 left over, by content descriptor.
 //
 // Only named elements participate: an unnamed element's key is its array index,
@@ -482,33 +532,33 @@ func matchByContent(p pairing, base, head []entity) {
 	if len(leftBase) == 0 || len(leftHead) == 0 {
 		return
 	}
-
-	sigs := make(map[*entity]signature, len(leftBase)+len(leftHead))
-	sigOf := func(e *entity) signature {
-		if s, ok := sigs[e]; ok {
-			return s
-		}
-		s := e.sig()
-		sigs[e] = s
-		return s
+	// Divided rather than multiplied: the product of two element counts is not
+	// bounded by anything and this runs on documents nobody validated.
+	if len(leftBase) > renameLimit*renameLimit/len(leftHead) {
+		return
 	}
 
-	// The score matrix, thresholded on the way in so everything below is a
-	// candidate. Quadratic in the leftovers only, which are the handful of
-	// elements neither an id nor a name accounted for.
-	score := make(map[[2]int]float64)
-	for _, i := range leftBase {
-		si := sigOf(&base[i])
+	// Descriptors are built here and not before the cap, because a mesh descriptor
+	// hashes vertex bytes: over the limit not one of them is read.
+	baseSig := signaturesOf(base, leftBase)
+	headSig := signaturesOf(head, leftHead)
+
+	// The score matrix, thresholded on the way in so everything above zero is a
+	// candidate. Row-major and dense rather than a map keyed by index pair: at the
+	// cap this is one 8 MB allocation whatever the input does, where the map was
+	// an entry per surviving pair and the hashing that went with it.
+	score := make([]float64, len(leftBase)*len(leftHead))
+	for bi, si := range baseSig {
 		if !si.specific {
 			continue
 		}
-		for _, j := range leftHead {
-			sj := sigOf(&head[j])
+		row := score[bi*len(leftHead) : (bi+1)*len(leftHead)]
+		for hj, sj := range headSig {
 			if !sj.specific {
 				continue
 			}
 			if s := similarity(si, sj); s >= renameThreshold {
-				score[[2]int{i, j}] = s
+				row[hj] = s
 			}
 		}
 	}
@@ -516,36 +566,45 @@ func matchByContent(p pairing, base, head []entity) {
 	// Strict mutual best. Each side's winner must beat its own runner-up outright,
 	// so two equally plausible candidates leave the pair unmatched — reported
 	// honestly as a removal and an addition rather than guessed at.
-	for _, i := range leftBase {
-		j, s, ok := strictBest(i, leftHead, score, false)
+	for bi := range leftBase {
+		row := score[bi*len(leftHead) : (bi+1)*len(leftHead)]
+		hj, s, ok := strictBest(len(leftHead), func(k int) float64 { return row[k] })
 		if !ok {
 			continue
 		}
-		if back, _, ok := strictBest(j, leftBase, score, true); !ok || back != i {
+		back, _, ok := strictBest(len(leftBase), func(k int) float64 { return score[k*len(leftHead)+hj] })
+		if !ok || back != bi {
 			continue
 		}
-		p.pair(i, j, matchEvidence{by: byContent, similarity: s})
+		p.pair(leftBase[bi], leftHead[hj], matchEvidence{by: byContent, similarity: s})
 	}
 }
 
-// strictBest returns the highest-scoring counterpart of `from` among `others`,
-// and whether it is a strict winner. transposed selects the matrix direction:
-// false scores [from][other], true scores [other][from].
-func strictBest(from int, others []int, score map[[2]int]float64, transposed bool) (int, float64, bool) {
+// signaturesOf builds the content descriptor of the elements at `which`. The
+// descriptors are what tier 3 costs — a mesh's reads buffer bytes — which is why
+// entity.sig is a function and why this is called on the leftovers alone.
+func signaturesOf(items []entity, which []int) []signature {
+	out := make([]signature, len(which))
+	for k, i := range which {
+		out[k] = items[i].sig()
+	}
+	return out
+}
+
+// strictBest returns the position of the highest-scoring counterpart among `n`
+// candidates scored by `at`, and whether it is a strict winner. A score below the
+// threshold is not a candidate at all: the matrix stores zero there.
+func strictBest(n int, at func(int) float64) (int, float64, bool) {
 	best, bestScore, runnerUp, found := -1, 0.0, 0.0, false
-	for _, other := range others {
-		key := [2]int{from, other}
-		if transposed {
-			key = [2]int{other, from}
-		}
-		s, ok := score[key]
-		if !ok {
+	for k := range n {
+		s := at(k)
+		if s < renameThreshold {
 			continue
 		}
 		switch {
 		case !found || s > bestScore:
 			runnerUp = bestScore
-			best, bestScore, found = other, s, true
+			best, bestScore, found = k, s, true
 		case s > runnerUp:
 			runnerUp = s
 		}
@@ -585,6 +644,30 @@ func strictBest(from int, others []int, score map[[2]int]float64, transposed boo
 // the diff, so that pair is still reported as the rename it is.
 func isRename(a, b entity) bool {
 	return a.key != b.key && a.name != b.name
+}
+
+// bareName is what a rename puts in `before` and `after`: the element's own name,
+// never uniqueKeys' disambiguated key.
+//
+// SPEC.md §7 defines both fields as the bare name, and the key is not one. The
+// case is the same one isRename turns away for a different reason — duplicate
+// names, the ordinary case uniqueKeys exists for, paired across the swap by an
+// authored id. When the name *also* changed the pairing really is a rename and is
+// reported, but `Wheel#1` in `before` still sends a consumer looking for a node
+// the previous revision does not have: it has two called `Wheel` and none called
+// `Wheel#1`. The renderer's own base-file lookup (node-index.ts) is keyed on raw
+// names and misses outright, taking the removed ghost and the motion vector with
+// it. `path` and `label` keep the key — they are what this diff addresses the
+// element by, and they have to stay unique.
+//
+// An unnamed element falls back to its key. It has no bare name to report, and
+// `node[3]` is the only thing it is called anywhere: this is the one-sided case
+// isRename keeps, where a name was added or removed outright.
+func bareName(e entity) string {
+	if e.name != "" {
+		return e.name
+	}
+	return e.key
 }
 
 // renameAfter renders a rename's `after` value: the new name, plus the evidence
