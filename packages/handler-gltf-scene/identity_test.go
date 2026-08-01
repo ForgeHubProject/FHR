@@ -63,7 +63,9 @@ func meshedDoc(t *testing.T, nodes ...map[string]any) []byte {
 
 // meshListDoc is meshedDoc with the mesh array spelled out, so a fixture can
 // insert a mesh *upstream* of the ones its nodes draw and renumber every index
-// after it — the edit that separates an index from a cross-revision key.
+// after it — the edit that separates an index from a cross-revision key. An
+// empty name leaves the mesh unnamed, which is the file that has no such key at
+// all.
 func meshListDoc(t *testing.T, meshNames []string, nodes ...map[string]any) []byte {
 	t.Helper()
 	roots := make([]int, len(nodes))
@@ -73,7 +75,11 @@ func meshListDoc(t *testing.T, meshNames []string, nodes ...map[string]any) []by
 	primitives := []any{map[string]any{"attributes": map[string]any{}}}
 	meshes := make([]any, len(meshNames))
 	for i, name := range meshNames {
-		meshes[i] = map[string]any{"name": name, "primitives": primitives}
+		mesh := map[string]any{"primitives": primitives}
+		if name != "" {
+			mesh["name"] = name
+		}
+		meshes[i] = mesh
 	}
 	return doc(t, map[string]any{
 		"scene":  0,
@@ -310,6 +316,92 @@ func TestContentlessNodesNeverPair(t *testing.T) {
 	}
 }
 
+// Two nodes that draw nothing have nothing in common. Agreeing that the mesh
+// reference is absent used to score the whole of meshWeight — 6 of the 11 the
+// descriptor is worth — so *any* deleted meshless node cleared the 50% threshold
+// against *any* added one, at 55% even when their parent, transform and child
+// count all differed. Meshless is not exotic: Blender empties, armature joints, a
+// skinned character's whole skeleton, camera and light nodes, pivots and groups.
+func TestMeshlessNodesDoNotPairOnBothDrawingNothing(t *testing.T) {
+	tests := []struct {
+		name       string
+		base, head map[string]any
+	}{
+		{
+			name: "empties a few metres apart",
+			base: map[string]any{"name": "Ctrl_Old", "translation": []float64{2, 0, 0}},
+			head: map[string]any{"name": "Lamp_Pivot", "translation": []float64{0, 3, -1}},
+		},
+		{
+			name: "armature joints",
+			base: map[string]any{"name": "Bone_Tail", "translation": []float64{0, 2, 0}},
+			head: map[string]any{"name": "Bone_Head", "translation": []float64{0, 3, 1}},
+		},
+		{
+			name: "rotation and scale differ as well",
+			base: map[string]any{
+				"name": "Ctrl_Old", "translation": []float64{2, 0, 0},
+				"scale": []float64{2, 2, 2},
+			},
+			head: map[string]any{
+				"name": "Lamp_Pivot", "translation": []float64{0, 3, -1},
+				"rotation": []float64{0, 0.3826834, 0, 0.9238795}, "scale": []float64{0.5, 0.5, 0.5},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := diffOf(t, meshedDoc(t, tc.base), meshedDoc(t, tc.head))
+			if got := kindAt(d, "nodes/"+tc.base["name"].(string)); got != Removed {
+				t.Errorf("the deleted node: kind = %q, want %q", got, Removed)
+			}
+			if got := kindAt(d, "nodes/"+tc.head["name"].(string)); got != Added {
+				t.Errorf("the added node: kind = %q, want %q", got, Added)
+			}
+		})
+	}
+}
+
+// The floor of the same defect, with a hierarchy under it: the two nodes share
+// nothing whatsoever — different parent, different children, different
+// translation, rotation and scale — and the mesh field alone still carried them
+// over the threshold. A rename here hides the deletion of a control that had two
+// children hanging off it.
+func TestMeshlessNodesSharingNothingAreARemovalAndAnAddition(t *testing.T) {
+	base := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{3}}},
+		"nodes": []any{
+			map[string]any{"name": "Kid1"},
+			map[string]any{"name": "Kid2"},
+			map[string]any{
+				"name": "Ctrl_Old", "children": []int{0, 1},
+				"translation": []float64{2, 0, 0}, "scale": []float64{2, 2, 2},
+				"rotation": []float64{0, 0.3826834, 0, 0.9238795},
+			},
+			map[string]any{"name": "Rig", "children": []int{2}, "translation": []float64{9, 9, 9}},
+		},
+	})
+	head := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{2, 3}}},
+		"nodes": []any{
+			map[string]any{"name": "Kid1"},
+			map[string]any{"name": "Kid2"},
+			map[string]any{"name": "Rig", "children": []int{0, 1}, "translation": []float64{9, 9, 9}},
+			map[string]any{"name": "Lamp_Pivot", "translation": []float64{-4, 6, 1}, "scale": []float64{0.5, 0.5, 0.5}},
+		},
+	})
+
+	d := diffOf(t, base, head)
+	if got := kindAt(d, "nodes/Ctrl_Old"); got != Removed {
+		t.Errorf("nodes/Ctrl_Old: kind = %q, want %q", got, Removed)
+	}
+	if got := kindAt(d, "nodes/Lamp_Pivot"); got != Added {
+		t.Errorf("nodes/Lamp_Pivot: kind = %q, want %q", got, Added)
+	}
+}
+
 // A node's mesh is the heaviest thing its content descriptor knows about it
 // (meshWeight), and it is compared as the mesh's *diff key*. Never as the array
 // index, which means "whatever is second in this file's mesh array" — a claim any
@@ -343,6 +435,67 @@ func TestNodeContentMatchUsesTheMeshKeyNotItsArrayIndex(t *testing.T) {
 	// Its geometry is untouched; only the number in front of it moved.
 	if c := findChange(d, "nodes/Gamma/mesh"); c != nil {
 		t.Errorf("the mesh reference did not change; got %v → %v", c.Before, c.After)
+	}
+}
+
+// The same fixture with the mesh names taken away, which is the file this whole
+// feature exists for — SPEC.md §7's pipeline tool that stripped them. meshName
+// then falls back to `mesh[1]`, so the "key" IS the array index and the previous
+// test's guarantee evaporates: Gamma drew mesh[1], which is the number Beta drew
+// in the previous revision, and the pair scored a perfect 11 of 11.
+//
+// There is no key to compare here, so the field is worth nothing rather than
+// worth everything (identity.go, fieldKind opaque). The cost is Alpha's rename,
+// which goes unreported; the alternative is asserting Beta's, which is false, and
+// losing Beta's deletion with it.
+func TestUnnamedMeshIsNotContentEvidence(t *testing.T) {
+	pose := []float64{1.3, 0.45, 0.75}
+	base := meshListDoc(t, []string{"", ""},
+		map[string]any{"name": "Alpha", "mesh": 0, "translation": pose},
+		map[string]any{"name": "Beta", "mesh": 1, "translation": pose},
+	)
+	head := meshListDoc(t, []string{"", "", ""},
+		map[string]any{"name": "Gamma", "mesh": 1, "translation": pose},
+	)
+
+	d := diffOf(t, base, head)
+	walk(d.Changes, func(c *DiffChange, _ int) {
+		if c.Kind == Renamed {
+			t.Errorf("an unnamed mesh's key is its array index, not evidence: %+v", c)
+		}
+	})
+	for path, want := range map[string]ChangeKind{
+		"nodes/Alpha": Removed,
+		"nodes/Beta":  Removed,
+		"nodes/Gamma": Added,
+	} {
+		if got := kindAt(d, path); got != want {
+			t.Errorf("%s: kind = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// The other key a node's descriptor resolves is its parent's, and an unnamed
+// parent has the same non-key: `node[0]`. Here it is the only thing the two
+// nodes have in common — they are metres apart — and one field of two is exactly
+// the threshold, so counting it paired them.
+func TestUnnamedParentIsNotContentEvidence(t *testing.T) {
+	group := func(child map[string]any) []byte {
+		return doc(t, map[string]any{
+			"scene":  0,
+			"scenes": []any{map[string]any{"nodes": []int{0}}},
+			"nodes":  []any{map[string]any{"children": []int{1}}, child},
+		})
+	}
+	base := group(map[string]any{"name": "Ctrl_Old", "translation": []float64{2, 0, 0}})
+	head := group(map[string]any{"name": "Pivot_New", "translation": []float64{0, 3, -1}})
+
+	d := diffOf(t, base, head)
+	if got := kindAt(d, "nodes/Ctrl_Old"); got != Removed {
+		t.Errorf("nodes/Ctrl_Old: kind = %q, want %q", got, Removed)
+	}
+	if got := kindAt(d, "nodes/Pivot_New"); got != Added {
+		t.Errorf("nodes/Pivot_New: kind = %q, want %q", got, Added)
 	}
 }
 
@@ -551,6 +704,55 @@ func TestMaterialRename(t *testing.T) {
 	}
 }
 
+// Two untextured materials used to agree on all five texture slots for having no
+// textures, and on emissiveFactor, alphaMode and doubleSided for leaving them
+// alone: 8 of 11 equal fields, comfortably over the threshold, however far apart
+// the three properties they actually state were. Untextured is the ordinary case
+// — this repo's own car fixtures are — so in an untextured scene every removed
+// material paired with every added one and the deletion vanished.
+func TestMaterialsDoNotPairOnSharedDefaults(t *testing.T) {
+	pbr := func(r, g, b, metallic, roughness float64) map[string]any {
+		return map[string]any{
+			"baseColorFactor": []float64{r, g, b, 1},
+			"metallicFactor":  metallic, "roughnessFactor": roughness,
+		}
+	}
+	base := doc(t, map[string]any{"materials": []any{
+		map[string]any{"name": "Rubber", "pbrMetallicRoughness": pbr(0.02, 0.02, 0.03, 0, 0.95)},
+	}})
+	head := doc(t, map[string]any{"materials": []any{
+		map[string]any{"name": "Chrome", "pbrMetallicRoughness": pbr(0.95, 0.96, 0.98, 1, 0.05)},
+	}})
+
+	d := diffOf(t, base, head)
+	if got := kindAt(d, "materials/Rubber"); got != Removed {
+		t.Errorf("materials/Rubber: kind = %q, want %q", got, Removed)
+	}
+	if got := kindAt(d, "materials/Chrome"); got != Added {
+		t.Errorf("materials/Chrome: kind = %q, want %q", got, Added)
+	}
+}
+
+// The other half of the same rule: dropping the shared defaults must not cost a
+// material that really was renamed its match. These two state two properties
+// between them and agree on both, so they are content-identical and pair at full
+// confidence — no similarity hedge, even though 9 of the 11 fields the descriptor
+// has are defaults neither side wrote.
+func TestUntexturedMaterialRenameStillPairsOnWhatItStates(t *testing.T) {
+	mat := func(name string) map[string]any {
+		return map[string]any{
+			"name": name, "emissiveFactor": []float64{0.4, 0.1, 0}, "doubleSided": true,
+		}
+	}
+	base := doc(t, map[string]any{"materials": []any{mat("Paint")}})
+	head := doc(t, map[string]any{"materials": []any{mat("BodyPaint")}})
+
+	c := mustRename(t, diffOf(t, base, head), "materials/BodyPaint", "Paint")
+	if got := afterText(c); !strings.Contains(got, "matched by content") || strings.Contains(got, "%") {
+		t.Errorf("after = %q, want an exact content match with no similarity figure", got)
+	}
+}
+
 // A default material describes nothing, so it never pairs on content — the same
 // rule that keeps two empty nodes apart.
 func TestDefaultMaterialsNeverPairOnContent(t *testing.T) {
@@ -633,7 +835,7 @@ func TestSimilarityAndStrictBest(t *testing.T) {
 	field := func(values ...string) signature {
 		f := make([]sigField, len(values))
 		for i, v := range values {
-			f[i] = sigField{v, 1}
+			f[i] = sigField{v, 1, stated}
 		}
 		return signature{fields: f, specific: true}
 	}
@@ -648,6 +850,31 @@ func TestSimilarityAndStrictBest(t *testing.T) {
 	// that gained a primitive does not read as unchanged content.
 	if got := similarity(field("a"), field("a", "b")); got != 0.5 {
 		t.Errorf("one field of two present: similarity = %v, want 0.5", got)
+	}
+
+	// A field neither side stated is not agreement, and not a denominator either:
+	// the score is measured over what the two elements say about themselves.
+	kinded := func(kinds ...fieldKind) signature {
+		f := make([]sigField, len(kinds))
+		for i, k := range kinds {
+			f[i] = sigField{"same", 1, k}
+		}
+		return signature{fields: f, specific: true}
+	}
+	if got := similarity(kinded(stated, unstated), kinded(stated, unstated)); got != 1 {
+		t.Errorf("a field neither side stated must drop out: similarity = %v, want 1", got)
+	}
+	if got := similarity(kinded(unstated, unstated), kinded(unstated, unstated)); got != 0 {
+		t.Errorf("nothing stated at all: similarity = %v, want 0", got)
+	}
+	// Written against not-written is a real difference, so it counts and disagrees.
+	if got := similarity(kinded(stated, stated), kinded(stated, unstated)); got != 0.5 {
+		t.Errorf("stated against unstated: similarity = %v, want 0.5", got)
+	}
+	// An opaque value is the same string on both sides and still means different
+	// elements, so it never scores — but its weight holds the denominator up.
+	if got := similarity(kinded(stated, opaque), kinded(stated, opaque)); got != 0.5 {
+		t.Errorf("identical opaque values must not agree: similarity = %v, want 0.5", got)
 	}
 
 	score := map[[2]int]float64{{0, 10}: 0.9, {0, 11}: 0.9}
