@@ -127,10 +127,11 @@ export type Heatmap = {
   /**
    * The reading under a raycast hit: the mesh's name and the deviation AT THE
    * HIT POINT — the face's three corner measurements blended by that point's
-   * barycentric coordinates, which is the same blend the shader interpolates the
-   * ramp with, so the number and the colour under the pointer always agree. See
-   * `faceValue` for what happens without a point. Null for anything not
-   * heatmapped.
+   * barycentric coordinates. Exact where the pointer is on a vertex; in between
+   * it is the measurement's own linear blend, which is the best answer this has
+   * and is NOT what the shading shows — see `faceValue` for why the picture
+   * reads high off the corners. See it too for what happens without a point.
+   * Null for anything not heatmapped.
    */
   readAt(
     object: Object3D,
@@ -556,15 +557,30 @@ const positionsOf = (geometry: BufferGeometry): PositionAttribute | undefined =>
 /**
  * The deviation at the point on the face that was actually hit.
  *
- * The ramp is a per-vertex attribute, so the colour a reviewer sees at a pixel
- * is the face's three corner measurements blended by that pixel's barycentric
- * coordinates. The number printed beside the picture is that same blend, because
- * anything else disagrees with the shading it is standing next to — and on the
- * coarse box-and-extrusion geometry that most CAD glTF is made of, disagrees by
- * the full spread of a triangle. (The demo's own car body has side panels whose
- * lower corners did not move and whose upper corners moved 12 mm: reporting the
- * face's largest corner, as this once did, printed "12 mm" everywhere on a panel
- * the heatmap paints at the dead foot of the ramp.)
+ * The face's three corner measurements, blended by the hit point's barycentric
+ * coordinates: exact at a corner, and in between the measurement's own linear
+ * blend, which is the only defensible reading available for a point that was
+ * never measured. The alternative is far worse — on the coarse
+ * box-and-extrusion geometry most CAD glTF is made of, answering with the face's
+ * largest corner is wrong by the full spread of a triangle. (The demo's own car
+ * body has side panels whose lower corners did not move and whose upper corners
+ * moved 120 mm: reporting the face's largest corner, as this once did, printed
+ * "120.0 mm" everywhere on a panel the heatmap paints at the dead foot of the
+ * ramp.)
+ *
+ * What this does NOT do is match the shading between the corners, and the legend
+ * must not be read as though it did. `buildColors` writes `rampLinear(t)` into a
+ * `color` attribute and `heatMaterial` sets `vertexColors` on a stock three
+ * material, so the GPU Gouraud-interpolates the three corner COLOURS — and
+ * lerp(viridis(t)) is not viridis(lerp(t)), viridis being a piecewise-linear
+ * sRGB curve pushed through a gamma transfer. Half way along a face whose
+ * corners read 0 and the top of the range, the pixel decodes against the
+ * legend's own gradient at about t=0.88 where this reports t=0.5. So: picture
+ * and number agree exactly AT the vertices, and off them the shading reads HIGH.
+ * Making them agree everywhere means carrying the scalar in the attribute and
+ * doing the ramp lookup in a fragment shader — a custom material, which this
+ * slice does not take on. `ramp.test.ts` pins the divergence so the comfortable
+ * version of this paragraph cannot come back without a failing suite.
  *
  * Barycentric coordinates are affine-invariant, so they are computed in the
  * geometry's own space — the world-space hit point brought back through the
