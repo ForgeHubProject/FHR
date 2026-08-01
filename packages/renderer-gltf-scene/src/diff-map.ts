@@ -180,24 +180,23 @@ export function animationChanges(diff: StructuredDiff | undefined): EntityChange
   return collectionChanges(diff, "animations");
 }
 
-function collectionChanges(diff: StructuredDiff | undefined, collection: string): EntityChange[] {
-  const out: EntityChange[] = [];
-  const seen = new Map<string, EntityChange>();
-  if (!diff) return out;
-
+/**
+ * Visit every entity-level change of one collection, in diff order, handing the
+ * visitor the raw `DiffChange` and the entity key it resolved to.
+ *
+ * Two shapes again: children of a collection wrapper, or a change appearing
+ * directly with a `<collection>/<key>` path. Shared rather than repeated because
+ * the geometry scan below has to walk the same tree looking for different rows,
+ * and a second copy of this would be a second place for the two shapes to drift.
+ */
+function forEachEntityChange(
+  diff: StructuredDiff | undefined,
+  collection: string,
+  visit: (change: DiffChange, name: string) => void,
+): void {
+  if (!diff) return;
   const prefix = `${collection}/`;
   const entityPath = new RegExp(`^${collection}/[^/]+$`);
-
-  const primitivesUnder = (change: DiffChange): number[] => {
-    const found = new Set<number>();
-    const walkOne = (c: DiffChange): void => {
-      const match = PRIMITIVE_SEGMENT.exec(c.path);
-      if (match) found.add(Number(match[1]));
-      for (const child of c.children ?? []) walkOne(child);
-    };
-    walkOne(change);
-    return [...found].sort((a, b) => a - b);
-  };
 
   const collect = (change: DiffChange): void => {
     const name =
@@ -206,21 +205,7 @@ function collectionChanges(diff: StructuredDiff | undefined, collection: string)
         : entityPath.test(change.path)
           ? unescapeSegment(change.path.slice(prefix.length))
           : "";
-    if (name === "") return;
-    const fields = (change.children ?? []).map(fieldNameOf).filter((f) => f !== "");
-    const primitives = primitivesUnder(change);
-    // By path, for `nodeChanges`' reason: a deleted mesh and a mesh renamed into
-    // the name it vacated are two changes about two meshes.
-    const existing = seen.get(change.path);
-    if (existing) {
-      for (const f of fields) if (!existing.fields.includes(f)) existing.fields.push(f);
-      for (const p of primitives) if (!existing.primitives.includes(p)) existing.primitives.push(p);
-      existing.primitives.sort((a, b) => a - b);
-      return;
-    }
-    const entry: EntityChange = { name, kind: change.kind, fields, path: change.path, primitives };
-    seen.set(change.path, entry);
-    out.push(entry);
+    if (name !== "") visit(change, name);
   };
 
   const walk = (changes: DiffChange[]): void => {
@@ -238,6 +223,109 @@ function collectionChanges(diff: StructuredDiff | undefined, collection: string)
   };
 
   walk(diff.changes ?? []);
+}
+
+function collectionChanges(diff: StructuredDiff | undefined, collection: string): EntityChange[] {
+  const out: EntityChange[] = [];
+  const seen = new Map<string, EntityChange>();
+  if (!diff) return out;
+
+  const primitivesUnder = (change: DiffChange): number[] => {
+    const found = new Set<number>();
+    const walkOne = (c: DiffChange): void => {
+      const match = PRIMITIVE_SEGMENT.exec(c.path);
+      if (match) found.add(Number(match[1]));
+      for (const child of c.children ?? []) walkOne(child);
+    };
+    walkOne(change);
+    return [...found].sort((a, b) => a - b);
+  };
+
+  forEachEntityChange(diff, collection, (change, name) => {
+    const fields = (change.children ?? []).map(fieldNameOf).filter((f) => f !== "");
+    const primitives = primitivesUnder(change);
+    // By path, for `nodeChanges`' reason: a deleted mesh and a mesh renamed into
+    // the name it vacated are two changes about two meshes.
+    const existing = seen.get(change.path);
+    if (existing) {
+      for (const f of fields) if (!existing.fields.includes(f)) existing.fields.push(f);
+      for (const p of primitives) if (!existing.primitives.includes(p)) existing.primitives.push(p);
+      existing.primitives.sort((a, b) => a - b);
+      return;
+    }
+    const entry: EntityChange = { name, kind: change.kind, fields, path: change.path, primitives };
+    seen.set(change.path, entry);
+    out.push(entry);
+  });
+  return out;
+}
+
+/**
+ * The rows that mean "this primitive's vertex data actually changed", as the
+ * handler writes them (handler-gltf-scene `diffPrimitive`):
+ *
+ *   .../primitives/N/geometry/POSITION   the accessor bytes differ
+ *   .../primitives/N/bounds              the POSITION min/max box changed
+ *   .../primitives/N/centroid            the decoded centroid moved
+ *
+ * Deliberately NOT every mesh change. A primitive whose only change is
+ * `material` — a reassignment to a different existing material — has identical
+ * geometry on both sides, and measuring it would produce a heatmap that is
+ * uniformly zero: a picture that says "nothing moved" attached to a change that
+ * is real, which is worse than not offering the picture.
+ */
+const GEOMETRY_ROW = /\/primitives\/(\d+)\/(?:bounds|centroid|geometry\/POSITION)$/;
+
+/** A mesh whose vertex data changed — what the deviation heatmap can measure. */
+export type GeometryChange = {
+  /** The mesh's key as the diff names it. */
+  name: string;
+  kind: ChangeKind;
+  /** The mesh change's own path — the queue is keyed on this. */
+  path: string;
+  /**
+   * Primitive ordinals with a geometry row. Never empty: a mesh with no such row
+   * isn't a geometry change and doesn't appear here at all. (Contrast
+   * `EntityChange.primitives`, where empty means "the whole entity" — a
+   * distinction that matters because a heatmap on an untouched primitive would
+   * be a flat zero.)
+   */
+  primitives: number[];
+};
+
+/**
+ * Meshes the diff reports a vertex-data edit on, in diff order. The gate for the
+ * deviation heatmap (#46): no entry here means there is nothing to measure, and
+ * the toggle is not offered at all.
+ */
+export function geometryChanges(diff: StructuredDiff | undefined): GeometryChange[] {
+  const out: GeometryChange[] = [];
+  const seen = new Map<string, GeometryChange>();
+
+  const primitivesWithGeometry = (change: DiffChange): number[] => {
+    const found = new Set<number>();
+    const walkOne = (c: DiffChange): void => {
+      const match = GEOMETRY_ROW.exec(c.path);
+      if (match) found.add(Number(match[1]));
+      for (const child of c.children ?? []) walkOne(child);
+    };
+    walkOne(change);
+    return [...found].sort((a, b) => a - b);
+  };
+
+  forEachEntityChange(diff, "meshes", (change, name) => {
+    const primitives = primitivesWithGeometry(change);
+    if (primitives.length === 0) return;
+    const existing = seen.get(name);
+    if (existing) {
+      for (const p of primitives) if (!existing.primitives.includes(p)) existing.primitives.push(p);
+      existing.primitives.sort((a, b) => a - b);
+      return;
+    }
+    const entry: GeometryChange = { name, kind: change.kind, path: change.path, primitives };
+    seen.set(name, entry);
+    out.push(entry);
+  });
   return out;
 }
 
