@@ -33,7 +33,7 @@ import { changeAtHits, isClickGesture, isVisibleInTree, ndcFromPointer } from ".
 import { withPaneAspect } from "./camera-sync.js";
 import { drawSplit, splitPanes, type Pane, type PaneSide, type SplitOrientation } from "./split.js";
 import { HEATMAP_MODE, versionLayers, type PresentationMode } from "./presentation.js";
-import { createHeatmapLegend, LEGEND_MEASURING } from "./legend.js";
+import { createHeatmapLegend, LEGEND_MEASURING, LEGEND_MIXED_SCALE } from "./legend.js";
 import type { Heatmap, HeatmapSummary } from "./heatmap.js";
 
 type Theme = "light" | "dark";
@@ -530,6 +530,10 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
 
   const heatmapActive = (): boolean => heatmapWanted && mode === HEATMAP_MODE;
 
+  /** What the legend has to admit about a summary, or null when nothing. */
+  const caveat = (summary: HeatmapSummary): string | null =>
+    summary.mixedScale ? LEGEND_MIXED_SCALE : null;
+
   const applyHeatmap = (): void => {
     if (!heatmap || !legend) return;
     if (!heatmapActive()) {
@@ -543,12 +547,13 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     legend.show(true);
     // The status line exists because the honest alternative — an empty legend
     // beside an unpainted model — is indistinguishable from a broken toggle.
-    legend.setStatus(known === null ? LEGEND_MEASURING : null);
+    // Once the numbers are in it carries the one caveat that can attach to them.
+    legend.setStatus(known === null ? LEGEND_MEASURING : caveat(known));
     if (known) legend.setRange(known.min, known.max);
     const ticket = ++heatmapTicket;
     void heatmap.enable().then((summary) => {
       if (ticket !== heatmapTicket || summary === null) return;
-      legend.setStatus(null);
+      legend.setStatus(caveat(summary));
       legend.setRange(summary.min, summary.max);
       // Reported once, and not withdrawn when the heatmap goes off: the number
       // is a measurement of the two files, not a property of the current view.

@@ -5,12 +5,16 @@
 import { describe, it, expect } from "vitest";
 import type { BufferAttribute, BufferGeometry, Material, Mesh, Object3D } from "three";
 import type { StructuredDiff } from "@fhr/types";
-import { createHeatmap, heatmapOffered } from "./heatmap.js";
+import { createHeatmap, heatmapOffered, type Heatmap } from "./heatmap.js";
 import { geometryChanges } from "./diff-map.js";
 import { loadGltf } from "./gltf-load.js";
 import { decodeGltf } from "./gltf-parse.js";
 import { buildNameIndex } from "./node-index.js";
 import { meshesIn } from "./associations.js";
+import { formatDeviation, CHUNK_VERTICES } from "./deviation.js";
+import { rampLinear } from "./ramp.js";
+import { createHeatmapLegend } from "./legend.js";
+import { asElement, createFakeDocument, type FakeElement } from "./fake-dom.js";
 import type { LoadedSide } from "./model-overlay.js";
 import { buildGltf, toArrayBuffer, toGlb, type FixtureSpec } from "./glb-fixture.js";
 
@@ -38,14 +42,28 @@ async function side(spec: FixtureSpec): Promise<LoadedSide> {
 }
 
 /** One node "Hood" carrying mesh "HoodMesh", whose surface sits at z = `lift`. */
-function hood(lift: number, nodes?: FixtureSpec["nodes"]): FixtureSpec {
-  const { positions, indices } = plane(4, lift);
+function hood(lift: number, nodes?: FixtureSpec["nodes"], w = 4): FixtureSpec {
+  const { positions, indices } = plane(w, lift);
   return {
     nodes: nodes ?? [{ name: "Hood", mesh: 0 }],
     meshName: "HoodMesh",
     positions,
     indices,
   };
+}
+
+/**
+ * A hood whose surface is tilted from z = `low` at one edge to z = `high` at the
+ * other, so the measurement has a genuine range rather than one value repeated —
+ * the case where the ramp's low end and the legend's low label can disagree.
+ */
+function tiltedHood(low: number, high: number): FixtureSpec {
+  const w = 4;
+  const { positions, indices } = plane(w, 0);
+  for (let v = 0; v * 3 < positions.length; v++) {
+    positions[v * 3 + 2] = low + (high - low) * positions[v * 3]!;
+  }
+  return { nodes: [{ name: "Hood", mesh: 0 }], meshName: "HoodMesh", positions, indices };
 }
 
 /** A diff whose only content is a vertex-data edit on HoodMesh's primitive 0. */
@@ -104,6 +122,41 @@ const immediately = (): Promise<void> => Promise.resolve();
 
 const materialOf = (object: Object3D): Material => (object as Mesh).material as Material;
 const geometryOf = (object: Object3D): BufferGeometry => (object as Mesh).geometry;
+const colorOf = (object: Object3D): BufferAttribute | undefined =>
+  geometryOf(object).getAttribute("color") as BufferAttribute | undefined;
+
+/** Where on the ramp a painted colour sits — the lookup a reviewer does by eye. */
+function rampPosition(r: number, g: number, b: number): number {
+  let best = 0;
+  let bestError = Infinity;
+  for (let i = 0; i <= 2000; i++) {
+    const t = i / 2000;
+    const c = rampLinear(t);
+    const error = (c.r - r) ** 2 + (c.g - g) ** 2 + (c.b - b) ** 2;
+    if (error < bestError) {
+      bestError = error;
+      best = t;
+    }
+  }
+  return best;
+}
+
+/** "12.0 mm" → 0.012: the legend's label read back as the number it states. */
+function labelled(text: string): number {
+  const [value, unit] = text.split(" ");
+  return Number(value) * (unit === "mm" ? 0.001 : 1);
+}
+
+function legendFor(summary: { min: number; max: number }): { low: number; high: number } {
+  const doc = createFakeDocument();
+  const host = doc.createElement("div") as FakeElement;
+  const legend = createHeatmapLegend(asElement(host), "light");
+  legend.setRange(summary.min, summary.max);
+  return {
+    low: labelled(host.byAttr("data-legend-min", "1")[0]!.textContent),
+    high: labelled(host.byAttr("data-legend-max", "1")[0]!.textContent),
+  };
+}
 
 describe("heatmapOffered", () => {
   it("needs both a vertex-data edit and the previous version", () => {
@@ -325,6 +378,195 @@ describe("measuring and painting", () => {
     // blanking the readout.
     expect(heatmap.readAt(mesh, null)!.value).toBeCloseTo(0.12, 5);
     expect(heatmap.readAt(base.gltf.scene, { a: 0, b: 1, c: 2 })).toBeNull();
+  });
+});
+
+describe("the scale a colour is read against", () => {
+  it("paints a colour the legend's own labels decode back to the measured value", async () => {
+    // A surface tilted from 100 mm to 200 mm: nothing sits at zero, which is
+    // exactly when the ramp's normalisation and the legend's labels can quietly
+    // disagree. Whatever they do, the round trip a reviewer makes — see a
+    // colour, find it on the ramp, convert with the printed ends — has to give
+    // back the number that was measured.
+    const head = await side(tiltedHood(0.1, 0.2));
+    const base = await side(hood(0));
+    const heatmap = createHeatmap({
+      head,
+      base,
+      geometry: geometryChanges(geometryDiff()),
+      yieldTo: immediately,
+    })!;
+    const summary = (await heatmap.enable())!;
+    expect(summary.min).toBeCloseTo(0.1, 5);
+    expect(summary.max).toBeCloseTo(0.2, 5);
+
+    const { low, high } = legendFor(summary);
+    const mesh = meshesIn(head.gltf.scene)[0]!;
+    const colors = colorOf(mesh)!;
+    const positions = geometryOf(mesh).getAttribute("position")!;
+    for (const v of [0, 2, positions.count - 1]) {
+      const t = rampPosition(colors.getX(v), colors.getY(v), colors.getZ(v));
+      // The vertex sits at z above a base plane at zero, so its deviation IS
+      // its z — the one number both halves of the picture have to agree on.
+      expect(low + t * (high - low)).toBeCloseTo(positions.getZ(v), 3);
+    }
+  });
+
+  it("reports the scene's millimetres, not the mesh's own units", async () => {
+    // A mesh authored in millimetres hung under a node scaled 0.001 — the
+    // ordinary CAD and Blender export. Its local coordinates lift by 0.12, and
+    // reading those raw would put "120 mm" in a legend, a hover readout and a
+    // queue row for an edit that is twelve hundredths of a millimetre.
+    const authoredInMm = (lift: number): FixtureSpec =>
+      hood(lift, [{ name: "Hood", mesh: 0, scale: [0.001, 0.001, 0.001] }]);
+    const head = await side(authoredInMm(0.12));
+    const base = await side(authoredInMm(0));
+    const heatmap = createHeatmap({
+      head,
+      base,
+      geometry: geometryChanges(geometryDiff()),
+      yieldTo: immediately,
+    })!;
+    const summary = (await heatmap.enable())!;
+    expect(summary.max).toBeCloseTo(0.00012, 9);
+    expect(summary.byPath.get("meshes/HoodMesh")).toBeCloseTo(0.00012, 9);
+    expect(formatDeviation(summary.max)).toBe("0.12 mm");
+    expect(summary.mixedScale).toBe(false);
+    // The hover readout is the same number by the same route.
+    expect(formatDeviation(heatmap.readAt(meshesIn(head.gltf.scene)[0]!, null)!.value)).toBe("0.12 mm");
+  });
+
+  it("measures shared geometry at its largest instance and admits the ambiguity", async () => {
+    // One mesh, two sizes, one colour attribute between them: there is no
+    // reading that is right for both copies. The largest wins so the headline
+    // "max deviation" is at least an upper bound, and the summary says so.
+    const nodes: FixtureSpec["nodes"] = [
+      { name: "Small", mesh: 0, scale: [1, 1, 1] },
+      { name: "Big", mesh: 0, scale: [2, 2, 2] },
+    ];
+    const head = await side(hood(0.12, nodes));
+    const base = await side(hood(0, nodes));
+    const heatmap = createHeatmap({
+      head,
+      base,
+      geometry: geometryChanges(geometryDiff()),
+      yieldTo: immediately,
+    })!;
+    const summary = (await heatmap.enable())!;
+    expect(summary.max).toBeCloseTo(0.24, 5);
+    expect(summary.mixedScale).toBe(true);
+  });
+
+  it("does not call two instances at two orientations a scale conflict", async () => {
+    // Distances survive rotation, so four wheels facing four ways measure
+    // identically — flagging them would put a caveat on every wheeled model.
+    const nodes: FixtureSpec["nodes"] = [
+      { name: "WheelL", mesh: 0, translation: [-1, 0, 0] },
+      { name: "WheelR", mesh: 0, translation: [1, 0, 0], rotation: [0, 0, Math.SQRT1_2, Math.SQRT1_2] },
+    ];
+    const head = await side(hood(0.12, nodes));
+    const base = await side(hood(0, nodes));
+    const summary = (await createHeatmap({
+      head,
+      base,
+      geometry: geometryChanges(geometryDiff()),
+      yieldTo: immediately,
+    })!.enable())!;
+    expect(summary.max).toBeCloseTo(0.12, 5);
+    expect(summary.mixedScale).toBe(false);
+  });
+});
+
+describe("switching off", () => {
+  it("takes the ramp off the file's geometry, not only the materials", async () => {
+    const head = await side(hood(0.12));
+    const base = await side(hood(0));
+    const mesh = meshesIn(head.gltf.scene)[0]!;
+    // Stand in for a file that ships COLOR_0. GLTFLoader turns `vertexColors`
+    // on for any primitive carrying it, so a ramp left on the geometry keeps
+    // drawing through the authored material — in structural mode, in
+    // side-by-side, in overlay without the heatmap — until the view is torn
+    // down. And scene-3d calls disable() on every mode change, not just the
+    // toggle.
+    const authoredColors = geometryOf(mesh).getAttribute("position")! as BufferAttribute;
+    geometryOf(mesh).setAttribute("color", authoredColors);
+    const heatmap = createHeatmap({
+      head,
+      base,
+      geometry: geometryChanges(geometryDiff()),
+      yieldTo: immediately,
+    })!;
+    await heatmap.enable();
+    expect(colorOf(mesh)).not.toBe(authoredColors);
+
+    heatmap.disable();
+    expect(colorOf(mesh)).toBe(authoredColors);
+    await heatmap.enable();
+    expect(colorOf(mesh)).not.toBe(authoredColors);
+  });
+
+  it("leaves a geometry that had no colours without one", async () => {
+    const head = await side(hood(0.12));
+    const base = await side(hood(0));
+    const mesh = meshesIn(head.gltf.scene)[0]!;
+    const heatmap = createHeatmap({
+      head,
+      base,
+      geometry: geometryChanges(geometryDiff()),
+      yieldTo: immediately,
+    })!;
+    await heatmap.enable();
+    expect(colorOf(mesh)).toBeDefined();
+    heatmap.disable();
+    expect(colorOf(mesh)).toBeUndefined();
+  });
+
+  it("comes back on with the ramp it already built rather than recolouring", async () => {
+    // The promise the toggle makes: off and on again is a pointer swap per
+    // painted mesh, not a second pass over every vertex.
+    const head = await side(hood(0.12));
+    const base = await side(hood(0));
+    const mesh = meshesIn(head.gltf.scene)[0]!;
+    const heatmap = createHeatmap({
+      head,
+      base,
+      geometry: geometryChanges(geometryDiff()),
+      yieldTo: immediately,
+    })!;
+    await heatmap.enable();
+    const ramp = colorOf(mesh);
+    heatmap.disable();
+    await heatmap.enable();
+    expect(colorOf(mesh)).toBe(ramp);
+  });
+});
+
+describe("staying interactive", () => {
+  it("yields during the colour pass, not just during the measurement", async () => {
+    // `rampLinear` is three Math.pow calls a vertex — ~54 ms for 100k of them,
+    // landing right after the reviewer has already waited for the measurement.
+    // Proved by cancelling from inside a yield that can only be the paint's:
+    // the summary is null until the measurement has landed, so a heatmap that
+    // painted in one blocking pass would finish before this ever fired.
+    const head = await side(hood(0.12, undefined, 64)); // 65² = 4225 vertices
+    const base = await side(hood(0, undefined, 64));
+    expect(4225).toBeGreaterThan(CHUNK_VERTICES);
+    let heatmap: Heatmap | null = null;
+    const cancelOncePainting = async (): Promise<void> => {
+      if (heatmap !== null && heatmap.summary() !== null) heatmap.disable();
+    };
+    heatmap = createHeatmap({
+      head,
+      base,
+      geometry: geometryChanges(geometryDiff()),
+      yieldTo: cancelOncePainting,
+    })!;
+    expect(await heatmap.enable()).toBeNull();
+    expect(heatmap.on).toBe(false);
+    // The measurement survives the cancelled paint — it is a fact about the two
+    // files — but nothing was left half-coloured on the model.
+    expect(heatmap.summary()!.max).toBeCloseTo(0.12, 5);
+    expect(colorOf(meshesIn(head.gltf.scene)[0]!)).toBeUndefined();
   });
 });
 

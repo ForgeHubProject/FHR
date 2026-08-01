@@ -45,11 +45,35 @@ describe("the heatmap legend", () => {
     legend.setRange(0, 0.012);
     expect(only(host, "data-legend-min").textContent).toBe("0.0 mm");
     expect(only(host, "data-legend-max").textContent).toBe("12.0 mm");
-    // A re-tessellated surface has no zero end; the legend has to say so rather
-    // than draw a scale that starts somewhere it doesn't.
-    legend.setRange(0.0004, 0.0031);
-    expect(only(host, "data-legend-min").textContent).toBe("0.40 mm");
-    expect(only(host, "data-legend-max").textContent).toBe("3.10 mm");
+  });
+
+  it("labels the foot of the ramp zero, because that is what the paint puts there", () => {
+    const { host, legend } = mount();
+    // heatmap.ts normalises every vertex against 0..max, so t = 0 is deviation
+    // nothing. Printing the smallest MEASURED value at that end — the obvious
+    // reading of "show the range" — offsets every colour on the model by it: on
+    // this range 100 mm is painted half way up the ramp, and a legend claiming
+    // the foot is 100 mm makes that colour decode to 150 mm instead.
+    legend.setRange(0.1, 0.2);
+    expect(only(host, "data-legend-min").textContent).toBe("0.0 mm");
+    expect(only(host, "data-legend-max").textContent).toBe("200.0 mm");
+  });
+
+  it("says when the foot of the ramp went unused, and stays quiet when it didn't", () => {
+    const { host, legend } = mount();
+    const floor = only(host, "data-legend-floor");
+    expect(floor.style.cssText).toContain("display:none");
+    // Nothing measured near zero: the ramp starts there anyway, and a reviewer
+    // who reads "0" as "part of this is unchanged" has the wrong picture.
+    legend.setRange(0.1, 0.2);
+    expect(floor.textContent).toBe("Smallest measured 100.0 mm");
+    expect(floor.style["display"]).toBe("block");
+    // A re-tessellation's sliver of unused ramp is not worth a line in a panel
+    // this small — it is invisible on the bar and reads as noise beside it.
+    legend.setRange(0.00001, 0.012);
+    expect(floor.style["display"]).toBe("none");
+    legend.setRange(0, 0.012);
+    expect(floor.style["display"]).toBe("none");
   });
 
   it("says it is measuring rather than showing an empty scale", () => {
