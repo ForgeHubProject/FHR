@@ -29,10 +29,12 @@ import { createFlyTo, DEFAULT_FLY_MS } from "./flyto.js";
 import { disposeTree } from "./dispose.js";
 import { createIsolator } from "./isolate.js";
 import { createCallout, projectToScreen } from "./callout.js";
-import { changeAtHits, isClickGesture, ndcFromPointer } from "./pick.js";
+import { changeAtHits, isClickGesture, isVisibleInTree, ndcFromPointer } from "./pick.js";
 import { withPaneAspect } from "./camera-sync.js";
 import { drawSplit, splitPanes, type Pane, type PaneSide, type SplitOrientation } from "./split.js";
-import { versionLayers, type PresentationMode } from "./presentation.js";
+import { HEATMAP_MODE, versionLayers, type PresentationMode } from "./presentation.js";
+import { createHeatmapLegend, LEGEND_MEASURING, LEGEND_MIXED_SCALE } from "./legend.js";
+import type { Heatmap, HeatmapSummary } from "./heatmap.js";
 
 type Theme = "light" | "dark";
 
@@ -67,6 +69,12 @@ export type SceneHandle = {
   setMode?(mode: PresentationMode): void;
   /** Change which way side-by-side cuts the canvas. */
   setSplit?(orientation: SplitOrientation): void;
+  /**
+   * Turn the deviation heatmap on or off (#46). The first `true` starts the
+   * measurement, which is why nothing here is synchronous. No-op on a scene
+   * built without one.
+   */
+  setHeatmap?(on: boolean): void;
 };
 
 const deg2rad = (d: number): number => (d * Math.PI) / 180;
@@ -232,6 +240,18 @@ export type ModelSceneOptions = {
    * and the dot beside its structure-tree row cannot come from two answers.
    */
   changeOfNode?: (name: string) => string | null;
+  /**
+   * The deviation heatmap, already built and gated (heatmap.ts). Absent means
+   * the view can't offer one, and nothing here draws a toggle or a legend.
+   */
+  heatmap?: Heatmap | null;
+  /**
+   * The measurement finished. Fired once per mount, not on every toggle: the
+   * mount forwards these numbers to the change queue's panel, and a deviation
+   * the reviewer has already been shown is a fact about the two files that
+   * switching the colours off does not un-measure.
+   */
+  onHeatmap?: (summary: HeatmapSummary) => void;
 };
 
 /** How framing a structure-tree row should read. */
@@ -487,6 +507,60 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     });
   };
 
+  // ── deviation heatmap ───────────────────────────────────────────────────────
+  // A sub-view of overlay rather than a mode of its own (presentation.ts), and
+  // lazy in the strongest sense: the measurement doesn't start until the first
+  // `setHeatmap(true)`, and switching modes suspends it rather than recomputing.
+  //
+  // Suspends rather than *forgets*: what the reviewer asked for outlives a trip
+  // through side-by-side, so returning to overlay brings the colours back for the
+  // cost of one pointer write per painted mesh.
+  const heatmap = options.heatmap ?? null;
+  const legend = heatmap ? createHeatmapLegend(container, theme) : null;
+  const heatTargets = heatmap ? heatmap.targets() : [];
+  let heatmapWanted = false;
+  /**
+   * Which enable() call owns the picture. A reviewer who toggles twice while a
+   * large mesh is being measured would otherwise get the first run's colours
+   * written over the second's decision.
+   */
+  let heatmapTicket = 0;
+  /** Where the pointer last was, or null when there is nothing new to read. */
+  let hoverAt: { clientX: number; clientY: number } | null = null;
+
+  const heatmapActive = (): boolean => heatmapWanted && mode === HEATMAP_MODE;
+
+  /** What the legend has to admit about a summary, or null when nothing. */
+  const caveat = (summary: HeatmapSummary): string | null =>
+    summary.mixedScale ? LEGEND_MIXED_SCALE : null;
+
+  const applyHeatmap = (): void => {
+    if (!heatmap || !legend) return;
+    if (!heatmapActive()) {
+      heatmapTicket++;
+      heatmap.disable();
+      legend.show(false);
+      hoverAt = null;
+      return;
+    }
+    const known = heatmap.summary();
+    legend.show(true);
+    // The status line exists because the honest alternative — an empty legend
+    // beside an unpainted model — is indistinguishable from a broken toggle.
+    // Once the numbers are in it carries the one caveat that can attach to them.
+    legend.setStatus(known === null ? LEGEND_MEASURING : caveat(known));
+    if (known) legend.setRange(known.min, known.max);
+    const ticket = ++heatmapTicket;
+    void heatmap.enable().then((summary) => {
+      if (ticket !== heatmapTicket || summary === null) return;
+      legend.setStatus(caveat(summary));
+      legend.setRange(summary.min, summary.max);
+      // Reported once, and not withdrawn when the heatmap goes off: the number
+      // is a measurement of the two files, not a property of the current view.
+      options.onHeatmap?.(summary);
+    });
+  };
+
   /** Make the current `mode` the picture. One place, used by mount and by the toggle. */
   const applyMode = (): void => {
     if (mode === "side-by-side") {
@@ -498,6 +572,8 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
       labelKey = "";
       showVersion(blinking ? "base" : "head", true);
     }
+    // After showVersion, which may have put the overlay's own paint back on.
+    applyHeatmap();
     refreshMark();
   };
   applyMode();
@@ -578,12 +654,45 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
   canvas.addEventListener("pointerdown", onPointerDown as EventListener);
   canvas.addEventListener("pointerup", onPointerUp as EventListener);
 
+  // The legend's live reading. Recorded on the event and resolved in the frame
+  // loop, at most one raycast per frame: pointermove fires far faster than the
+  // display refreshes, and a ray per event would spend more time answering a
+  // question about a pixel nobody looked at than drawing the model.
+  const onHoverMove = (event: PointerEvent): void => {
+    if (heatmapActive()) hoverAt = { clientX: event.clientX, clientY: event.clientY };
+  };
+  const onHoverLeave = (): void => {
+    hoverAt = null;
+    legend?.clearReading();
+  };
+  if (heatmap && legend) {
+    canvas.addEventListener("pointermove", onHoverMove as EventListener);
+    canvas.addEventListener("pointerleave", onHoverLeave);
+    viewport.onFrame(() => {
+      const at = hoverAt;
+      if (!at || !heatmapActive() || !heatmap.on) return;
+      hoverAt = null;
+      const ndc = ndcFromPointer(at, canvas.getBoundingClientRect());
+      raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), viewport.camera);
+      const hits = raycaster.intersectObjects(heatTargets, false);
+      const front = hits.find((hit) => isVisibleInTree(hit.object));
+      // With the hit POINT, not just the face: the readout is the value under
+      // the pointer, and a face is a whole triangle wide (heatmap.ts `faceValue`).
+      const reading = front ? heatmap.readAt(front.object, front.face, front.point) : null;
+      if (reading) legend.setReading(reading.label, reading.value);
+      else legend.clearReading();
+    });
+  }
+
   viewport.onDispose(() => {
     viewport.controls.removeEventListener("start", onControlStart);
     canvas.removeEventListener("pointerdown", onPointerDown as EventListener);
     canvas.removeEventListener("pointerup", onPointerUp as EventListener);
+    canvas.removeEventListener("pointermove", onHoverMove as EventListener);
+    canvas.removeEventListener("pointerleave", onHoverLeave);
     callout.dispose();
     isolator.clear();
+    legend?.dispose();
     paneLabels?.dispose();
     hint?.remove();
   });
@@ -591,6 +700,11 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
   return {
     dispose(): void {
       viewport.dispose();
+      // Before the overlay, and in this order for two reasons: the heat clones
+      // have to come off the model while the meshes it built are still around,
+      // and the `color` attributes it wrote live on geometry the overlay's walk
+      // is about to dispose.
+      heatmap?.dispose();
       overlay.dispose();
     },
     flyToChange(name: string): boolean {
@@ -651,6 +765,11 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
       // The next frame re-derives the rects; clearing the key makes the labels
       // follow rather than stay where the old orientation put them.
       labelKey = "";
+    },
+    setHeatmap(on: boolean): void {
+      if (on === heatmapWanted) return;
+      heatmapWanted = on;
+      applyHeatmap();
     },
   };
 }

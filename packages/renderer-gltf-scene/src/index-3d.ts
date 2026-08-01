@@ -17,6 +17,7 @@ import { decodeGltf, parseGltf, type GltfDocument } from "./gltf-parse.js";
 import {
   animationChanges,
   diffChangeTypes,
+  geometryChanges,
   materialChanges,
   meshChanges,
   nodeChanges,
@@ -34,6 +35,8 @@ import { entityPath } from "./change-path.js";
 import { availableModes, createModeState, defaultMode } from "./presentation.js";
 import { boxSize, defaultSplit, type SplitOrientation } from "./split.js";
 import { createChrome, type Chrome } from "./chrome.js";
+import { createHeatmap } from "./heatmap.js";
+import { formatDeviation } from "./deviation.js";
 import type { QueueEntry } from "./queue.js";
 
 /**
@@ -204,6 +207,13 @@ export async function mount3d(
   const modeState = createModeState({ initial: defaultMode(props.capabilities), available: modes });
   let split: SplitOrientation = defaultSplit(boxSize(overlay.sceneBox));
 
+  // The deviation heatmap (#46). Null — and therefore no toggle and no legend —
+  // whenever there is nothing to measure: no vertex-data edit in the diff, no
+  // previous version loaded, or no pair of primitives the two files agree on.
+  // Nothing is computed here; building it only works out what *could* be
+  // measured, and the first toggle pays for the rest.
+  const heatmap = createHeatmap({ head, base, geometry: geometryChanges(props.diff) });
+
   let scene: SceneHandle | null = null;
   chrome = createChrome(host, {
     theme,
@@ -213,11 +223,13 @@ export async function mount3d(
     structure,
     queue,
     info: viewInfo(structure.length, queue.length, props),
+    heatmap: heatmap !== null,
     onMode: (mode) => {
       if (!modeState.set(mode)) return;
       chrome?.setMode(mode);
       scene?.setMode?.(mode);
     },
+    onHeatmap: (on) => scene?.setHeatmap?.(on),
     onSplit: (orientation) => {
       split = orientation;
       chrome?.setSplit(orientation);
@@ -257,6 +269,15 @@ export async function mount3d(
     // framing a row has to be able to ask which change reaches it — otherwise a
     // node painted through its mesh gets captioned "not in the change list".
     changeOfNode: (name) => indirect.byNode.get(name)?.name ?? null,
+    heatmap,
+    // The queue's panel carries the number the heatmap's colours are of, so a
+    // reviewer stepping the worklist reads "max deviation 12 mm" without having
+    // to find the part on screen and hover it.
+    onHeatmap: (summary) => {
+      const byPath = new Map<string, string>();
+      for (const [path, value] of summary.byPath) byPath.set(path, formatDeviation(value));
+      chrome?.setDeviations(byPath);
+    },
     onPick: (name) => {
       const path = name === null ? null : keys.pathOf(name);
       chrome?.selectChange(path);
