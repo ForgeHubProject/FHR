@@ -37,29 +37,51 @@ export type SceneNode = {
 };
 
 /**
+ * The change map re-keyed by normalised name, first key wins. First-wins is what
+ * makes this a drop-in for the scan it replaces: that scan walked the map in
+ * insertion order and returned the earliest key that normalised to the same
+ * form, so two change keys that collide under normalisation still resolve to the
+ * same kind they always did.
+ *
+ * Built once per graph, because the normalised lookup is the *common* path, not
+ * the exception: only a changed node takes the exact hit, so scanning here cost
+ * one pass over every change for every unchanged node — quadratic on the
+ * ordinary file. Since #56 put this on every 3D mount rather than only the
+ * box-scene fallback, a 20 000-node assembly with 200 changes spent ~0.75 s
+ * blocking the main thread before the canvas existed.
+ */
+function normalizedKinds(changeMap: Map<string, ChangeKind>): Map<string, ChangeKind> {
+  const acc = new Map<string, ChangeKind>();
+  for (const [key, kind] of changeMap) {
+    const norm = normalizeName(key);
+    if (!acc.has(norm)) acc.set(norm, kind);
+  }
+  return acc;
+}
+
+/**
  * Look a node's name up in the change map: exact match first, then the shared
  * normalisation (see node-index.ts). `slugify` is retired — matching one
  * mangling of a name against a differently-mangled one is how "Cube.001" lost
  * its highlight.
  */
-function kindFor(name: string, changeMap: Map<string, ChangeKind>): ChangeKind | undefined {
-  const exact = changeMap.get(name);
-  if (exact) return exact;
-  const wanted = normalizeName(name);
-  for (const [key, kind] of changeMap) {
-    if (normalizeName(key) === wanted) return kind;
-  }
-  return undefined;
+function kindFor(
+  name: string,
+  changeMap: Map<string, ChangeKind>,
+  byNormalized: Map<string, ChangeKind>,
+): ChangeKind | undefined {
+  return changeMap.get(name) ?? byNormalized.get(normalizeName(name));
 }
 
 export function buildSceneGraph(entities: Entity[], changeMap: Map<string, ChangeKind>): SceneNode[] {
+  const byNormalized = normalizedKinds(changeMap);
   // parseGltf emits parents before children, so one forward pass can resolve a
   // depth from the depth already recorded for the parent.
   const depthById = new Map<string, number>();
   return entities.map((e) => {
     const depth = e.parentEntityId === null ? 0 : (depthById.get(e.parentEntityId) ?? -1) + 1;
     depthById.set(e.entityId, depth);
-    const kind = kindFor(e.name, changeMap) ?? "unchanged";
+    const kind = kindFor(e.name, changeMap, byNormalized) ?? "unchanged";
     const color = kind === "unchanged" ? NEUTRAL : KIND_COLOR[kind] ?? NEUTRAL;
     return {
       id: e.entityId,

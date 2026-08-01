@@ -78,4 +78,42 @@ describe("buildSceneGraph", () => {
     const [orphan] = buildSceneGraph([entity("Stray", undefined, "Missing")], new Map());
     expect(orphan!.depth).toBe(0);
   });
+
+  it("keeps the first change key when two normalise to the same name", () => {
+    // The retired scan walked the map in insertion order and stopped at the
+    // first key that normalised to the node's name; the prebuilt index has to
+    // resolve the collision the same way or a file would change colour.
+    const changeMap = new Map<string, ChangeKind>([
+      ["Cube.001", "added"],
+      ["cube-001", "removed"],
+    ]);
+    expect(buildSceneGraph([entity("Cube 001")], changeMap)[0]!.kind).toBe("added");
+  });
+
+  it("walks the change map once per graph, not once per unchanged node", () => {
+    // The complexity pin for #56's regression. Only a *changed* node takes the
+    // exact-match fast path, so a per-node scan of the change map ran on every
+    // other node — O(nodes × changes) on the ordinary file, and #56 moved this
+    // call off the box-scene fallback onto every 3D mount (20k nodes / 200
+    // changes measured 0.75 s of blocking work). Counting iterations rather than
+    // timing keeps the pin deterministic.
+    let scans = 0;
+    class CountingMap extends Map<string, ChangeKind> {
+      override [Symbol.iterator](): IterableIterator<[string, ChangeKind]> {
+        scans++;
+        return super[Symbol.iterator]();
+      }
+    }
+    // Names that do *not* exact-match, which is the case that scanned hardest.
+    const changeMap = new CountingMap();
+    for (let i = 0; i < 50; i++) changeMap.set(`part-${i}-x`, "modified");
+    const entities = Array.from({ length: 2000 }, (_, i) => entity(`Part_${i}`));
+
+    const nodes = buildSceneGraph(entities, changeMap);
+
+    expect(scans).toBe(1);
+    expect(nodes).toHaveLength(2000);
+    // …and the normalised match still lands: "part-0-x" → "part0x" ← "Part_0_x".
+    expect(buildSceneGraph([entity("Part_0_x")], changeMap)[0]!.kind).toBe("modified");
+  });
 });
