@@ -67,6 +67,8 @@ type MountProps = {
   theme?: "light" | "dark";
   selectedChangePath?: string | null; // host-driven selection, keyed on
                                       // DiffChange.path (see below)
+  capabilities?: HandlerCapabilities; // what the handler that produced `diff`
+                                      // declares about itself (§2e)
   onEvent?: (e: RendererEvent) => void;   // e.g. merge resolution produced
 };
 
@@ -136,6 +138,115 @@ simply cannot offer in-browser compute for that format (§4, Tier B).
 `~/.forge/renderers/<handlerID>.js` (+ `.json` sidecar meta, mirroring
 `~/.forge/plugins/`). The per-repo `.forge/handlers` lockfile entry pins one
 build for binary + WASM + renderer jointly — no separate renderer pin.
+
+### 2e. Presentation modes
+
+Entity-level diff assumes structure is stable between revisions. That holds for
+authored artifacts and fails wholesale when topology is **regenerated** —
+re-tessellated exports, re-meshed sculpts, the same source exported by two
+tools. A structural diff of those reports *"everything changed"*: true, and
+useless.
+
+Two different reviewer needs sit behind this, and only one is served by a change
+list. **Discover** — "what changed?" — is what structural answers, better than
+looking ever could. **Verify** — "show me, I want to see it myself" — structural
+never answers, *however good it is*. An approver who does not trust the
+algorithm wants to look before signing off, and that need exists even when the
+diff is perfect.
+
+So a renderer MAY offer several **presentations** of the same
+`mode: "diff"` view. These are not host modes: nothing here changes `mount()`,
+and a host implements nothing. The vocabulary is shared so that renderer authors
+converge on the same affordances instead of each inventing a toggle:
+
+| presentation | answers | needs |
+|---|---|---|
+| **structural** | what changed — a change list, click to frame | a `StructuredDiff` with meaningful paths |
+| **overlay** | where, and by how much | a shared coordinate frame |
+| **side-by-side** | see for yourself | nothing beyond the two blobs |
+| **blink** | what moved — hold to swap the versions in place | both revisions resident |
+| **wipe** | see for yourself, precisely | a *fixed* image plane |
+
+**Blink is held, not selected.** It exploits change blindness, and the effect
+depends on the two versions landing in the same pixels with no blank or slow
+intermediate frame. A renderer that offers it SHOULD make it available inside
+every presentation where both revisions are resident, rather than as a toggle
+position a reviewer has to leave their place to reach.
+
+**Wipe is for renderers whose image plane is fixed** — 2D, raster, page
+diffs — where a parked boundary keeps meaning what it meant. It is deliberately
+**not** offered by `renderer-gltf-scene`: a wipe line lives in screen space and
+the model lives in world space, so parking the boundary somewhere meaningful and
+then orbiting ten degrees leaves it cutting through something unrelated. The
+ladder is format-agnostic even where a rung is not. (The 3D-correct form of the
+same affordance is a world-space clipping plane, which survives orbiting because
+it is part of the scene. Noted, not scheduled.)
+
+#### Choosing the default: `capabilities`
+
+`HandlerCapabilities.semanticCompare` already existed on `ArtifactHandler` — the
+*handler's* declaration — but was not on `MountProps`, so the renderer never saw
+it. `capabilities` surfaces it, and that is the whole contract addition:
+
+- `semanticCompare: true`, or `capabilities` absent → open on a **structural**
+  presentation.
+- `semanticCompare: false` → open on **side-by-side** (or whichever
+  see-for-yourself presentation the renderer has), because a structural view of
+  a regenerated topology says "everything changed" instead of pretending.
+
+`capabilities` is optional, and a renderer MUST have a sensible default without
+it: a host that has not plumbed the handler's declaration through is not an
+error. This is additive — `fhrVersion` stays `1`, and a bundle that ignores the
+field behaves exactly as before.
+
+The *chosen* presentation is deliberately **not** in the contract. A
+`presentation` hint on `MountProps` would let a host deep-link or persist a
+preference, and is worth adding the day a host concretely wants to; until then
+it would be a third contract addition with no consumer. Keep the toggle as
+renderer-internal state.
+
+#### Chrome convention
+
+A renderer with several presentations SHOULD keep one chrome across all of them
+and change only the picture. Switching presentation must not cost the reviewer
+their place — the selection, the camera, and the layout all survive the switch.
+
+The arrangement `renderer-gltf-scene` implements, and the one other 3D-ish
+renderers should reach for first, is three regions:
+
+```
+┌──────────┬─────────────────────────────┬──────────────┐
+│          │  file info    view options  │              │
+│ structure├─────────────────────────────┤   change     │
+│   tree   │          VIEWPORT           │   queue      │
+└──────────┴─────────────────────────────┴──────────────┘
+```
+
+- **Left is structure, right is change, and they are not the same list.** The
+  left tree is the whole artifact, including the parts that did *not* change, so
+  a reviewer can reach one for context; the right stays short and scannable.
+  Where the change list is the only navigation, it ends up padded with
+  structural wrappers just to stay usable. A row's change mark MUST account for
+  changes that reach the node *indirectly* — in glTF, an edit to a mesh or a
+  material, which the viewport paints on every node carrying it. A tree built
+  from the node-level changes alone marks that geometry unchanged beside a
+  picture that has it highlighted, and whichever region the reviewer believes,
+  one of them lied to them.
+- **The right region is a worklist, not a properties panel.** This is the
+  divergence from the authoring tools whose outliner/viewport/properties layout
+  this borrows: a review tool's job is sequencing — get me through N changes,
+  let me judge each, tell me when I am done — so the region is an ordered list
+  *with a position in it*, and selection follows the queue.
+- **Both side regions collapse**, and collapse automatically below a width
+  threshold, the tree first. That is what lets one layout serve both a
+  full-window local view (§3b) and a narrow column on a host's review page,
+  instead of the two diverging.
+- **One WebGL context.** A presentation that shows two viewports MUST scissor
+  one renderer rather than opening a second canvas: browsers cap live contexts,
+  and a page showing several diffs would start losing the older ones. Cameras in
+  such a split MUST be locked — ideally by being literally one rig — or every
+  apparent difference could be parallax, and the view is worse than useless
+  because it *looks* authoritative.
 
 ## 3. Consumers
 
