@@ -11,6 +11,11 @@
 // annotated tree was wired only to the box-scene fallback, so a reviewer saw it
 // exactly when the model *failed* to load. Here it is a persistent region.
 //
+// "The whole model" up to a row cap (MAX_ROWS): being on every mount means this
+// is now on the critical path to first frame, and an unbounded row-per-node list
+// makes a large assembly pay for it. The cap keeps every changed node and says
+// what it left out.
+//
 // DOM-only — no three.js — and only the handful of DOM calls fake-dom covers.
 
 import type { SceneNode } from "./scene-graph.js";
@@ -29,6 +34,47 @@ export type StructureTree = {
 const INDENT = 11;
 /** Past this depth the indent stops growing, or a skeleton runs off the region. */
 const MAX_INDENT_DEPTH = 6;
+
+/**
+ * Most rows this region will build. Every row is three elements and a listener,
+ * and this now runs on every mount rather than only the box-scene fallback, so
+ * an unbounded tree on a 50 000-node assembly is 150 000 live elements built
+ * synchronously before the canvas exists — half a second of blocking work for a
+ * list nobody scrolls to the end of. Nothing upstream bounds the node count
+ * (limits.ts caps blob *bytes*, which says nothing about node count), so the
+ * bound belongs here.
+ *
+ * The number is a compromise, not a measurement: high enough that real assemblies
+ * arrive whole, low enough that the pathological ones cost tens of milliseconds.
+ */
+export const MAX_ROWS = 4000;
+
+/**
+ * Which rows survive the cap, in document order.
+ *
+ * Changed nodes are kept first and unconditionally: they are the names the queue
+ * asks `select()` for, so dropping one would silently break the queue↔tree link
+ * rather than merely shortening a list. The remaining budget goes to the file's
+ * first unchanged nodes — the tree is read top-down, and the top is the model's
+ * own root and its major assemblies.
+ */
+function cappedRows(nodes: readonly SceneNode[], cap: number): readonly SceneNode[] {
+  if (nodes.length <= cap) return nodes;
+  const keep = new Set<number>();
+  for (let i = 0; i < nodes.length && keep.size < cap; i++) {
+    if (nodes[i]!.kind !== "unchanged") keep.add(i);
+  }
+  for (let i = 0; i < nodes.length && keep.size < cap; i++) keep.add(i);
+  return nodes.filter((_, i) => keep.has(i));
+}
+
+/** The note that stands in for the rows the cap dropped. Never silent. */
+export function truncatedMessage(shown: number, total: number): string {
+  return (
+    `Showing ${shown} of ${total} nodes — the other ${total - shown} are omitted to keep this ` +
+    `view responsive. Every changed node is listed.`
+  );
+}
 
 export function renderStructureTree(
   doc: Document,
@@ -52,7 +98,16 @@ export function renderStructureTree(
     el.appendChild(empty);
   }
 
-  for (const node of nodes) {
+  const rows = cappedRows(nodes, MAX_ROWS);
+  if (rows.length < nodes.length) {
+    const note = doc.createElement("div");
+    note.className = "fhr3d__empty";
+    note.setAttribute("data-truncated", String(nodes.length - rows.length));
+    note.textContent = truncatedMessage(rows.length, nodes.length);
+    el.appendChild(note);
+  }
+
+  for (const node of rows) {
     const row = doc.createElement("div");
     row.className = "fhr3d__node";
     row.setAttribute("data-node", node.name);
