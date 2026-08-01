@@ -99,6 +99,27 @@ export function decodeGltf(bytes: Uint8Array): GltfDocument {
   return JSON.parse(new TextDecoder().decode(bytes)) as GltfDocument;
 }
 
+/**
+ * The name of the synthetic root entity `parseGltf` adds, or null when it adds
+ * none.
+ *
+ * A glTF *scene* is not a node: it has no index, no transform and no entry in
+ * `nodes`. When the default scene has more than one root node — what Blender and
+ * most exporters produce, so the overwhelmingly common case — the outline needs
+ * something to hang those roots off, and the scene itself becomes that row.
+ *
+ * Anything that has to answer for that row therefore cannot go through a node
+ * index and needs this rule instead: node-index.ts records it so the overlay can
+ * frame the row (model-overlay.ts `boxOfNode`) rather than leave the tree's most
+ * prominent row inert. Two copies of the rule would drift, so there is one.
+ */
+export function sceneRootName(doc: GltfDocument): string | null {
+  const defaultScene = (doc.scenes ?? [])[doc.scene ?? 0];
+  if (!defaultScene) return null;
+  if ((defaultScene.nodes ?? []).length <= 1) return null;
+  return defaultScene.name ?? "scene";
+}
+
 /** Walk a glTF document's default scene into a flat entity list. */
 export function parseGltf(doc: GltfDocument): Entity[] {
   const nodes = doc.nodes ?? [];
@@ -120,8 +141,8 @@ export function parseGltf(doc: GltfDocument): Entity[] {
   };
 
   let syntheticRootId: string | null = null;
-  if (rootIndices.length > 1) {
-    const sceneName = defaultScene.name ?? "scene";
+  const sceneName = sceneRootName(doc);
+  if (sceneName !== null) {
     const rootPath = uniquePath(slugify(sceneName));
     syntheticRootId = rootPath;
     entities.push({ id: rootPath, entityId: rootPath, parentEntityId: null, kind: "assembly", name: sceneName, path: rootPath, transform: null });

@@ -14,7 +14,7 @@
 // superset of every mangling above. Downstream code deals only in indices, which
 // no layer can rewrite. Pure: no three.js, no DOM.
 
-import type { GltfDocument, GltfNode } from "./gltf-parse.js";
+import { sceneRootName, type GltfDocument, type GltfNode } from "./gltf-parse.js";
 
 /**
  * The display key the handler uses for a node: its name, or `node[i]` when the
@@ -68,6 +68,13 @@ export type NameIndex = {
    */
   materialToPrimitives: Map<string, PrimitiveRef[]>;
   materialToPrimitivesNormalized: Map<string, PrimitiveRef[]>;
+  /**
+   * The name the outline's synthetic root row carries, or null when the file
+   * gets no such row (gltf-parse.ts `sceneRootName`). It is deliberately NOT in
+   * `byKey`: it names a glTF scene, which has no node index, and putting it
+   * there would let a diff label resolve to a node that does not exist.
+   */
+  sceneRootName: string | null;
 };
 
 /** How a label was resolved to a node index. */
@@ -158,6 +165,7 @@ export function buildNameIndex(doc: GltfDocument): NameIndex {
     meshToNodesNormalized,
     materialToPrimitives,
     materialToPrimitivesNormalized,
+    sceneRootName: sceneRootName(doc),
   };
 }
 
