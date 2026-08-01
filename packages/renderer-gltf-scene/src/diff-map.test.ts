@@ -111,6 +111,31 @@ describe("nodeChanges", () => {
     ]);
   });
 
+  // Since #47 one name can carry two changes about two different nodes: the
+  // previous version's "B" was deleted, and an unrelated node was renamed *to*
+  // "B". The handler keeps them apart by path — the removal takes the `#1` suffix
+  // — and merging them by name kept only the rename, folded the dead node's field
+  // labels into it, and lost the deletion entirely.
+  it("keeps a deletion whose name a rename took over", () => {
+    const diff = diffOf(
+      { path: "nodes/B", label: "B", kind: "renamed", before: "A", after: "B (matched by fhr_uid)" },
+      {
+        path: "nodes/B#1",
+        label: "B",
+        kind: "removed",
+        before: "node",
+        children: [
+          { path: "nodes/B#1/translation", label: "translation", kind: "removed", before: "[2 0 0]" },
+          { path: "nodes/B#1/mesh", label: "mesh", kind: "removed", before: "BodyMesh" },
+        ],
+      },
+    );
+    expect(nodeChanges(diff)).toEqual([
+      { name: "B", kind: "renamed", fields: [], path: "nodes/B", oldName: "A" },
+      { name: "B", kind: "removed", fields: ["translation", "mesh"], path: "nodes/B#1" },
+    ]);
+  });
+
   it("survives an absent diff and a null changes array from the wire", () => {
     expect(nodeChanges(undefined)).toEqual([]);
     const nulled = { version: "1.0", format: "gltf-scene", changes: null } as unknown as StructuredDiff;
