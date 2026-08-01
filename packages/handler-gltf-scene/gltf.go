@@ -924,6 +924,11 @@ type nodeIndex struct {
 	// is diffed under, resolved once per document rather than once per node —
 	// meshSide.materialKeys, for the mesh a node instances.
 	meshKeys []string
+	// meshNamed says, per mesh index, whether that key came from the mesh's own
+	// name. An unnamed mesh's key is `mesh[3]`: the array index in a wrapper,
+	// which the next revision points at a different mesh. Content matching must
+	// know the difference (identity.go, fieldKind opaque).
+	meshNamed []bool
 }
 
 const rootIndex = -1
@@ -935,10 +940,14 @@ const rootParentLabel = "<root>"
 func indexNodes(doc *gltf.Document) *nodeIndex {
 	nodes := doc.Nodes
 	ix := &nodeIndex{
-		nodes:    nodes,
-		keys:     uniqueKeys(nodes, nodeName),
-		parent:   make([]int, len(nodes)),
-		meshKeys: uniqueKeys(doc.Meshes, meshName),
+		nodes:     nodes,
+		keys:      uniqueKeys(nodes, nodeName),
+		parent:    make([]int, len(nodes)),
+		meshKeys:  uniqueKeys(doc.Meshes, meshName),
+		meshNamed: make([]bool, len(doc.Meshes)),
+	}
+	for i, m := range doc.Meshes {
+		ix.meshNamed[i] = m.Name != ""
 	}
 	for i := range nodes {
 		ix.parent[i] = rootIndex
@@ -979,6 +988,40 @@ func (ix *nodeIndex) meshKey(idx *int) string {
 		return fmt.Sprintf("<dangling mesh %d>", *idx)
 	}
 	return ix.meshKeys[*idx]
+}
+
+// meshField is meshKey as a content-descriptor component, classified by what the
+// string is worth as evidence of identity (identity.go, fieldKind).
+//
+// A mesh nobody assigned is unstated and not a shared value: two nodes that both
+// draw nothing have no geometry in common, and meshWeight is six elevenths of a
+// node's descriptor — enough on its own to pair any deleted empty, joint, camera
+// or light node with any added one. An unnamed mesh resolves to `mesh[1]`, which
+// is the array index this key scheme exists to avoid comparing, so it is opaque:
+// counted, never agreed on.
+func (ix *nodeIndex) meshField(idx *int) sigField {
+	f := sigField{value: "mesh=" + ix.meshKey(idx), weight: meshWeight}
+	switch {
+	case idx == nil:
+		f.kind = unstated
+	case *idx < 0 || *idx >= len(ix.meshNamed) || !ix.meshNamed[*idx]:
+		f.kind = opaque
+	}
+	return f
+}
+
+// parentField is meshField for a node's place in the hierarchy: the root is
+// where everything nobody parented ends up, and an unnamed parent contributes
+// its array index, which names a different node in the next revision.
+func (ix *nodeIndex) parentField(i int) sigField {
+	f := sigField{value: "parent=" + ix.parentKey(i), weight: 1}
+	switch p := ix.parent[i]; {
+	case p == rootIndex:
+		f.kind = unstated
+	case ix.nodes[p].Name == "":
+		f.kind = opaque
+	}
+	return f
 }
 
 // nodeEntities reduces one side's nodes to what the identity cascade needs

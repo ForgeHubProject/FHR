@@ -38,6 +38,14 @@ package main
 // from every other empty element, so pairing two of them would be a coin flip
 // dressed up as a rename.
 //
+// The same rule holds one level down, per descriptor field rather than per
+// element, and that is what fieldKind is for: two elements that agree by both
+// having left something unwritten have agreed on nothing. A node with no mesh and
+// a material with no textures are the ordinary cases in a real file — Blender
+// empties, armature joints, camera and light nodes, and every untextured material
+// — so scoring shared absence as agreement paired arbitrary deleted elements with
+// arbitrary added ones.
+//
 // Unnamed elements never *rename*. They are keyed by array index (node[3]), so
 // there is no name for one of them to have changed, and the index cascade an
 // insertion causes is issue #42's — not this layer's. Tier 3 leaves them alone
@@ -46,13 +54,15 @@ package main
 // pairing is reported as a modification and never as a rename (isRename).
 //
 // Every content descriptor is likewise built out of cross-revision *keys* and
-// never array indices — a node's mesh, a primitive's material — for the reason
-// meshSide.materialKey gives one level down: an index means "whatever is third in
-// this file's array", which an insertion upstream silently redefines.
+// never array indices — a node's mesh, its parent, a primitive's material — for
+// the reason meshSide.materialKey gives one level down: an index means "whatever
+// is third in this file's array", which an insertion upstream silently redefines.
+// An *unnamed* element has no such key: uniqueKeys falls back to `mesh[1]`, which
+// is the array index in a wrapper. A descriptor referencing one gets no credit
+// for it (fieldKind opaque) rather than pretending the number travels.
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/qmuntal/gltf"
@@ -96,12 +106,52 @@ type entity struct {
 	sig func() signature
 }
 
+// fieldKind is what a descriptor field is worth as evidence that two elements
+// are the same one. Equality is not the same question: two fields can hold the
+// identical string and still say nothing about identity.
+type fieldKind uint8
+
+const (
+	// stated — a value someone wrote, spelled so that it names the same thing in
+	// both revisions. The only kind that can score as agreement.
+	stated fieldKind = iota
+	// unstated — absent, or left at the glTF default. Nobody wrote it, so two
+	// sides that are both unstated have told us nothing and the field drops out
+	// of the comparison altogether: it neither scores nor counts against. Against
+	// a stated value it counts and disagrees, because written and not-written is
+	// a real difference.
+	//
+	// Dropping out rather than scoring is the whole point. Under equality alone a
+	// node with no mesh agreed with every other meshless node in the file on the
+	// heaviest field a node has (meshWeight, 6 of 11), which put every deleted
+	// empty, joint, camera and light node over the threshold against every added
+	// one; two untextured materials agreed on all five texture slots and typically
+	// three more defaults, 8 of 11, however far apart their colours were.
+	unstated
+	// opaque — a value that means something only inside its own file: today, any
+	// key that fell back to an array index (`mesh[1]`, `node[3]` — what uniqueKeys
+	// produces for an unnamed element). Two sides can print the same string and
+	// mean different elements, so it never scores as agreement. Unlike unstated
+	// its weight still counts, so a pair whose only common ground is a number
+	// falls below the threshold instead of being scored on the remainder.
+	opaque
+)
+
+// unstatedIf classifies a field that is stated unless it holds its glTF default.
+func unstatedIf(isDefault bool) fieldKind {
+	if isDefault {
+		return unstated
+	}
+	return stated
+}
+
 // sigField is one descriptor component. The weight is how much of the element's
 // identity that component carries — see nodeSignature for why they are not all
-// worth the same.
+// worth the same — and the kind is whether agreement on it means anything.
 type sigField struct {
 	value  string
 	weight int
+	kind   fieldKind
 }
 
 // signature is an element's content, as an ordered list of descriptor fields.
@@ -118,6 +168,10 @@ type signature struct {
 // similarity is the share of descriptor weight two signatures agree on, over the
 // longer of the two: a primitive added to a mesh lowers the score rather than
 // being ignored.
+//
+// Only a stated field can agree (fieldKind). A field neither side stated is not
+// counted at all, so the score is measured over what the two elements actually
+// say about themselves rather than over how much they both left blank.
 func similarity(a, b signature) float64 {
 	total, same := 0, 0
 	for i := range max(len(a.fields), len(b.fields)) {
@@ -127,9 +181,13 @@ func similarity(a, b signature) float64 {
 		case i >= len(b.fields):
 			total += a.fields[i].weight
 		default:
-			total += a.fields[i].weight
-			if a.fields[i].value == b.fields[i].value {
-				same += a.fields[i].weight
+			fa, fb := a.fields[i], b.fields[i]
+			if fa.kind == unstated && fb.kind == unstated {
+				continue
+			}
+			total += fa.weight
+			if fa.kind == stated && fb.kind == stated && fa.value == fb.value {
+				same += fa.weight
 			}
 		}
 	}
@@ -147,6 +205,11 @@ func similarity(a, b signature) float64 {
 // way, a node that draws something else cannot clear the threshold no matter how
 // exactly its placement matches, which is the intended answer: a swapped mesh is
 // a removal and an addition, not a rename.
+//
+// The weight only ever works in that direction because a mesh nobody assigned is
+// unstated rather than a sixth of the score for agreeing to draw nothing, and one
+// resolved through an unnamed mesh's index key is opaque rather than a perfect
+// match with whatever held that number last revision. Both are nodeIndex.meshField.
 const meshWeight = 6
 
 // nodeSignature describes a node by what it draws and where: the mesh it
@@ -165,12 +228,12 @@ func nodeSignature(ix *nodeIndex, i int) signature {
 	t, r, s := n.TranslationOrDefault(), n.RotationOrDefault(), n.ScaleOrDefault()
 	return signature{
 		fields: []sigField{
-			{"mesh=" + ix.meshKey(n.Mesh), meshWeight},
-			{"translation=" + fmtVec3(t), 1},
-			{"rotation=" + fmtRot(r), 1},
-			{"scale=" + fmtVec3(s), 1},
-			{"parent=" + ix.parentKey(i), 1},
-			{fmt.Sprintf("children=%d", len(n.Children)), 1},
+			ix.meshField(n.Mesh),
+			{"translation=" + fmtVec3(t), 1, unstatedIf(nearEq3(t, gltf.DefaultTranslation))},
+			{"rotation=" + fmtRot(r), 1, unstatedIf(nearEq4(r, gltf.DefaultRotation))},
+			{"scale=" + fmtVec3(s), 1, unstatedIf(nearEq3(s, gltf.DefaultScale))},
+			ix.parentField(i),
+			{fmt.Sprintf("children=%d", len(n.Children)), 1, unstatedIf(len(n.Children) == 0)},
 		},
 		specific: n.Mesh != nil || len(n.Children) > 0 ||
 			!nearEq3(t, gltf.DefaultTranslation) || !nearEq4(r, gltf.DefaultRotation) ||
@@ -182,24 +245,39 @@ func nodeSignature(ix *nodeIndex, i int) signature {
 // diffMaterialProps compares, so "the content is identical" here means exactly
 // what "no changes" means there. Every component is worth the same: a material is
 // a bag of independent properties with no single one that *is* the material.
+//
+// Which is why every one of them has to be classified against the default
+// material: with eleven equal fields and a 50% threshold, three or four
+// properties nobody touched — an empty texture slot is the commonest material
+// property there is — were enough to pair any two materials in an untextured
+// scene. A material is scored on what it says about itself, not on the defaults
+// it shares with every other material ever exported.
 func materialSignature(doc *gltf.Document, m *gltf.Material) signature {
 	fields := materialFields(doc, m)
 	defaults := materialFields(doc, &gltf.Material{})
-	return signature{fields: fields, specific: !slices.Equal(fields, defaults)}
+	specific := false
+	for i := range fields {
+		if fields[i].value == defaults[i].value {
+			fields[i].kind = unstated
+		} else {
+			specific = true
+		}
+	}
+	return signature{fields: fields, specific: specific}
 }
 
 func materialFields(doc *gltf.Document, m *gltf.Material) []sigField {
 	pbr := pbrOrDefault(m)
 	fields := []sigField{
-		{"baseColorFactor=" + fmtVec4(pbr.BaseColorFactorOrDefault()), 1},
-		{"metallicFactor=" + fmtF(pbr.MetallicFactorOrDefault()), 1},
-		{"roughnessFactor=" + fmtF(pbr.RoughnessFactorOrDefault()), 1},
-		{"emissiveFactor=" + fmtVec3(m.EmissiveFactor), 1},
-		{"alphaMode=" + m.AlphaMode.String(), 1},
-		{fmt.Sprintf("doubleSided=%v", m.DoubleSided), 1},
+		{"baseColorFactor=" + fmtVec4(pbr.BaseColorFactorOrDefault()), 1, stated},
+		{"metallicFactor=" + fmtF(pbr.MetallicFactorOrDefault()), 1, stated},
+		{"roughnessFactor=" + fmtF(pbr.RoughnessFactorOrDefault()), 1, stated},
+		{"emissiveFactor=" + fmtVec3(m.EmissiveFactor), 1, stated},
+		{"alphaMode=" + m.AlphaMode.String(), 1, stated},
+		{fmt.Sprintf("doubleSided=%v", m.DoubleSided), 1, stated},
 	}
 	for _, slot := range textureSlots {
-		fields = append(fields, sigField{slot.label + "=" + slot.describe(doc, m), 1})
+		fields = append(fields, sigField{slot.label + "=" + slot.describe(doc, m), 1, stated})
 	}
 	return fields
 }
@@ -220,7 +298,7 @@ func meshSignature(s meshSide, m *gltf.Mesh) signature {
 		for _, stream := range primitiveStreams(p, p) {
 			parts = append(parts, stream+"="+readStream(s.doc, p, stream).describe(s.doc))
 		}
-		fields = append(fields, sigField{strings.Join(parts, " "), 1})
+		fields = append(fields, sigField{strings.Join(parts, " "), 1, stated})
 	}
 	return signature{fields: fields, specific: len(m.Primitives) > 0}
 }
