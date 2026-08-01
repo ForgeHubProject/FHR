@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Box3, Vector3 } from "three";
-import { boxSize, defaultSplit, otherSplit, splitPanes, SPLIT_GAP } from "./split.js";
+import { boxSize, defaultSplit, drawSplit, otherSplit, splitPanes, SPLIT_GAP, type SplitTarget } from "./split.js";
 
 describe("defaultSplit — the initial choice, from the model's own proportions", () => {
   it("stacks a wide model, so each pane is wide too", () => {
@@ -85,5 +85,67 @@ describe("otherSplit", () => {
   it("is the toggle", () => {
     expect(otherSplit("columns")).toBe("rows");
     expect(otherSplit("rows")).toBe("columns");
+  });
+});
+
+// The gutter is deliberate; unpainted pixels in it are not. three.js clears
+// *inside* render(), and gl.clear obeys the scissor box, so two scissored passes
+// write the two panes and nothing else. With alpha:false and no preserved
+// drawing buffer the strip between them is undefined after a swap — in practice
+// the last full-canvas frame before the mode switch, flickering between buffers.
+describe("drawSplit — the gutter is painted, not left to the last frame", () => {
+  type Call = { op: string; args: number[] };
+
+  const record = (): { calls: Call[]; target: SplitTarget; scissor: boolean[] } => {
+    const calls: Call[] = [];
+    const scissor: boolean[] = [];
+    let on = false;
+    const target: SplitTarget = {
+      setScissorTest(next): void {
+        on = next;
+        calls.push({ op: next ? "scissorOn" : "scissorOff", args: [] });
+      },
+      setScissor(...args): void {
+        calls.push({ op: "scissor", args });
+      },
+      setViewport(...args): void {
+        calls.push({ op: "viewport", args });
+      },
+      clear(): void {
+        scissor.push(on);
+        calls.push({ op: "clear", args: [] });
+      },
+    };
+    return { calls, target, scissor };
+  };
+
+  const size = { width: 800, height: 400 };
+
+  it("clears the whole canvas with the scissor test off, before any pane", () => {
+    const { calls, target, scissor } = record();
+    drawSplit(target, size, splitPanes("columns", size), () => calls.push({ op: "pane", args: [] }));
+    expect(scissor).toEqual([false]); // exactly one clear, and it was unscissored
+    const ops = calls.map((c) => c.op);
+    expect(ops.indexOf("clear")).toBeLessThan(ops.indexOf("pane"));
+    // The clear covers the canvas, not a pane: the gutter is what needs it.
+    expect(calls[ops.indexOf("clear") - 1]).toEqual({ op: "viewport", args: [0, 0, 800, 400] });
+  });
+
+  it("draws every pane inside its own scissor rect", () => {
+    const { calls, target } = record();
+    const panes = splitPanes("rows", size);
+    drawSplit(target, size, panes, (pane) => calls.push({ op: "pane", args: [pane.gl.x, pane.gl.y] }));
+    const scissored = calls.filter((c) => c.op === "scissor").map((c) => c.args);
+    expect(scissored).toEqual(panes.map((p) => [p.gl.x, p.gl.y, p.gl.width, p.gl.height]));
+    expect(calls.filter((c) => c.op === "pane")).toHaveLength(2);
+  });
+
+  it("leaves the scissor test off and the viewport whole", () => {
+    // A mode switch back to a single picture reuses this renderer, and a scissor
+    // rect left behind would clip the full-canvas frame to one pane.
+    const { calls, target } = record();
+    drawSplit(target, size, splitPanes("columns", size), () => {});
+    expect(calls[calls.length - 2]).toEqual({ op: "scissorOff", args: [] });
+    expect(calls[calls.length - 1]).toEqual({ op: "viewport", args: [0, 0, 800, 400] });
   });
 });

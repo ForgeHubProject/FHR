@@ -31,7 +31,7 @@ import { createIsolator } from "./isolate.js";
 import { createCallout, projectToScreen } from "./callout.js";
 import { changeAtHits, isClickGesture, ndcFromPointer } from "./pick.js";
 import { withPaneAspect } from "./camera-sync.js";
-import { splitPanes, type Pane, type PaneSide, type SplitOrientation } from "./split.js";
+import { drawSplit, splitPanes, type Pane, type PaneSide, type SplitOrientation } from "./split.js";
 import { versionLayers, type PresentationMode } from "./presentation.js";
 
 type Theme = "light" | "dark";
@@ -99,11 +99,17 @@ function createViewport(container: HTMLElement, theme: Theme): Viewport {
   const height = container.clientHeight || 420;
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(theme === "dark" ? 0x0d1117 : 0xf6f8fa);
+  const background = new THREE.Color(theme === "dark" ? 0x0d1117 : 0xf6f8fa);
+  scene.background = background;
 
   const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 5000);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
+  // Side-by-side clears the canvas itself before scissoring (split.ts), and a
+  // bare clear() uses whatever colour the GL state happens to hold — black on
+  // the first frame, since nothing has rendered a background yet. Naming it here
+  // makes the gutter the same colour as the space around the model, always.
+  renderer.setClearColor(background, 1);
   renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, 2));
   renderer.setSize(width, height);
   container.appendChild(renderer.domElement);
@@ -457,18 +463,15 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     const { renderer, scene, camera } = viewport;
     const size = viewport.size();
     const panes = splitPanes(split, size);
-    renderer.setScissorTest(true);
-    for (const pane of panes) {
+    // drawSplit owns the scissor/clear sequence — see split.ts for why the
+    // gutter needs a clear of its own.
+    drawSplit(renderer, size, panes, (pane) => {
       // Holding Space swaps the panes' contents, so each pane compares the two
       // versions in its own pixels rather than across the gutter.
       const side: PaneSide = blinking ? (pane.side === "base" ? "head" : "base") : pane.side;
       showVersion(side, false);
-      renderer.setViewport(pane.gl.x, pane.gl.y, pane.gl.width, pane.gl.height);
-      renderer.setScissor(pane.gl.x, pane.gl.y, pane.gl.width, pane.gl.height);
       withPaneAspect(camera, pane.aspect, () => renderer.render(scene, camera));
-    }
-    renderer.setScissorTest(false);
-    renderer.setViewport(0, 0, size.width, size.height);
+    });
     placeLabels(panes);
   };
 
