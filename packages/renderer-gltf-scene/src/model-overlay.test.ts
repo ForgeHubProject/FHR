@@ -8,8 +8,9 @@ import type { BufferGeometry, Material, Mesh, Object3D } from "three";
 import { Color, Vector3 } from "three";
 import type { NodeChange } from "./diff-map.js";
 import { loadGltf } from "./gltf-load.js";
-import { decodeGltf } from "./gltf-parse.js";
-import { buildNameIndex } from "./node-index.js";
+import { decodeGltf, parseGltf } from "./gltf-parse.js";
+import { buildNameIndex, resolveNodeIndex } from "./node-index.js";
+import { buildSceneGraph } from "./scene-graph.js";
 import { buildOverlay, type LoadedSide } from "./model-overlay.js";
 import { meshesIn } from "./associations.js";
 import { pathOfNodeName } from "./change-path.js";
@@ -495,6 +496,24 @@ describe("framing boxes", () => {
     const overlay = buildOverlay({ head: await side(TWO_NODES), changes: [] });
     expect(overlay.changeBox.isEmpty()).toBe(true);
   });
+
+  it("frames a node the diff never mentioned, for the structure tree", async () => {
+    // The whole reason the tree is a separate region: a reviewer can reach an
+    // *unchanged* part for context, and framing one needs a box that no painting
+    // pass produced.
+    const overlay = buildOverlay({
+      head: await side(TWO_NODES),
+      changes: [change("Hood", "modified", ["mesh"])],
+    });
+    expect(overlay.boxByChangePath.has("nodes/Mirror")).toBe(false);
+    expect(overlay.boxOfNode("Mirror")!.min.x).toBeCloseTo(4);
+    expect(overlay.boxOfNode("Hood")!.min.x).toBeCloseTo(0);
+  });
+
+  it("returns null for a name this file's scene graph doesn't have", async () => {
+    const overlay = buildOverlay({ head: await side(TWO_NODES), changes: [] });
+    expect(overlay.boxOfNode("NotHere")).toBeNull();
+  });
 });
 
 describe("overlay disposal", () => {
@@ -917,5 +936,138 @@ describe("two changes, one name (#47)", () => {
     expect(distanceTo(mesh, KIND_COLOR["renamed"]!)).toBeLessThan(
       distanceTo(mesh, KIND_COLOR["removed"]!),
     );
+  });
+});
+
+describe("taking the paint off — what a side-by-side pane draws", () => {
+  /**
+   * The paint is a mutation of the head model's own materials, so a pane that
+   * hides every diff *group* is still looking at it. These pin the way back.
+   */
+  it("restores the file's own materials on every mesh it painted", async () => {
+    const head = await side(TWO_NODES);
+    const authored = new Map(meshesIn(head.gltf.scene).map((m) => [m.name, materialOf(m)]));
+    const overlay = buildOverlay({ head, changes: [change("Hood", "modified", ["mesh"])] });
+    // Both halves of the paint are in play: one tinted mesh, one desaturated.
+    expect(overlay.stats).toMatchObject({ tinted: 1, desaturated: 1 });
+    for (const mesh of meshesIn(head.gltf.scene)) {
+      expect(materialOf(mesh)).not.toBe(authored.get(mesh.name));
+    }
+
+    overlay.setPaint(false);
+    for (const mesh of meshesIn(head.gltf.scene)) {
+      expect(materialOf(mesh)).toBe(authored.get(mesh.name));
+    }
+
+    overlay.setPaint(true);
+    for (const mesh of meshesIn(head.gltf.scene)) {
+      expect(materialOf(mesh)).not.toBe(authored.get(mesh.name));
+    }
+  });
+
+  it("shows the current version's own colours, not the diff's", async () => {
+    // The reviewer's complaint the mode exists to answer: with the paint on, the
+    // changed part is the palette's orange and everything else is grey, so the
+    // two panes are not comparable — neither colour is in either file.
+    const head = await side(TWO_NODES);
+    const authored = new Map(meshesIn(head.gltf.scene).map((m) => [m.name, hexOf(m)]));
+    const overlay = buildOverlay({ head, changes: [change("Hood", "modified", ["mesh"])] });
+    const byName = (): Map<string, number> =>
+      new Map(meshesIn(head.gltf.scene).map((m) => [m.name, hexOf(m)]));
+
+    expect(byName().get("Hood")).not.toBe(authored.get("Hood")); // tinted
+    expect(byName().get("Mirror")).not.toBe(authored.get("Mirror")); // desaturated
+
+    overlay.setPaint(false);
+    expect(byName().get("Hood")).toBe(authored.get("Hood"));
+    expect(byName().get("Mirror")).toBe(authored.get("Mirror"));
+  });
+
+  it("keeps the file's material as the original when one mesh is painted twice", async () => {
+    // A node change and a material change can both land on one primitive. The
+    // second swap displaces *our* tint, which must not be mistaken for the file's.
+    const head = await side({ nodes: [{ name: "Hood", mesh: 0 }], materialNames: ["Paint"] });
+    const authored = materialOf(meshesIn(head.gltf.scene)[0]!);
+    const overlay = buildOverlay({
+      head,
+      changes: [change("Hood", "modified", ["mesh"])],
+      materials: [{ name: "Paint", kind: "modified", fields: [], path: "materials/Paint", primitives: [] }],
+    });
+    expect(materialOf(meshesIn(head.gltf.scene)[0]!)).not.toBe(authored);
+    overlay.setPaint(false);
+    expect(materialOf(meshesIn(head.gltf.scene)[0]!)).toBe(authored);
+  });
+
+  it("frees the same materials whichever way the paint was left", async () => {
+    // Disposal walks what is *attached*; with the paint off the tint clones hang
+    // off nothing, so leaving the model unpainted must not leak them.
+    const asPainted = buildOverlay({
+      head: await side(TWO_NODES),
+      changes: [change("Hood", "modified", ["mesh"])],
+    }).dispose();
+
+    const stripped = buildOverlay({
+      head: await side(TWO_NODES),
+      changes: [change("Hood", "modified", ["mesh"])],
+    });
+    stripped.setPaint(false);
+    expect(stripped.dispose().materials).toBe(asPainted.materials);
+    expect(asPainted.materials).toBeGreaterThan(0);
+  });
+});
+
+describe("the structure tree's root row", () => {
+  const CAR: FixtureSpec = { ...TWO_NODES, sceneName: "Car" };
+
+  async function loaded(spec: FixtureSpec): Promise<{ head: LoadedSide; doc: ReturnType<typeof decodeGltf> }> {
+    const bytes = toGlb(buildGltf(spec));
+    const { gltf } = await loadGltf(toArrayBuffer(bytes));
+    const doc = decodeGltf(bytes);
+    return { head: { gltf, index: buildNameIndex(doc) }, doc };
+  }
+
+  it("frames the whole current version, though it is a scene and not a node", async () => {
+    const { head, doc } = await loaded(CAR);
+    const overlay = buildOverlay({ head, changes: [change("Hood", "modified", ["mesh"])] });
+
+    // The rows the tree renders, exactly as index-3d builds them.
+    const rows = buildSceneGraph(parseGltf(doc), new Map());
+    expect(rows.map((r) => r.name)).toEqual(["Car", "Hood", "Mirror"]);
+    expect(rows[0]!.depth).toBe(0);
+    expect(overlay.sceneRootName).toBe("Car");
+    // It is in no node index — which is what used to make the row inert.
+    expect(resolveNodeIndex(head.index, "Car").index).toBeNull();
+
+    // Every row the tree offers now resolves to a box the camera can fly to …
+    const boxes = rows.map((r) => overlay.boxOfNode(r.name));
+    expect(boxes.every((b) => b !== null)).toBe(true);
+    // … and the root's is the whole model: it encloses every other row's.
+    for (const part of boxes.slice(1)) expect(boxes[0]!.containsBox(part!)).toBe(true);
+  });
+
+  it("answers for no scene name when the tree has no synthetic root", async () => {
+    // One root node: parseGltf hangs the tree off it directly, so "Car" names a
+    // row that does not exist and must not silently frame the whole model.
+    const { head, doc } = await loaded({
+      nodes: [{ name: "Rig", children: [1] }, { name: "Hood", mesh: 0 }],
+      sceneName: "Car",
+    });
+    const overlay = buildOverlay({ head, changes: [] });
+    expect(parseGltf(doc).some((e) => e.name === "Car")).toBe(false);
+    expect(overlay.sceneRootName).toBeNull();
+    expect(overlay.boxOfNode("Car")).toBeNull();
+  });
+
+  it("lets a real node win the name when a node and the scene share one", async () => {
+    const { head } = await loaded({
+      nodes: [
+        { name: "Car", mesh: 0, translation: [0, 0, 0] },
+        { name: "Mirror", mesh: 0, translation: [4, 0, 0] },
+      ],
+      sceneName: "Car",
+    });
+    const overlay = buildOverlay({ head, changes: [] });
+    const node = overlay.boxOfNode("Car")!;
+    expect(node.max.x).toBeLessThan(4); // the node alone, not the pair
   });
 });

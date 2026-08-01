@@ -1,6 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { decodeGltf } from "./gltf-parse.js";
-import { ambiguousNameMessage, buildNameIndex, nodeKey, normalizeName, resolveNodeIndex } from "./node-index.js";
+import { decodeGltf, type GltfDocument } from "./gltf-parse.js";
+import {
+  ambiguousNameMessage,
+  buildNameIndex,
+  indirectNodeChanges,
+  nodeKey,
+  normalizeName,
+  resolveNodeIndex,
+} from "./node-index.js";
+import type { EntityChange } from "./diff-map.js";
 import { buildGltf, toGlb } from "./glb-fixture.js";
 
 const indexOf = (nodes: { name?: string }[]) =>
@@ -107,5 +115,168 @@ describe("buildNameIndex / resolveNodeIndex", () => {
     expect(msg).toContain('3 nodes');
     expect(msg).toContain('"Cube"');
     expect(msg).toContain("only the first is highlighted");
+  });
+});
+
+// #56 + #51: the structure tree's rows are *nodes*, and two whole classes of
+// change are named for something else — a mesh, a material — while painting the
+// nodes that carry them. Without this resolution the tree marked that geometry
+// "unchanged" beside a viewport showing it painted, and the queue's highlight
+// looked for a row called "BodyMesh" that no tree has.
+describe("indirectNodeChanges — where a mesh or material change lands on the nodes", () => {
+  const car: GltfDocument = {
+    asset: { version: "2.0" },
+    scene: 0,
+    scenes: [{ nodes: [0, 1, 2, 3] }],
+    nodes: [
+      { name: "Body", mesh: 0 },
+      { name: "Wheel_FL", mesh: 1 },
+      { name: "Wheel_FR", mesh: 1 },
+      { name: "Rig" },
+    ],
+    meshes: [
+      { name: "BodyMesh", primitives: [{ material: 0 }, { material: 1 }] },
+      { name: "WheelMesh", primitives: [{ material: 1 }] },
+    ],
+    materials: [{ name: "Paint" }, { name: "Rubber" }],
+  };
+
+  const entity = (name: string, path: string, kind: EntityChange["kind"] = "modified"): EntityChange => ({
+    name,
+    kind,
+    fields: [],
+    path,
+    primitives: [],
+  });
+
+  it("resolves a mesh change to every node instancing it, not just the first", () => {
+    const found = indirectNodeChanges(buildNameIndex(car), [entity("WheelMesh", "meshes/WheelMesh")], []);
+    expect(found.byChange.get("meshes/WheelMesh")).toEqual(["Wheel_FL", "Wheel_FR"]);
+    expect([...found.byNode.keys()]).toEqual(["Wheel_FL", "Wheel_FR"]);
+    expect(found.byNode.get("Wheel_FR")!.name).toBe("WheelMesh");
+  });
+
+  it("resolves a material change through the primitives referencing it", () => {
+    const found = indirectNodeChanges(buildNameIndex(car), [], [entity("Rubber", "materials/Rubber")]);
+    // Rubber is on one primitive of BodyMesh and the whole of WheelMesh, so it
+    // reaches three nodes — and Body only once, however many primitives hit.
+    expect(found.byChange.get("materials/Rubber")).toEqual(["Body", "Wheel_FL", "Wheel_FR"]);
+  });
+
+  it("carries the change's own kind, so a row can be marked with it", () => {
+    const found = indirectNodeChanges(buildNameIndex(car), [entity("BodyMesh", "meshes/BodyMesh", "added")], []);
+    expect(found.byNode.get("Body")!.kind).toBe("added");
+  });
+
+  it("lets the change a reviewer meets first describe a node reached twice", () => {
+    // Meshes before materials, matching the order buildOverlay paints them in:
+    // the tree's dot and the geometry's colour must come from one answer.
+    const found = indirectNodeChanges(
+      buildNameIndex(car),
+      [entity("BodyMesh", "meshes/BodyMesh")],
+      [entity("Paint", "materials/Paint")],
+    );
+    expect(found.byNode.get("Body")!.name).toBe("BodyMesh");
+    expect(found.byChange.get("materials/Paint")).toEqual(["Body"]);
+  });
+
+  it("yields no row for a change nothing in the file draws", () => {
+    const found = indirectNodeChanges(buildNameIndex(car), [entity("Spoiler", "meshes/Spoiler")], []);
+    expect(found.byChange.has("meshes/Spoiler")).toBe(false);
+    expect(found.byNode.size).toBe(0);
+  });
+
+  it("matches a mangled key the same way the paint does", () => {
+    const found = indirectNodeChanges(buildNameIndex(car), [entity("wheel-mesh", "meshes/wheel-mesh")], []);
+    expect(found.byChange.get("meshes/wheel-mesh")).toEqual(["Wheel_FL", "Wheel_FR"]);
+  });
+
+  // Keyed on the path, because since #47 a name is not a change's identity: one
+  // diff can delete "WheelMesh" and rename an unrelated mesh *into* that name,
+  // and the handler disambiguates with the path. Keyed by name the second wrote
+  // over the first, so one of the two changes highlighted the other's rows.
+  it("keeps two changes that share a name apart", () => {
+    const found = indirectNodeChanges(
+      buildNameIndex(car),
+      [
+        entity("WheelMesh", "meshes/WheelMesh#1", "removed"),
+        entity("WheelMesh", "meshes/WheelMesh", "renamed"),
+      ],
+      [],
+    );
+    expect(found.byChange.get("meshes/WheelMesh#1")).toEqual(["Wheel_FL", "Wheel_FR"]);
+    expect(found.byChange.get("meshes/WheelMesh")).toEqual(["Wheel_FL", "Wheel_FR"]);
+    // Both rows still describe the change a reviewer meets first, as ever.
+    expect(found.byNode.get("Wheel_FL")!.kind).toBe("removed");
+  });
+
+  it("dedups in constant time per node, not by rescanning the keys it has kept", () => {
+    // The complexity pin. `indirectPaint` runs on the critical path to first
+    // frame — index-3d.ts calls it before `createChrome` and before the canvas
+    // exists, in the real view and in the fallback — and one change can reach
+    // *every* node in the file: one bolt mesh instanced 20 000 times, one
+    // "Steel" material on every primitive. Nothing upstream bounds that
+    // (limits.ts caps blob bytes, which says nothing about node count), so a
+    // `keys.includes(key)` dedup here was O(nodes²): 8.1 s of blocking work for
+    // one material change on a 50 000-node assembly, 16× what MAX_ROWS exists to
+    // avoid — and MAX_ROWS can't help, it runs downstream of this.
+    // Counting the linear scans rather than timing keeps the pin deterministic.
+    const scansDuring = (run: () => void): number => {
+      const proto = Array.prototype as unknown as Record<string, unknown>;
+      const saved = (["includes", "indexOf", "lastIndexOf"] as const).map((m) => [m, proto[m]] as const);
+      let scans = 0;
+      for (const [name, fn] of saved) {
+        proto[name] = function (this: unknown[], ...args: unknown[]): unknown {
+          scans++;
+          return (fn as (this: unknown[], ...a: unknown[]) => unknown).apply(this, args);
+        };
+      }
+      try {
+        run();
+      } finally {
+        for (const [name, fn] of saved) proto[name] = fn;
+      }
+      return scans;
+    };
+
+    const assembly = (count: number): GltfDocument => ({
+      asset: { version: "2.0" },
+      scene: 0,
+      scenes: [{ nodes: Array.from({ length: count }, (_, i) => i) }],
+      nodes: Array.from({ length: count }, (_, i) => ({ name: `Bolt_${i}`, mesh: 0 })),
+      meshes: [{ name: "BoltMesh", primitives: [{ material: 0 }] }],
+      materials: [{ name: "Steel" }],
+    });
+    const small = buildNameIndex(assembly(200));
+    const large = buildNameIndex(assembly(20_000));
+    const mesh = [entity("BoltMesh", "meshes/BoltMesh")];
+    const material = [entity("Steel", "materials/Steel")];
+
+    // Same number of scans for a file 100× larger: whatever this does per node,
+    // it isn't walking the keys it has already kept.
+    expect(scansDuring(() => indirectNodeChanges(large, mesh, []))).toBe(
+      scansDuring(() => indirectNodeChanges(small, mesh, [])),
+    );
+    expect(scansDuring(() => indirectNodeChanges(large, [], material))).toBe(
+      scansDuring(() => indirectNodeChanges(small, [], material)),
+    );
+
+    // …and it still reaches every node, deduped, in document order.
+    const found = indirectNodeChanges(large, mesh, []);
+    expect(found.byChange.get("meshes/BoltMesh")).toHaveLength(20_000);
+    expect(found.byChange.get("meshes/BoltMesh")!.slice(0, 2)).toEqual(["Bolt_0", "Bolt_1"]);
+    expect(found.byNode.size).toBe(20_000);
+  });
+
+  it("names an unnamed node the way the handler would", () => {
+    const anonymous: GltfDocument = {
+      asset: { version: "2.0" },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ name: "Tri", primitives: [] }],
+    };
+    const found = indirectNodeChanges(buildNameIndex(anonymous), [entity("Tri", "meshes/Tri")], []);
+    expect(found.byChange.get("meshes/Tri")).toEqual(["node[0]"]);
   });
 });
