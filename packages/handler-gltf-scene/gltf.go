@@ -827,8 +827,9 @@ func parseDoc(blob Blob) (*gltf.Document, error) {
 // ── nodes ─────────────────────────────────────────────────────────────────────
 
 func diffNodes(a, b *gltf.Document) *DiffChange {
-	aIx, bIx := indexNodes(a.Nodes), indexNodes(b.Nodes)
-	m := matchEntities(nodeEntities(aIx), nodeEntities(bIx))
+	aIx, bIx := indexNodes(a), indexNodes(b)
+	aEnts, bEnts := nodeEntities(aIx), nodeEntities(bIx)
+	m := matchEntities(aEnts, bEnts)
 
 	// Base order first, then the head elements nothing matched — the same order
 	// mergeKeyOrder produced when a name was the only way to pair two elements.
@@ -853,7 +854,7 @@ func diffNodes(a, b *gltf.Document) *DiffChange {
 		path := joinPath("nodes", bKey)
 		props := diffNodeProps(aIx, ai, bIx, bi, path, m)
 		switch {
-		case aKey != bKey:
+		case isRename(aEnts[ai], bEnts[bi]):
 			children = append(children, DiffChange{
 				Path: path, Label: bKey, Kind: Renamed,
 				Before: aKey, After: renameAfter(bKey, m.how[ai]),
@@ -910,14 +911,19 @@ func nodeName(n *gltf.Node, i int) string {
 }
 
 // nodeIndex is a document's node array plus the derived lookups the diff needs:
-// a unique key per node and the parent of every node. glTF stores the hierarchy
-// as child index lists, so the parent has to be inverted out of them — without
-// it a re-parent (moving Mirror_L from Body to Door_L) changes nothing the flat
-// node walk can see, and diffs as no change at all.
+// a unique key per node, the parent of every node, and the key of every mesh the
+// nodes can point at. glTF stores the hierarchy as child index lists, so the
+// parent has to be inverted out of them — without it a re-parent (moving
+// Mirror_L from Body to Door_L) changes nothing the flat node walk can see, and
+// diffs as no change at all.
 type nodeIndex struct {
 	nodes  []*gltf.Node
 	keys   []string // diff key per node index
 	parent []int    // parent node index, or rootIndex for a top-level node
+	// meshKeys maps a mesh index to the disambiguated key the meshes collection
+	// is diffed under, resolved once per document rather than once per node —
+	// meshSide.materialKeys, for the mesh a node instances.
+	meshKeys []string
 }
 
 const rootIndex = -1
@@ -926,11 +932,13 @@ const rootIndex = -1
 // hierarchy (a scene root, or an orphan no node lists as a child).
 const rootParentLabel = "<root>"
 
-func indexNodes(nodes []*gltf.Node) *nodeIndex {
+func indexNodes(doc *gltf.Document) *nodeIndex {
+	nodes := doc.Nodes
 	ix := &nodeIndex{
-		nodes:  nodes,
-		keys:   uniqueKeys(nodes, nodeName),
-		parent: make([]int, len(nodes)),
+		nodes:    nodes,
+		keys:     uniqueKeys(nodes, nodeName),
+		parent:   make([]int, len(nodes)),
+		meshKeys: uniqueKeys(doc.Meshes, meshName),
 	}
 	for i := range nodes {
 		ix.parent[i] = rootIndex
@@ -953,6 +961,24 @@ func (ix *nodeIndex) parentKey(i int) string {
 		return rootParentLabel
 	}
 	return ix.keys[ix.parent[i]]
+}
+
+// meshKey names the mesh a node instances, using the same disambiguated key the
+// meshes collection is diffed under. The *name* and not the array index is
+// deliberate, for meshSide.materialKey's reason one level up: inserting an
+// unrelated mesh upstream shifts every index after it. Comparing raw indices
+// would report every node below the insertion as having been re-meshed, and —
+// because the mesh is the heaviest component of a node's content descriptor
+// (meshWeight) — would hand a node that draws something else a perfect content
+// match with whichever node happens to sit at its old number.
+func (ix *nodeIndex) meshKey(idx *int) string {
+	if idx == nil {
+		return "<none>"
+	}
+	if *idx < 0 || *idx >= len(ix.meshKeys) {
+		return fmt.Sprintf("<dangling mesh %d>", *idx)
+	}
+	return ix.meshKeys[*idx]
 }
 
 // nodeEntities reduces one side's nodes to what the identity cascade needs
@@ -1006,7 +1032,7 @@ func diffNodeProps(aIx *nodeIndex, ai int, bIx *nodeIndex, bi int, path string, 
 			Kind: Modified, Before: fmtVec3(blenderScale(sa)), After: fmtVec3(blenderScale(sb)),
 		})
 	}
-	meshA, meshB := ptrLabel(a.Mesh, "mesh"), ptrLabel(b.Mesh, "mesh")
+	meshA, meshB := aIx.meshKey(a.Mesh), bIx.meshKey(b.Mesh)
 	if meshA != meshB {
 		changes = append(changes, DiffChange{
 			Path: childPath(path, "mesh"), Label: "mesh",
@@ -1041,7 +1067,7 @@ func nodePropsOneSide(ix *nodeIndex, i int, path string, kind ChangeKind) []Diff
 		add("scale", fmtVec3(blenderScale(s)))
 	}
 	if n.Mesh != nil {
-		add("mesh", ptrLabel(n.Mesh, "mesh"))
+		add("mesh", ix.meshKey(n.Mesh))
 	}
 	return changes
 }
@@ -1050,7 +1076,8 @@ func nodePropsOneSide(ix *nodeIndex, i int, path string, kind ChangeKind) []Diff
 
 func diffMaterials(a, b *gltf.Document) *DiffChange {
 	aKeys, bKeys := uniqueKeys(a.Materials, materialName), uniqueKeys(b.Materials, materialName)
-	m := matchEntities(materialEntities(a, aKeys), materialEntities(b, bKeys))
+	aEnts, bEnts := materialEntities(a, aKeys), materialEntities(b, bKeys)
+	m := matchEntities(aEnts, bEnts)
 
 	var children []DiffChange
 	for ai, am := range a.Materials {
@@ -1066,7 +1093,7 @@ func diffMaterials(a, b *gltf.Document) *DiffChange {
 		path := joinPath("materials", bKey)
 		props := diffMaterialProps(am, b.Materials[bi], a, b, path)
 		switch {
-		case aKey != bKey:
+		case isRename(aEnts[ai], bEnts[bi]):
 			children = append(children, DiffChange{
 				Path: path, Label: bKey, Kind: Renamed,
 				Before: aKey, After: renameAfter(bKey, m.how[ai]),
@@ -1304,7 +1331,8 @@ func samplerRefLabel(doc *gltf.Document, s *int) string {
 func diffMeshes(a, b *gltf.Document) *DiffChange {
 	aKeys, bKeys := uniqueKeys(a.Meshes, meshName), uniqueKeys(b.Meshes, meshName)
 	aSide, bSide := newMeshSide(a), newMeshSide(b)
-	m := matchEntities(meshEntities(a, aKeys, aSide), meshEntities(b, bKeys, bSide))
+	aEnts, bEnts := meshEntities(a, aKeys, aSide), meshEntities(b, bKeys, bSide)
+	m := matchEntities(aEnts, bEnts)
 
 	var children []DiffChange
 	for ai, am := range a.Meshes {
@@ -1320,7 +1348,7 @@ func diffMeshes(a, b *gltf.Document) *DiffChange {
 		path := joinPath("meshes", bKey)
 		props := diffMeshPrimitives(am, b.Meshes[bi], aSide, bSide, path)
 		switch {
-		case aKey != bKey:
+		case isRename(aEnts[ai], bEnts[bi]):
 			children = append(children, DiffChange{
 				Path: path, Label: bKey, Kind: Renamed,
 				Before: aKey, After: renameAfter(bKey, m.how[ai]),
@@ -1779,7 +1807,7 @@ func diffAnimations(a, b *gltf.Document) *DiffChange {
 	bMap, bOrder := animMap(b.Animations)
 	names := mergeKeyOrder(aOrder, bOrder)
 
-	aIx, bIx := indexNodes(a.Nodes), indexNodes(b.Nodes)
+	aIx, bIx := indexNodes(a), indexNodes(b)
 
 	var children []DiffChange
 	for _, name := range names {

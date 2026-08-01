@@ -38,9 +38,17 @@ package main
 // from every other empty element, so pairing two of them would be a coin flip
 // dressed up as a rename.
 //
-// Unnamed elements are out of scope here. They are keyed by array index
-// (node[3]), so "renaming" one is not a thing that can happen, and the index
-// cascade an insertion causes is issue #42's — not this layer's.
+// Unnamed elements never *rename*. They are keyed by array index (node[3]), so
+// there is no name for one of them to have changed, and the index cascade an
+// insertion causes is issue #42's — not this layer's. Tier 3 leaves them alone
+// altogether; tier 1 still pairs them, because an authored id on a file whose
+// names a pipeline tool stripped is exactly what the convention is for, but the
+// pairing is reported as a modification and never as a rename (isRename).
+//
+// Every content descriptor is likewise built out of cross-revision *keys* and
+// never array indices — a node's mesh, a primitive's material — for the reason
+// meshSide.materialKey gives one level down: an index means "whatever is third in
+// this file's array", which an insertion upstream silently redefines.
 
 import (
 	"fmt"
@@ -145,12 +153,19 @@ const meshWeight = 6
 // instances, its local transform, its place in the hierarchy, and how many
 // children hang off it. Names are deliberately absent — the name is the thing
 // that changed.
+//
+// The mesh is nodeIndex.meshKey and the parent nodeIndex.parentKey — keys, never
+// array indices. The trade is deliberate and it is the one this package always
+// makes: renaming a mesh costs the nodes that draw it their content match, which
+// is a missed rename, whereas inserting a mesh upstream renumbers every mesh after
+// it and hands a node that draws something else a *perfect* score against whatever
+// used to sit at its number, which is a false one at full confidence.
 func nodeSignature(ix *nodeIndex, i int) signature {
 	n := ix.nodes[i]
 	t, r, s := n.TranslationOrDefault(), n.RotationOrDefault(), n.ScaleOrDefault()
 	return signature{
 		fields: []sigField{
-			{"mesh=" + ptrLabel(n.Mesh, "mesh"), meshWeight},
+			{"mesh=" + ix.meshKey(n.Mesh), meshWeight},
 			{"translation=" + fmtVec3(t), 1},
 			{"rotation=" + fmtRot(r), 1},
 			{"scale=" + fmtVec3(s), 1},
@@ -416,6 +431,28 @@ func strictBest(from int, others []int, score map[[2]int]float64, transposed boo
 }
 
 // ── reporting ─────────────────────────────────────────────────────────────────
+
+// isRename reports whether the key change between two paired elements is a name
+// edit, and so reportable as a rename at all.
+//
+// An unnamed element is keyed by its array index (node[3]), so when neither side
+// has a name the two keys differ only because something upstream was inserted or
+// removed. That is the index cascade issue #42 owns, not a rename: nothing was
+// renamed, and reporting one would put a synthetic key in `before`, which SPEC.md
+// defines as the bare old *name* — a consumer that resolves it against the
+// previous revision finds nothing there under that string.
+//
+// The pairing itself stands. An authored id is still the strongest evidence there
+// is that two array slots hold the same element — it is what makes the properties
+// get compared against the right one, which is the whole point of stamping a file
+// whose names a pipeline tool dropped. Only the rename label is withheld.
+//
+// A name on one side only is a real edit — a name was added or removed — and the
+// unnamed side's key is the only thing that element is called anywhere else in
+// the diff, so that pair is still reported as the rename it is.
+func isRename(a, b entity) bool {
+	return a.key != b.key && (a.name != "" || b.name != "")
+}
 
 // renameAfter renders a rename's `after` value: the new name, plus the evidence
 // that tied it to the old one in the parenthetical form the rest of this handler

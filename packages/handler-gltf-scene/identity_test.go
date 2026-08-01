@@ -58,19 +58,28 @@ func afterText(c *DiffChange) string {
 // fixture can vary.
 func meshedDoc(t *testing.T, nodes ...map[string]any) []byte {
 	t.Helper()
+	return meshListDoc(t, []string{"Hull", "Trim"}, nodes...)
+}
+
+// meshListDoc is meshedDoc with the mesh array spelled out, so a fixture can
+// insert a mesh *upstream* of the ones its nodes draw and renumber every index
+// after it — the edit that separates an index from a cross-revision key.
+func meshListDoc(t *testing.T, meshNames []string, nodes ...map[string]any) []byte {
+	t.Helper()
 	roots := make([]int, len(nodes))
 	for i := range nodes {
 		roots[i] = i
 	}
 	primitives := []any{map[string]any{"attributes": map[string]any{}}}
+	meshes := make([]any, len(meshNames))
+	for i, name := range meshNames {
+		meshes[i] = map[string]any{"name": name, "primitives": primitives}
+	}
 	return doc(t, map[string]any{
 		"scene":  0,
 		"scenes": []any{map[string]any{"nodes": roots}},
 		"nodes":  nodes,
-		"meshes": []any{
-			map[string]any{"name": "Hull", "primitives": primitives},
-			map[string]any{"name": "Trim", "primitives": primitives},
-		},
+		"meshes": meshes,
 	})
 }
 
@@ -301,6 +310,76 @@ func TestContentlessNodesNeverPair(t *testing.T) {
 	}
 }
 
+// A node's mesh is the heaviest thing its content descriptor knows about it
+// (meshWeight), and it is compared as the mesh's *diff key*. Never as the array
+// index, which means "whatever is second in this file's mesh array" — a claim any
+// insertion upstream silently redefines.
+//
+// The fixture is the smallest edit that separates the two readings: one mesh
+// inserted at the head of the array, so WheelMesh moves 0 → 1 and BodyMesh 1 → 2.
+// Read as indices the surviving node draws "mesh[1]", which is what the *deleted*
+// node drew in the previous revision — an 11-of-11 score, so the rename is
+// asserted at the handler's full confidence, against the wrong element, and the
+// real deletion disappears with it.
+func TestNodeContentMatchUsesTheMeshKeyNotItsArrayIndex(t *testing.T) {
+	pose := []float64{1.3, 0.45, 0.75}
+	base := meshListDoc(t, []string{"WheelMesh", "BodyMesh"},
+		map[string]any{"name": "Alpha", "mesh": 0, "translation": pose},
+		map[string]any{"name": "Beta", "mesh": 1, "translation": pose},
+	)
+	head := meshListDoc(t, []string{"NewMesh", "WheelMesh", "BodyMesh"},
+		map[string]any{"name": "Gamma", "mesh": 1, "translation": pose},
+	)
+
+	d := diffOf(t, base, head)
+	// Gamma draws what Alpha drew, so Alpha is where it came from.
+	mustRename(t, d, "nodes/Gamma", "Alpha")
+	if got := kindAt(d, "nodes/Beta"); got != Removed {
+		t.Errorf("nodes/Beta: kind = %q, want %q", got, Removed)
+	}
+	if findChange(d, "nodes/Alpha") != nil {
+		t.Error("the renamed node must not also be reported as removed")
+	}
+	// Its geometry is untouched; only the number in front of it moved.
+	if c := findChange(d, "nodes/Gamma/mesh"); c != nil {
+		t.Errorf("the mesh reference did not change; got %v → %v", c.Before, c.After)
+	}
+}
+
+// The same insertion with nothing renamed at all. Read as raw indices this is a
+// re-mesh of every node below it — "mesh[0] → mesh[1]" on a node whose geometry
+// nobody touched — which is the property-level half of the same defect.
+func TestUpstreamMeshInsertionIsNotAReMesh(t *testing.T) {
+	pose := []float64{1.3, 0.45, 0.75}
+	base := meshListDoc(t, []string{"WheelMesh", "BodyMesh"},
+		map[string]any{"name": "Alpha", "mesh": 0, "translation": pose},
+	)
+	head := meshListDoc(t, []string{"NewMesh", "WheelMesh", "BodyMesh"},
+		map[string]any{"name": "Alpha", "mesh": 1, "translation": pose},
+	)
+
+	d := diffOf(t, base, head)
+	if c := findChange(d, "nodes/Alpha"); c != nil {
+		t.Errorf("nothing about the node changed; got %+v", c)
+	}
+	// The insertion is still reported once, where it happened.
+	if got := kindAt(d, "meshes/NewMesh"); got != Added {
+		t.Errorf("meshes/NewMesh: kind = %q, want %q", got, Added)
+	}
+}
+
+// A node pointed at a genuinely different mesh is still a change — named by the
+// two meshes rather than numbered.
+func TestNodeReMeshIsReportedByMeshKey(t *testing.T) {
+	base := meshedDoc(t, map[string]any{"name": "Body", "mesh": 0})
+	head := meshedDoc(t, map[string]any{"name": "Body", "mesh": 1})
+
+	c := mustChange(t, diffOf(t, base, head), "nodes/Body/mesh")
+	if c.Before != "Hull" || c.After != "Trim" {
+		t.Errorf("mesh: %v → %v, want Hull → Trim", c.Before, c.After)
+	}
+}
+
 // Unnamed elements are keyed by array index, so there is no name for them to have
 // changed. Pairing two synthetic keys would report a rename between node[0] and
 // node[1], and the index cascade that produces those is issue #42's to fix.
@@ -316,6 +395,90 @@ func TestUnnamedNodesAreNotRenameCandidates(t *testing.T) {
 		if c.Kind == Renamed {
 			t.Errorf("unnamed nodes must not be paired by content: %+v", c)
 		}
+	})
+}
+
+// The same invariant two tiers up, which is where it used to leak. An authored id
+// does pair two unnamed elements — that is the whole point of stamping a file
+// whose names a pipeline tool dropped — but their keys are array indices, so a
+// shift between them is not a rename and must not be reported as one. The pairing
+// stands and only the label is withheld: the edits still land against the right
+// element instead of reading as a removal plus an addition.
+func TestUnnamedElementsWithAStableIDAreNotRenamed(t *testing.T) {
+	uidNode := func(translation []float64) map[string]any {
+		return withUID("u-1", map[string]any{"mesh": 0, "translation": translation})
+	}
+	namedNode := map[string]any{"name": "Body", "mesh": 1}
+	uidMaterial := withUID("m-1", map[string]any{"emissiveFactor": []float64{0.4, 0.1, 0}})
+	materialsDoc := func(mats ...map[string]any) []byte {
+		list := make([]any, len(mats))
+		for i, m := range mats {
+			list[i] = m
+		}
+		return doc(t, map[string]any{"materials": list})
+	}
+
+	tests := []struct {
+		name       string
+		base, head []byte
+		// wantPath is the head key the element's surviving edit reports under, or
+		// "" when the array shift is the only difference and the diff is empty.
+		wantPath string
+	}{
+		{
+			name: "node moved down the array, nothing else changed",
+			base: meshedDoc(t, uidNode([]float64{1, 2, 3}), namedNode),
+			head: meshedDoc(t, namedNode, uidNode([]float64{1, 2, 3})),
+		},
+		{
+			name:     "node moved down the array and edited",
+			base:     meshedDoc(t, uidNode([]float64{1, 2, 3}), namedNode),
+			head:     meshedDoc(t, namedNode, uidNode([]float64{1, 2, 9})),
+			wantPath: "nodes/node[1]",
+		},
+		{
+			name: "material moved down the array",
+			base: materialsDoc(uidMaterial, map[string]any{"name": "Rubber"}),
+			head: materialsDoc(map[string]any{"name": "Rubber"}, uidMaterial),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := diffOf(t, tc.base, tc.head)
+			walk(d.Changes, func(c *DiffChange, _ int) {
+				if c.Kind == Renamed {
+					t.Errorf("an unnamed element has no name to have changed: %+v", c)
+				}
+			})
+			if tc.wantPath == "" {
+				if len(d.Changes) != 0 {
+					t.Errorf("an array shift on its own is not a change; got %+v", d.Changes)
+				}
+				return
+			}
+			if got := kindAt(d, tc.wantPath); got != Modified {
+				t.Errorf("%s: kind = %q, want %q", tc.wantPath, got, Modified)
+			}
+			mustChange(t, d, tc.wantPath+"/translation")
+		})
+	}
+}
+
+// A name on one side only is a different matter: a name was added or removed,
+// which is a real edit and the one thing `renamed` exists to report. The unnamed
+// side's index key is the only thing that element is called anywhere else in the
+// diff, so it is what the pair is reported against.
+func TestNameAddedOrRemovedIsStillARename(t *testing.T) {
+	unnamed := withUID("u-1", map[string]any{"mesh": 0, "translation": []float64{1, 2, 3}})
+	named := withUID("u-1", map[string]any{"name": "Fender", "mesh": 0, "translation": []float64{1, 2, 3}})
+
+	t.Run("name removed", func(t *testing.T) {
+		d := diffOf(t, meshedDoc(t, named), meshedDoc(t, unnamed))
+		mustRename(t, d, "nodes/node[0]", "Fender")
+	})
+	t.Run("name added", func(t *testing.T) {
+		d := diffOf(t, meshedDoc(t, unnamed), meshedDoc(t, named))
+		mustRename(t, d, "nodes/Fender", "node[0]")
 	})
 }
 
