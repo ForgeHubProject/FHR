@@ -32,6 +32,20 @@ export const MODE_LABEL: Record<PresentationMode, string> = {
   "side-by-side": "Side by side",
 };
 
+/**
+ * The one mode the deviation heatmap (#46) is a sub-view of.
+ *
+ * Overlay is already the "where, and how far" rung — the previous version
+ * underneath the current one — and the heatmap is the same question answered in
+ * numbers, so it belongs *inside* that rung rather than as a fourth position on
+ * the ladder. A mode of its own would also have to answer what the ghost and the
+ * motion vectors do while it is on, and there is no good answer: they are the
+ * qualitative form of what it is already showing quantitatively.
+ */
+export const HEATMAP_MODE: PresentationMode = "overlay";
+export const HEATMAP_LABEL = "Deviation";
+export const HEATMAP_TITLE = "Colour changed geometry by how far its surface moved";
+
 export const MODE_TITLE: Record<PresentationMode, string> = {
   structural: "The diff painted on the current version",
   overlay: "The previous version underneath, to see how far things moved",

@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import type { StructuredDiff } from "@fhr/types";
-import { diffChangeTypes, hasTransformChange, isTransformOnly, nodeChanges } from "./diff-map.js";
+import {
+  diffChangeTypes,
+  geometryChanges,
+  hasTransformChange,
+  isTransformOnly,
+  nodeChanges,
+} from "./diff-map.js";
 
 /** A diff shaped the way handler-gltf-scene emits one today. */
 function diffOf(...children: StructuredDiff["changes"]): StructuredDiff {
@@ -174,5 +180,129 @@ describe("path escaping (handler scheme: %2F for '/', %25 for '%')", () => {
       changes: [{ path: "nodes/Cube/translation", label: "translation", kind: "modified" }],
     };
     expect(nodeChanges(diff)).toEqual([]);
+  });
+});
+
+describe("geometryChanges (the heatmap's gate)", () => {
+  /** A meshes-collection diff, the shape handler-gltf-scene emits. */
+  const meshDiff = (...children: StructuredDiff["changes"]): StructuredDiff => ({
+    version: "1.0",
+    format: "gltf-scene",
+    changes: [{ path: "meshes", label: "meshes", kind: "modified", children }],
+  });
+
+  const primitive = (mesh: string, ordinal: number, ...rows: StructuredDiff["changes"]) => ({
+    path: `meshes/${mesh}/primitives/${ordinal}`,
+    label: `primitive[${ordinal}]`,
+    kind: "modified" as const,
+    children: rows,
+  });
+
+  it("picks up the three rows that mean the vertex data moved", () => {
+    for (const row of [
+      { path: "meshes/Hood/primitives/0/geometry/POSITION", label: "POSITION" },
+      { path: "meshes/Hood/primitives/0/bounds", label: "bounds" },
+      { path: "meshes/Hood/primitives/0/centroid", label: "centroid" },
+    ]) {
+      const diff = meshDiff({
+        path: "meshes/Hood",
+        label: "Hood",
+        kind: "modified",
+        children: [primitive("Hood", 0, { ...row, kind: "modified" })],
+      });
+      expect(geometryChanges(diff)).toEqual([
+        { name: "Hood", kind: "modified", path: "meshes/Hood", primitives: [0] },
+      ]);
+    }
+  });
+
+  it("ignores a mesh change with no vertex data in it", () => {
+    // A material reassignment is a real change on a real mesh — and the two
+    // sides' geometry is byte-identical, so a heatmap of it would read zero
+    // everywhere. Offering the toggle for it would be a picture of nothing.
+    const diff = meshDiff({
+      path: "meshes/Hood",
+      label: "Hood",
+      kind: "modified",
+      children: [
+        primitive("Hood", 0, {
+          path: "meshes/Hood/primitives/0/material",
+          label: "material",
+          kind: "modified",
+        }),
+      ],
+    });
+    expect(geometryChanges(diff)).toEqual([]);
+  });
+
+  it("names only the primitives that actually changed", () => {
+    const diff = meshDiff({
+      path: "meshes/Body",
+      label: "Body",
+      kind: "modified",
+      children: [
+        primitive("Body", 0, {
+          path: "meshes/Body/primitives/0/material",
+          label: "material",
+          kind: "modified",
+        }),
+        primitive("Body", 2, {
+          path: "meshes/Body/primitives/2/geometry/POSITION",
+          label: "POSITION",
+          kind: "modified",
+        }),
+        primitive("Body", 3, {
+          path: "meshes/Body/primitives/3/bounds",
+          label: "bounds",
+          kind: "modified",
+        }),
+      ],
+    });
+    expect(geometryChanges(diff)).toEqual([
+      { name: "Body", kind: "modified", path: "meshes/Body", primitives: [2, 3] },
+    ]);
+  });
+
+  it("reads a mesh change that arrives without the collection wrapper", () => {
+    const diff: StructuredDiff = {
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [
+        {
+          path: "meshes/Hull",
+          label: "Hull",
+          kind: "modified",
+          children: [
+            primitive("Hull", 1, {
+              path: "meshes/Hull/primitives/1/centroid",
+              label: "centroid",
+              kind: "modified",
+            }),
+          ],
+        },
+      ],
+    };
+    expect(geometryChanges(diff)).toEqual([
+      { name: "Hull", kind: "modified", path: "meshes/Hull", primitives: [1] },
+    ]);
+  });
+
+  it("never reads a node or material change as geometry", () => {
+    const diff: StructuredDiff = {
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [
+        { path: "nodes", label: "nodes", kind: "modified", children: [
+          { path: "nodes/Hood", label: "Hood", kind: "modified", children: [
+            { path: "nodes/Hood/translation", label: "translation", kind: "modified" },
+          ] },
+        ] },
+        { path: "materials", label: "materials", kind: "modified", children: [
+          { path: "materials/Paint", label: "Paint", kind: "modified" },
+        ] },
+      ],
+    };
+    expect(geometryChanges(diff)).toEqual([]);
+    expect(geometryChanges(undefined)).toEqual([]);
   });
 });
