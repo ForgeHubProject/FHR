@@ -13,8 +13,9 @@
 //
 // "The whole model" up to a row cap (MAX_ROWS): being on every mount means this
 // is now on the critical path to first frame, and an unbounded row-per-node list
-// makes a large assembly pay for it. The cap keeps every changed node and says
-// what it left out.
+// makes a large assembly pay for it. The cap spends its budget on the changed
+// nodes first and says what it left out — including, when the changed nodes
+// alone overflow it, that some of *those* are missing.
 //
 // DOM-only — no three.js — and only the handful of DOM calls fake-dom covers.
 
@@ -49,31 +50,52 @@ const MAX_INDENT_DEPTH = 6;
  */
 export const MAX_ROWS = 4000;
 
+/** What the cap kept, and what it cost to keep it. */
+type CappedRows = {
+  rows: readonly SceneNode[];
+  /** Changed nodes the cap could not fit. Zero in every non-degenerate case. */
+  changedDropped: number;
+};
+
 /**
  * Which rows survive the cap, in document order.
  *
- * Changed nodes are kept first and unconditionally: they are the names the queue
- * asks `select()` for, so dropping one would silently break the queue↔tree link
- * rather than merely shortening a list. The remaining budget goes to the file's
- * first unchanged nodes — the tree is read top-down, and the top is the model's
- * own root and its major assemblies.
+ * Changed nodes are kept first: they are the names the queue asks `select()`
+ * for, so dropping one breaks the queue↔tree link rather than merely shortening
+ * a list. The remaining budget goes to the file's first unchanged nodes — the
+ * tree is read top-down, and the top is the model's own root and its major
+ * assemblies.
+ *
+ * "First", not "unconditionally": when the changed nodes *alone* overflow the
+ * cap there is no ordering that keeps them all, and that case is not exotic here
+ * — a regenerated topology makes `semanticCompare` false and the structural diff
+ * reports every node changed (presentation.ts, SPEC-RENDERING §2e), so a
+ * re-tessellated export lands on it every time. The overflow is counted rather
+ * than hidden, because the note above the tree is otherwise stating a falsehood.
  */
-function cappedRows(nodes: readonly SceneNode[], cap: number): readonly SceneNode[] {
-  if (nodes.length <= cap) return nodes;
+function cappedRows(nodes: readonly SceneNode[], cap: number): CappedRows {
+  if (nodes.length <= cap) return { rows: nodes, changedDropped: 0 };
   const keep = new Set<number>();
-  for (let i = 0; i < nodes.length && keep.size < cap; i++) {
-    if (nodes[i]!.kind !== "unchanged") keep.add(i);
+  let changedDropped = 0;
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodes[i]!.kind === "unchanged") continue;
+    if (keep.size < cap) keep.add(i);
+    else changedDropped++;
   }
   for (let i = 0; i < nodes.length && keep.size < cap; i++) keep.add(i);
-  return nodes.filter((_, i) => keep.has(i));
+  return { rows: nodes.filter((_, i) => keep.has(i)), changedDropped };
 }
 
 /** The note that stands in for the rows the cap dropped. Never silent. */
-export function truncatedMessage(shown: number, total: number): string {
-  return (
+export function truncatedMessage(shown: number, total: number, changedDropped = 0): string {
+  const omitted =
     `Showing ${shown} of ${total} nodes — the other ${total - shown} are omitted to keep this ` +
-    `view responsive. Every changed node is listed.`
-  );
+    `view responsive. `;
+  // Claiming completeness when the changed rows themselves overflowed would be a
+  // lie on screen, and `select()` returns false for exactly those names.
+  return changedDropped === 0
+    ? `${omitted}Every changed node is listed.`
+    : `${omitted}${changedDropped} of the omitted nodes changed, so not every change has a row here.`;
 }
 
 export function renderStructureTree(
@@ -98,12 +120,13 @@ export function renderStructureTree(
     el.appendChild(empty);
   }
 
-  const rows = cappedRows(nodes, MAX_ROWS);
+  const { rows, changedDropped } = cappedRows(nodes, MAX_ROWS);
   if (rows.length < nodes.length) {
     const note = doc.createElement("div");
     note.className = "fhr3d__empty";
     note.setAttribute("data-truncated", String(nodes.length - rows.length));
-    note.textContent = truncatedMessage(rows.length, nodes.length);
+    note.setAttribute("data-changed-dropped", String(changedDropped));
+    note.textContent = truncatedMessage(rows.length, nodes.length, changedDropped);
     el.appendChild(note);
   }
 

@@ -67,6 +67,32 @@ describe("renderStructureTree", () => {
     expect(picked).toEqual([`Part_${late}`]);
   });
 
+  it("says so instead of claiming completeness when the changes alone overflow", () => {
+    // Not an exotic input on this branch: a regenerated topology makes
+    // `semanticCompare` false and the structural diff reports every node changed
+    // (presentation.ts, SPEC-RENDERING §2e), so a re-tessellated export lands
+    // here every time. `select()` returns false for the surplus, and
+    // Chrome.highlightNode ignores that — so the note is the only signal there is.
+    const nodes = Array.from({ length: MAX_ROWS + 1000 }, (_, i) => node(`Part_${i}`, "modified"));
+    const { tree, el, rows } = render(nodes);
+
+    expect(rows()).toHaveLength(MAX_ROWS);
+    expect(tree.select(`Part_${MAX_ROWS + 999}`)).toBe(false);
+    const note = el.descendants().filter((e) => e.attributes["data-truncated"] !== undefined)[0]!;
+    expect(note.getAttribute("data-changed-dropped")).toBe("1000");
+    expect(note.textContent).not.toContain("Every changed node is listed");
+    expect(note.textContent).toContain("1000 of the omitted nodes changed");
+  });
+
+  it("still claims completeness when it is true", () => {
+    const nodes = Array.from({ length: MAX_ROWS * 2 }, (_, i) => node(`Part_${i}`));
+    nodes[MAX_ROWS * 2 - 1] = node(`Part_${MAX_ROWS * 2 - 1}`, "added");
+    const { el } = render(nodes);
+    const note = el.descendants().filter((e) => e.attributes["data-truncated"] !== undefined)[0]!;
+    expect(note.getAttribute("data-changed-dropped")).toBe("0");
+    expect(note.textContent).toContain("Every changed node is listed");
+  });
+
   it("reports a miss for a node the cap dropped rather than throwing", () => {
     const nodes = Array.from({ length: MAX_ROWS * 2 }, (_, i) => node(`Part_${i}`));
     const { tree } = render(nodes);
