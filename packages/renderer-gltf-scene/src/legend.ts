@@ -22,7 +22,11 @@ import { rampGradientCss } from "./ramp.js";
 export type Legend = {
   el: HTMLElement;
   show(on: boolean): void;
-  /** The measured range. Both ends are shown — a scale with one end is a hint. */
+  /**
+   * The measured range. Both ends are shown — a scale with one end is a hint —
+   * but they are the ends of the RAMP, which starts at zero whatever the
+   * smallest measured value turns out to be. See `setRange` for why.
+   */
   setRange(min: number, max: number): void;
   /** A line above the ramp while the measurement is still running. */
   setStatus(text: string | null): void;
@@ -35,8 +39,20 @@ export type Legend = {
 export const LEGEND_TITLE = "Deviation from previous version";
 /** Shown while the first measurement runs, so the empty ramp isn't a mystery. */
 export const LEGEND_MEASURING = "Measuring…";
+/**
+ * Shown when one measured mesh is instanced at several scales: the ramp is one
+ * attribute on one shared geometry, so it can only be right for one of them
+ * (heatmap.ts picks the largest). A reviewer quoting the number needs to know.
+ */
+export const LEGEND_MIXED_SCALE = "Shared mesh at several scales — largest copy";
 /** What the readout says before the pointer has been over anything painted. */
 const HOVER_PROMPT = "Point at coloured geometry for a reading";
+/**
+ * How much of the ramp has to go unused before the legend mentions it. Below
+ * this the empty foot is a sliver a reviewer cannot see, and a line about it is
+ * noise in a panel that has to stay small.
+ */
+const FLOOR_NOTE_FRACTION = 0.02;
 
 export function createHeatmapLegend(container: HTMLElement, theme: "light" | "dark"): Legend {
   const doc = container.ownerDocument;
@@ -80,12 +96,16 @@ export function createHeatmapLegend(container: HTMLElement, theme: "light" | "da
   high.textContent = "—";
   scale.append(low, high);
 
+  const floor = doc.createElement("div");
+  floor.setAttribute("data-legend-floor", "1");
+  floor.style.cssText = `color:${muted};display:none`;
+
   const reading = doc.createElement("div");
   reading.setAttribute("data-legend-reading", "1");
   reading.style.cssText = `color:${muted};white-space:nowrap;overflow:hidden;text-overflow:ellipsis`;
   reading.textContent = HOVER_PROMPT;
 
-  el.append(title, status, bar, scale, reading);
+  el.append(title, status, bar, scale, floor, reading);
   container.appendChild(el);
 
   return {
@@ -94,11 +114,21 @@ export function createHeatmapLegend(container: HTMLElement, theme: "light" | "da
       el.style.display = on ? "block" : "none";
     },
     setRange(min: number, max: number): void {
-      // The low end is the smallest deviation actually measured, not a decorative
-      // zero: on a re-tessellated surface every vertex has moved a little, and
-      // claiming the ramp starts at zero would misreport the whole picture.
-      low.textContent = formatDeviation(min);
+      // The ends label the RAMP, and the ramp starts at zero: heatmap.ts paints
+      // every vertex at `value / max`, so the foot of the gradient is deviation
+      // nothing, not the smallest value that happened to be measured. Writing
+      // `min` there — the obvious reading of "show the measured range" — makes
+      // every colour on the model decode to the wrong number, by `min`, and does
+      // it silently, since the picture looks the same either way.
+      low.textContent = formatDeviation(0);
       high.textContent = formatDeviation(max);
+      // Zero is where the scale starts; nothing has to sit there. On a
+      // re-tessellated surface every vertex has moved a little, and the foot of
+      // the ramp then goes unused — worth one line, because a reviewer who reads
+      // "0" as "some of this is unchanged" has drawn the wrong conclusion.
+      const note = max > 0 && min > 0 && min / max >= FLOOR_NOTE_FRACTION;
+      floor.textContent = note ? `Smallest measured ${formatDeviation(min)}` : "";
+      floor.style.display = note ? "block" : "none";
     },
     setStatus(text: string | null): void {
       status.textContent = text ?? "";

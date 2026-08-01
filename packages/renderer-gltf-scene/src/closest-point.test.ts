@@ -3,7 +3,7 @@
 // DOM, no WebGL — so all of it runs here for real.
 
 import { describe, it, expect } from "vitest";
-import { buildSurfaceIndex, closestPointOnTriangle } from "./closest-point.js";
+import { buildSurfaceIndex, buildSurfaceIndexChunked, closestPointOnTriangle } from "./closest-point.js";
 
 /** Project P onto ABC and return the point, for readable assertions. */
 function project(
@@ -161,5 +161,70 @@ describe("buildSurfaceIndex", () => {
     const bvh = buildSurfaceIndex(new Float32Array(positions));
     expect(bvh.triangles).toBe(64);
     expect(Math.sqrt(bvh.closestDistanceSquared(0, 4, 0))).toBeCloseTo(4, 5);
+  });
+});
+
+describe("buildSurfaceIndexChunked", () => {
+  /** The same probes against two indexes, in the same order — the traversal
+   *  carries a seeded best-guess between queries, so order is part of the run. */
+  const probe = (bvh: { closestDistanceSquared(x: number, y: number, z: number): number }): number[] => {
+    const out: number[] = [];
+    let seed = 999;
+    const next = (): number => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    for (let i = 0; i < 200; i++) out.push(bvh.closestDistanceSquared(next() * 3 - 1, next() * 3 - 1, next() * 2 - 1));
+    return out;
+  };
+
+  it("yields between slices and answers exactly as the one-pass build does", async () => {
+    // The build is not a rounding error beside the measurement it feeds: 200k
+    // triangles is ~200 ms here, which is a dozen frames dropped at the moment
+    // the reviewer just asked the model a question. `sliceMs: 0` makes every
+    // checkpoint yield so the test sees the slicing without needing that mesh.
+    const { positions, index } = grid(12);
+    const once = buildSurfaceIndex(positions, index);
+    let yields = 0;
+    const sliced = await buildSurfaceIndexChunked(
+      positions,
+      index,
+      async () => {
+        yields++;
+      },
+      undefined,
+      0,
+    );
+    expect(sliced).not.toBeNull();
+    // Every phase — unpack, tree, repack — has to be sliced; one is not enough.
+    expect(yields).toBeGreaterThan(2);
+    expect(sliced!.triangles).toBe(once.triangles);
+    expect(probe(sliced!)).toEqual(probe(once));
+  });
+
+  it("abandons the build when the reviewer switches the heatmap off", async () => {
+    const { positions, index } = grid(12);
+    const signal = { cancelled: false };
+    let yields = 0;
+    const sliced = await buildSurfaceIndexChunked(
+      positions,
+      index,
+      async () => {
+        yields++;
+        signal.cancelled = true;
+      },
+      signal,
+      0,
+    );
+    expect(sliced).toBeNull();
+    // Stopped at the first boundary, not after finishing the tree anyway.
+    expect(yields).toBe(1);
+  });
+
+  it("runs to completion without yielding when the mesh fits in one slice", async () => {
+    const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    let yields = 0;
+    const sliced = await buildSurfaceIndexChunked(positions, null, async () => {
+      yields++;
+    });
+    expect(yields).toBe(0);
+    expect(sliced!.triangles).toBe(1);
   });
 });

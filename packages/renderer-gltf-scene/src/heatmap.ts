@@ -15,30 +15,56 @@
 // file for why an index-wise or nearest-vertex comparison is wrong the moment
 // topology changes, which is most of what an edit does.
 //
-// The comparison happens in the MESH's own space, not the world's. That is the
-// transform-delta subtraction #46 asks for, arrived at for free: a node that was
-// only moved carries an unedited mesh, so it produces no geometry row in the
-// diff, is never a heatmap target, and reads as *moved* (the motion vector) —
-// which is what it is. Measuring in world space would instead paint a rigid
-// translation as a fully deviated surface, the single most misleading thing this
-// view could do. It is also the only coherent choice for shared geometry: one
-// mesh instanced by four nodes with four different scales has no single world
-// answer, but it has exactly one answer about its own vertices.
+// Both sides are mapped through ONE transform — the *head* node's — before they
+// are compared. That is the transform-delta subtraction #46 asks for: a node
+// that was only moved carries an unedited mesh, so it produces no geometry row
+// in the diff, is never a heatmap target, and reads as *moved* (the motion
+// vector) — which is what it is; and a node that was moved *and* sculpted is
+// measured with its motion divided out, because the previous shape is placed by
+// the current pose before the distance is taken. Measuring each side at its own
+// pose would instead paint a rigid translation as a fully deviated surface, the
+// single most misleading thing this view could do.
 //
-// Units are therefore the model's own, which glTF defines as metres (spec §3.3).
+// One transform, but the head's and not the identity, because the number is
+// labelled in millimetres. glTF fixes the metre as the unit of the SCENE (spec
+// §3.3), not of a node's local space: a mesh authored in millimetres and hung
+// under a node scaled 0.001 — the ordinary CAD and Blender export — has local
+// coordinates a thousand times its real size, and a heatmap that read them raw
+// would report a 0.12 mm lift as "120 mm". So the node chain's transform is
+// applied to both sides, and the answer comes out in the scene's own metres.
+//
+// Only the 3×3 linear part is applied: translation cancels out of a distance,
+// and dropping it keeps float32 arithmetic near the geometry rather than out at
+// whatever offset the node sits at.
+//
+// Shared geometry instanced at two different scales is the one case with no
+// single answer — one BufferGeometry, one colour attribute, two truths. The
+// largest instance wins (so the headline "max deviation" stays an upper bound
+// over every copy on screen) and the summary carries `mixedScale` so the legend
+// can say the picture is of one copy.
 //
 // ── how it is paid for ───────────────────────────────────────────────────────
 //
-// Nothing here runs until the reviewer asks. The first toggle builds the spatial
-// index and measures, in slices, off idle callbacks (deviation.ts); the result
-// is cached per geometry pair, so switching the heatmap off and back on, or
-// leaving overlay and returning, costs one pointer swap per painted mesh.
+// Nothing here runs until the reviewer asks. The first toggle then does three
+// things, ALL of them in slices off idle callbacks — build the spatial index
+// (closest-point.ts), measure every vertex against it (deviation.ts), and turn
+// the measurements into colours. Any one of the three left whole would freeze
+// the view for several frames on a real mesh, and the frozen one would be
+// whichever was overlooked. The results of all three are cached per geometry
+// pair, so switching the heatmap off and back on, or leaving overlay and
+// returning, costs one pointer swap per painted mesh.
 
-import { BufferAttribute } from "three";
+import { BufferAttribute, Matrix4 } from "three";
 import type { BufferGeometry, Color, Material, Object3D } from "three";
 import type { GeometryChange } from "./diff-map.js";
-import { buildSurfaceIndex } from "./closest-point.js";
-import { deviationChunked, idleYield, type DeviationResult, type Yielder } from "./deviation.js";
+import { buildSurfaceIndexChunked } from "./closest-point.js";
+import {
+  CHUNK_VERTICES,
+  deviationChunked,
+  idleYield,
+  type DeviationResult,
+  type Yielder,
+} from "./deviation.js";
 import { rampLinear } from "./ramp.js";
 import { meshesIn, objectsByNodeIndex } from "./associations.js";
 import { resolveMeshNodes, resolveNodeIndex } from "./node-index.js";
@@ -60,11 +86,21 @@ export function heatmapOffered(input: { geometryChanges: number; baseResident: b
 
 /** The numbers the legend and the queue's panel read. */
 export type HeatmapSummary = {
-  /** Smallest and largest deviation across every measured mesh, in metres. */
+  /**
+   * Smallest and largest deviation across every measured mesh, in the scene's
+   * metres — the node chain's scale is already divided out, so these are
+   * numbers a reviewer can quote.
+   */
   min: number;
   max: number;
   /** Mesh-change path → that mesh's largest deviation, for its panel row. */
   byPath: Map<string, number>;
+  /**
+   * At least one measured mesh is drawn at two different scales, so no single
+   * set of numbers describes every copy on screen. The values are the largest
+   * copy's; the legend says so rather than letting the picture pass for exact.
+   */
+  mixedScale: boolean;
 };
 
 export type Heatmap = {
@@ -76,7 +112,13 @@ export type Heatmap = {
    * reviewer switched it off again before the measurement finished.
    */
   enable(): Promise<HeatmapSummary | null>;
-  /** Put the overlay's own materials back. Keeps the measurements cached. */
+  /**
+   * Put the overlay's own materials back AND take the ramp off the file's
+   * geometry — both, because a `color` attribute left behind goes on drawing
+   * through any material with `vertexColors` set, which GLTFLoader sets for
+   * every primitive that ships COLOR_0. Keeps the measurements and the ramp
+   * itself cached, so coming back on is a pointer swap.
+   */
   disable(): void;
   /** The summary, once measured; null before that. */
   summary(): HeatmapSummary | null;
@@ -109,6 +151,14 @@ type Pair = {
   baseGeometry: BufferGeometry;
   /** Head meshes drawing this geometry — instances share it, so often several. */
   objects: Object3D[];
+  /**
+   * Geometry space → scene space, linear part only, taken from the largest
+   * instance. Both sides go through it, so the measurement comes out in the
+   * scene's metres with the node's own motion divided out.
+   */
+  linear: Matrix4;
+  /** Instances of this geometry disagree about that transform's scale. */
+  mixedScale: boolean;
   /** The mesh change's path (the queue's key) and display name. */
   path: string;
   label: string;
@@ -165,7 +215,16 @@ export function createHeatmap(input: HeatmapInput): Heatmap | null {
         // all of them are painted — highlighting one of four wheels would be a
         // lie about where the change is.
         const objects = allInstancesOf(geometry, headObjects, change, head, ordinal);
-        pairs.push({ geometry, baseGeometry, objects, path: change.path, label: change.name });
+        const scaling = instanceScaling(objects.length > 0 ? objects : [headMesh], head.gltf.scene);
+        pairs.push({
+          geometry,
+          baseGeometry,
+          objects,
+          linear: scaling.linear,
+          mixedScale: scaling.mixed,
+          path: change.path,
+          label: change.name,
+        });
       }
     }
   }
@@ -178,8 +237,17 @@ export function createHeatmap(input: HeatmapInput): Heatmap | null {
   const byGeometry = new Map<string, DeviationResult>();
   const swaps = new Map<Object3D, Swap>();
   const heatMaterials = new Set<Material>();
-  /** Geometry → the `color` attribute it had before, so disposal can restore it. */
+  /** Geometry → the `color` attribute it had before, while the ramp is on it. */
   const displacedColor = new Map<BufferGeometry, BufferAttribute | null>();
+  /**
+   * Geometry → the ramp attribute written for it, kept across an off/on.
+   *
+   * Held rather than rebuilt because the colour pass is a real cost (~54 ms for
+   * 100k vertices) and the promise the toggle makes is that switching back on is
+   * a pointer swap. The measurements it was computed from are cached beside it,
+   * so the two never disagree.
+   */
+  const heatColor = new Map<BufferGeometry, BufferAttribute>();
   const labelByGeometry = new Map<string, string>();
   for (const pair of pairs) labelByGeometry.set(pair.geometry.uuid, pair.label);
 
@@ -196,10 +264,19 @@ export function createHeatmap(input: HeatmapInput): Heatmap | null {
       const key = `${pair.geometry.uuid}|${pair.baseGeometry.uuid}`;
       let result = cache.get(key);
       if (!result) {
-        const basePositions = readPositions(pair.baseGeometry);
-        const headPositions = readPositions(pair.geometry);
+        // The head node's linear part on BOTH sides: the previous shape is put
+        // where the current pose would carry it, and the whole comparison lands
+        // in scene units. See the note at the top of the file.
+        const basePositions = readPositions(pair.baseGeometry, pair.linear);
+        const headPositions = readPositions(pair.geometry, pair.linear);
         if (!basePositions || !headPositions) continue;
-        const surface = buildSurfaceIndex(basePositions, readIndex(pair.baseGeometry));
+        const surface = await buildSurfaceIndexChunked(
+          basePositions,
+          readIndex(pair.baseGeometry),
+          yieldTo,
+          local,
+        );
+        if (surface === null) return null;
         const measured = await deviationChunked(headPositions, surface, yieldTo, local);
         if (measured === null) return null;
         result = measured;
@@ -223,35 +300,79 @@ export function createHeatmap(input: HeatmapInput): Heatmap | null {
       if (!r) continue;
       byPath.set(pair.path, Math.max(byPath.get(pair.path) ?? 0, r.max));
     }
-    return { min: Number.isFinite(min) ? min : 0, max, byPath };
+    const mixedScale = pairs.some((p) => p.mixedScale && byGeometry.has(p.geometry.uuid));
+    return { min: Number.isFinite(min) ? min : 0, max, byPath, mixedScale };
+  };
+
+  /**
+   * The ramp for one mesh's measurements, built in slices.
+   *
+   * Sliced for the same reason the measurement is: `rampLinear` is three
+   * `Math.pow` calls per vertex, so a 100k-vertex mesh is ~54 ms of unbroken
+   * arithmetic — three dropped frames arriving right after the reviewer has just
+   * waited for the measurement, which is the worst possible moment to stutter.
+   *
+   * Nothing is written to the geometry until the whole array is built: a paint
+   * abandoned half way must leave the model exactly as it found it, not with a
+   * partial ramp on some of its vertices.
+   */
+  const buildColors = async (
+    result: DeviationResult,
+    scale: number,
+    local: { cancelled: boolean },
+  ): Promise<Float32Array | null> => {
+    const count = result.values.length;
+    const colors = new Float32Array(count * 3);
+    for (let from = 0; from < count; from += CHUNK_VERTICES) {
+      if (local.cancelled) return null;
+      const to = Math.min(from + CHUNK_VERTICES, count);
+      for (let i = from; i < to; i++) {
+        const c = rampLinear(result.values[i]! * scale);
+        colors[i * 3] = c.r;
+        colors[i * 3 + 1] = c.g;
+        colors[i * 3 + 2] = c.b;
+      }
+      if (to < count) await yieldTo();
+    }
+    return local.cancelled ? null : colors;
   };
 
   /**
    * Write the ramp into each geometry's `color` attribute and swap in a material
-   * that reads it.
+   * that reads it. False when the reviewer cancelled part way through.
    *
    * Normalised against the range of the WHOLE view, not per mesh. Per-mesh
    * normalisation would give an untouched-looking 0.1 mm ripple the same full
    * ramp as a 12 mm sculpt sitting next to it, and the two would be
    * indistinguishable in the only picture that is supposed to tell them apart.
+   *
+   * Normalised against 0..max and not min..max, so the foot of the ramp is
+   * deviation *zero* — the sequential ramp was chosen for having a meaningful
+   * zero (ramp.ts), and stretching min..max across it would paint a surface that
+   * moved uniformly by 100 mm as a full-range rainbow of its own float noise.
+   * legend.ts labels the foot to match; the two must be read together.
    */
-  const paint = (summary: HeatmapSummary): void => {
+  const paint = async (summary: HeatmapSummary, local: { cancelled: boolean }): Promise<boolean> => {
     const scale = summary.max > 0 ? 1 / summary.max : 0;
     for (const pair of pairs) {
       const result = byGeometry.get(pair.geometry.uuid);
       if (!result) continue;
+      let ramp = heatColor.get(pair.geometry);
+      if (!ramp) {
+        const colors = await buildColors(result, scale, local);
+        if (colors === null) return false;
+        ramp = new BufferAttribute(colors, 3);
+        heatColor.set(pair.geometry, ramp);
+      }
+      if (local.cancelled) return false;
+      // Re-read what the geometry is wearing on every paint, not once for the
+      // heatmap's lifetime: disable() puts the file's own attribute back, so
+      // what has to be restored next time is whatever is there now.
       if (!displacedColor.has(pair.geometry)) {
         const existing = pair.geometry.getAttribute("color");
         displacedColor.set(pair.geometry, (existing as BufferAttribute | undefined) ?? null);
-        const colors = new Float32Array(result.values.length * 3);
-        for (let i = 0; i < result.values.length; i++) {
-          const c = rampLinear(result.values[i]! * scale);
-          colors[i * 3] = c.r;
-          colors[i * 3 + 1] = c.g;
-          colors[i * 3 + 2] = c.b;
-        }
-        pair.geometry.setAttribute("color", new BufferAttribute(colors, 3));
       }
+      pair.geometry.setAttribute("color", ramp);
       for (const object of pair.objects) {
         const holder = object as { material?: Material | Material[] };
         const current = holder.material;
@@ -268,6 +389,29 @@ export function createHeatmap(input: HeatmapInput): Heatmap | null {
       }
     }
     painted = true;
+    return true;
+  };
+
+  /** The overlay's materials and the file's own `color` attribute, back on. */
+  const unpaint = (): number => {
+    for (const [object, swap] of swaps) {
+      (object as { material?: Material | Material[] }).material = swap.before;
+    }
+    // The `color` attribute lives on the FILE's geometry, which outlives both
+    // this toggle and this heatmap. GLTFLoader sets `vertexColors` on the
+    // material of any primitive carrying COLOR_0, so a model that ships its own
+    // vertex colours would go on drawing in the ramp — in structural mode, in
+    // side-by-side, everywhere — if the attribute were left behind with the
+    // authored material back on top of it.
+    let attributes = 0;
+    for (const [geometry, previous] of displacedColor) {
+      if (previous) geometry.setAttribute("color", previous);
+      else geometry.deleteAttribute("color");
+      attributes++;
+    }
+    displacedColor.clear();
+    painted = false;
+    return attributes;
   };
 
   return {
@@ -277,8 +421,10 @@ export function createHeatmap(input: HeatmapInput): Heatmap | null {
     },
     async enable(): Promise<HeatmapSummary | null> {
       if (computed) {
-        if (!painted) paint(computed);
-        return computed;
+        if (painted) return computed;
+        const local = { cancelled: false };
+        signal = local;
+        return (await paint(computed, local)) ? computed : null;
       }
       // Join a measurement already in flight — two toggles in quick succession
       // must not race two runs onto the same cache — but only a LIVE one. A run
@@ -290,17 +436,17 @@ export function createHeatmap(input: HeatmapInput): Heatmap | null {
       const summary = await mine;
       if (running === mine) running = null;
       if (summary === null) return null;
+      // Kept even if the paint below is abandoned: the measurement is a fact
+      // about the two files, and re-measuring for the next toggle would charge
+      // the reviewer twice for it.
       computed = summary;
-      paint(summary);
-      return summary;
+      const local = signal;
+      if (local === null || local.cancelled) return null;
+      return (await paint(summary, local)) ? summary : null;
     },
     disable(): void {
       if (signal) signal.cancelled = true;
-      if (!painted) return;
-      for (const [object, swap] of swaps) {
-        (object as { material?: Material | Material[] }).material = swap.before;
-      }
-      painted = false;
+      unpaint();
     },
     summary(): HeatmapSummary | null {
       return computed;
@@ -327,27 +473,16 @@ export function createHeatmap(input: HeatmapInput): Heatmap | null {
     },
     dispose(): { materials: number; attributes: number } {
       if (signal) signal.cancelled = true;
-      // Materials back first: with the heat clones off the model, freeing them
-      // cannot leave a Mesh pointing at a disposed material for a frame.
-      for (const [object, swap] of swaps) {
-        (object as { material?: Material | Material[] }).material = swap.before;
-      }
-      painted = false;
+      // Materials and attributes off first: with the heat clones off the model,
+      // freeing them cannot leave a Mesh pointing at a disposed material for a
+      // frame. `attributes` counts what THIS call put back, so a teardown that
+      // follows a disable() reports zero — disable() already did it.
+      const attributes = unpaint();
       for (const material of heatMaterials) material.dispose();
       const materials = heatMaterials.size;
       heatMaterials.clear();
       swaps.clear();
-      // The `color` attribute lives on the FILE's geometry, which outlives this
-      // heatmap: leaving it behind would tint the model wherever a later
-      // material happened to read vertex colours. A file that shipped its own
-      // COLOR_0 gets it back rather than losing it to a view it never opted into.
-      let attributes = 0;
-      for (const [geometry, previous] of displacedColor) {
-        if (previous) geometry.setAttribute("color", previous);
-        else geometry.deleteAttribute("color");
-        attributes++;
-      }
-      displacedColor.clear();
+      heatColor.clear();
       byGeometry.clear();
       cache.clear();
       return { materials, attributes };
@@ -422,25 +557,111 @@ function allInstancesOf(
 }
 
 /**
- * A geometry's POSITION data as a plain 3-per-vertex array.
+ * A geometry's POSITION data as a plain 3-per-vertex array, mapped through
+ * `linear` — the node chain's 3×3, which is what turns local coordinates into
+ * the scene's metres.
  *
  * Read through `getX/getY/getZ` rather than off `.array`, because GLTFLoader
  * hands back an `InterleavedBufferAttribute` for an interleaved accessor — and
  * its `.array` is the whole interleaved buffer, normals and UVs included.
  * Walking that as if it were positions produces a mesh made of garbage, silently.
  */
-function readPositions(geometry: BufferGeometry): Float32Array | null {
+function readPositions(geometry: BufferGeometry, linear: Matrix4): Float32Array | null {
   const attribute = geometry.getAttribute("position") as
     | { count: number; getX(i: number): number; getY(i: number): number; getZ(i: number): number }
     | undefined;
   if (!attribute || attribute.count === 0) return null;
+  const e = linear.elements;
   const out = new Float32Array(attribute.count * 3);
   for (let i = 0; i < attribute.count; i++) {
-    out[i * 3] = attribute.getX(i);
-    out[i * 3 + 1] = attribute.getY(i);
-    out[i * 3 + 2] = attribute.getZ(i);
+    const x = attribute.getX(i);
+    const y = attribute.getY(i);
+    const z = attribute.getZ(i);
+    out[i * 3] = e[0]! * x + e[4]! * y + e[8]! * z;
+    out[i * 3 + 1] = e[1]! * x + e[5]! * y + e[9]! * z;
+    out[i * 3 + 2] = e[2]! * x + e[6]! * y + e[10]! * z;
   }
   return out;
+}
+
+/**
+ * The transform from an object's own space to the model's scene root, linear
+ * part only.
+ *
+ * Composed from the chain's LOCAL matrices rather than read off `matrixWorld`,
+ * because the loaded scene hangs inside the viewer's own groups: whatever those
+ * do to place or frame the model is a property of the view, and only the node
+ * transforms the glTF file actually describes belong in a number that is going
+ * to be labelled in millimetres.
+ */
+function modelLinear(object: Object3D, root: Object3D): Matrix4 {
+  const chain: Object3D[] = [];
+  for (let node: Object3D | null = object; node !== null && node !== root; node = node.parent) {
+    chain.push(node);
+  }
+  const out = new Matrix4();
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const node = chain[i]!;
+    if (node.matrixAutoUpdate) node.updateMatrix();
+    out.multiply(node.matrix);
+  }
+  return out;
+}
+
+/**
+ * Which instance's transform the shared geometry is measured at, and whether the
+ * instances disagree.
+ *
+ * Compared by the metric Lᵀ·L rather than by the matrices themselves: distances
+ * are what this file measures, and they are unchanged by rotation and
+ * reflection. Four wheels at four orientations measure identically and must not
+ * raise the flag; four wheels at four *sizes* do not, and must.
+ *
+ * The largest instance wins so that "max deviation" stays an upper bound over
+ * every copy on screen — an understated headline number is the failure mode that
+ * actually costs a review something.
+ */
+function instanceScaling(objects: Object3D[], root: Object3D): { linear: Matrix4; mixed: boolean } {
+  let linear = new Matrix4();
+  let best = -Infinity;
+  let mixed = false;
+  let first: readonly number[] | null = null;
+  for (const object of objects) {
+    const candidate = modelLinear(object, root);
+    const m = metric(candidate);
+    if (first === null) first = m;
+    else if (!sameMetric(first, m)) mixed = true;
+    // Trace of the metric — the sum of the squared column lengths, so "biggest
+    // overall" even when the scale is non-uniform.
+    const size = m[0]! + m[1]! + m[2]!;
+    if (size > best) {
+      best = size;
+      linear = candidate;
+    }
+  }
+  return { linear, mixed };
+}
+
+/** Lᵀ·L as [xx, yy, zz, xy, xz, yz] — the part of a transform distances feel. */
+function metric(linear: Matrix4): readonly number[] {
+  const e = linear.elements;
+  const c: readonly (readonly [number, number, number])[] = [
+    [e[0]!, e[1]!, e[2]!],
+    [e[4]!, e[5]!, e[6]!],
+    [e[8]!, e[9]!, e[10]!],
+  ];
+  const dot = (a: number, b: number): number =>
+    c[a]![0] * c[b]![0] + c[a]![1] * c[b]![1] + c[a]![2] * c[b]![2];
+  return [dot(0, 0), dot(1, 1), dot(2, 2), dot(0, 1), dot(0, 2), dot(1, 2)];
+}
+
+/** Relative, because a millimetre-authored model's metrics are ~1e-6 apart. */
+function sameMetric(a: readonly number[], b: readonly number[]): boolean {
+  const magnitude = Math.max(Math.abs(a[0]!) + Math.abs(a[1]!) + Math.abs(a[2]!), 1e-30);
+  for (let i = 0; i < 6; i++) {
+    if (Math.abs(a[i]! - b[i]!) > 1e-6 * magnitude) return false;
+  }
+  return true;
 }
 
 /** A geometry's index buffer, or null for a non-indexed primitive. */
