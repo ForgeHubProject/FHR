@@ -3,6 +3,7 @@
 // what still needs a browser is only whether the shaded pixels look right.
 
 import { describe, it, expect } from "vitest";
+import { Raycaster, Vector3 } from "three";
 import type { BufferAttribute, BufferGeometry, Material, Mesh, Object3D } from "three";
 import type { StructuredDiff } from "@fhr/types";
 import { createHeatmap, heatmapOffered, type Heatmap } from "./heatmap.js";
@@ -64,6 +65,25 @@ function tiltedHood(low: number, high: number): FixtureSpec {
     positions[v * 3 + 2] = low + (high - low) * positions[v * 3]!;
   }
   return { nodes: [{ name: "Hood", mesh: 0 }], meshName: "HoodMesh", positions, indices };
+}
+
+/**
+ * The car body's side panel, reduced to the two triangles that matter: one quad
+ * whose lower edge did not move at all and whose upper edge lifted by `lift`.
+ *
+ * This is the shape the coarse box-and-extrusion geometry of CAD glTF is made
+ * of, and the shape a per-face reading gets wrong: every triangle here has a
+ * corner measuring 0 and a corner measuring `lift`, so a readout that answered
+ * with the face's worst corner printed `lift` over the half of the panel the
+ * ramp paints at its dead foot. Deviation over the base plane is exactly the
+ * vertex's z here, which makes any point's true reading readable off the hit.
+ */
+function panel(lift: number, nodes?: FixtureSpec["nodes"]): FixtureSpec {
+  const { positions, indices } = plane(1, 0);
+  for (let v = 0; v * 3 < positions.length; v++) {
+    if (positions[v * 3 + 1]! > 0) positions[v * 3 + 2] = lift;
+  }
+  return { nodes: nodes ?? [{ name: "Hood", mesh: 0 }], meshName: "HoodMesh", positions, indices };
 }
 
 /** A diff whose only content is a vertex-data edit on HoodMesh's primitive 0. */
@@ -378,6 +398,75 @@ describe("measuring and painting", () => {
     // blanking the readout.
     expect(heatmap.readAt(mesh, null)!.value).toBeCloseTo(0.12, 5);
     expect(heatmap.readAt(base.gltf.scene, { a: 0, b: 1, c: 2 })).toBeNull();
+  });
+
+  it("reads the point the pointer is on, not the worst corner of its face", async () => {
+    // The regression this pins: the readout answered with `Math.max` of the
+    // face's three corners, so on the demo's own car body — side panels whose
+    // lower halves never moved — pointing anywhere on a panel printed the full
+    // 12 mm beside geometry the heatmap paints at the foot of the ramp. Picture
+    // and number disagreed by the whole range of the measurement, silently.
+    const head = await side(panel(0.12));
+    const base = await side(hood(0));
+    const heatmap = createHeatmap({
+      head,
+      base,
+      geometry: geometryChanges(geometryDiff()),
+      yieldTo: immediately,
+    })!;
+    expect((await heatmap.enable())!.max).toBeCloseTo(0.12, 5);
+    const mesh = meshesIn(head.gltf.scene)[0]!;
+    // Triangle 0 of the quad: corners (0,0,0) and (1,0,0) never moved, (0,1,0.12)
+    // moved the full amount — the 0 / 0 / 12 mm face.
+    const face = { a: 0, b: 1, c: 2 };
+    const at = (x: number, y: number, z: number): number =>
+      heatmap.readAt(mesh, face, { x, y, z })!.value;
+
+    // On the edge that did not move: zero, the same thing the colour there says.
+    expect(at(0.5, 0, 0)).toBeCloseTo(0, 6);
+    // At the corner that did: the whole deviation, still.
+    expect(at(0, 1, 0.12)).toBeCloseTo(0.12, 6);
+    // And in between, the blend the shader interpolates the ramp with — a
+    // quarter of the way up the face reads a quarter of the deviation.
+    expect(at(0, 0.25, 0.03)).toBeCloseTo(0.03, 6);
+    expect(at(0.25, 0.5, 0.06)).toBeCloseTo(0.06, 6);
+    // Told a face but not where on it, the answer is the face's middle: wrong by
+    // at most half its spread, where the worst corner is wrong by all of it.
+    expect(heatmap.readAt(mesh, face)!.value).toBeCloseTo(0.04, 6);
+  });
+
+  it("answers a real raycast hit with the value at the hit point", async () => {
+    // The shipping path, end to end: scene-3d raycasts the heat targets and
+    // hands the intersection's `object`, `face` and `point` straight to readAt.
+    // `point` is in SCENE space — the reading has to bring it back through the
+    // object's world matrix, and this fixture's node scale is the thousandth
+    // that a millimetre-authored CAD export carries.
+    const nodes: FixtureSpec["nodes"] = [{ name: "Hood", mesh: 0, scale: [0.001, 0.001, 0.001] }];
+    const head = await side(panel(0.12, nodes));
+    const base = await side(hood(0, nodes));
+    const heatmap = createHeatmap({
+      head,
+      base,
+      geometry: geometryChanges(geometryDiff()),
+      yieldTo: immediately,
+    })!;
+    await heatmap.enable();
+    head.gltf.scene.updateMatrixWorld(true);
+    const mesh = meshesIn(head.gltf.scene)[0]!;
+
+    const raycaster = new Raycaster();
+    // Straight down onto the low quarter of the panel, from above the model.
+    raycaster.set(new Vector3(0.0002, 0.0002, 1), new Vector3(0, 0, -1));
+    const hit = raycaster.intersectObject(mesh, false)[0]!;
+    expect(hit).toBeDefined();
+    const reading = heatmap.readAt(hit.object, hit.face, hit.point)!;
+    expect(reading.label).toBe("HoodMesh");
+    // The panel's height above the base plane IS its deviation, so the reading
+    // and the point three reported are the same number — and that number is a
+    // fifth of the mesh's maximum, not the maximum.
+    expect(reading.value).toBeCloseTo(hit.point.z, 9);
+    expect(formatDeviation(reading.value)).toBe("0.024 mm");
+    expect(formatDeviation(heatmap.summary()!.max)).toBe("0.12 mm");
   });
 });
 
