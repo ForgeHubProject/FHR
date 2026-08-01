@@ -30,7 +30,14 @@ import {
   type ChromeLayout,
   type RegionPreference,
 } from "./chrome-layout.js";
-import { MODE_LABEL, MODE_TITLE, type PresentationMode } from "./presentation.js";
+import {
+  HEATMAP_LABEL,
+  HEATMAP_MODE,
+  HEATMAP_TITLE,
+  MODE_LABEL,
+  MODE_TITLE,
+  type PresentationMode,
+} from "./presentation.js";
 import { SPLIT_LABEL, otherSplit, type SplitOrientation } from "./split.js";
 import { renderStructureTree, type StructureTree } from "./structure-tree.js";
 import { renderQueue, type QueueView } from "./change-queue.js";
@@ -50,8 +57,15 @@ export type ChromeOptions = {
   queue: readonly QueueEntry[];
   /** One line for the top-left: what this view is showing. */
   info?: string;
+  /**
+   * Offer the deviation heatmap (#46). False builds no toggle at all — see
+   * `heatmapOffered` in heatmap.ts for why a control that is present but refuses
+   * would be worse than one that isn't there.
+   */
+  heatmap?: boolean;
   onMode: (mode: PresentationMode) => void;
   onSplit: (orientation: SplitOrientation) => void;
+  onHeatmap?: (on: boolean) => void;
   onQueueSelect: (path: string) => void;
   onStep: (delta: number) => void;
   onNode: (name: string) => void;
@@ -67,6 +81,8 @@ export type Chrome = {
   highlightNode(name: string | null): void;
   setMode(mode: PresentationMode): void;
   setSplit(orientation: SplitOrientation): void;
+  /** Change path → measured deviation, for the selected change's panel row. */
+  setDeviations(byPath: ReadonlyMap<string, string>): void;
   /** Re-resolve region visibility for a container width. */
   applyWidth(width: number): void;
   readonly layout: ChromeLayout;
@@ -107,10 +123,11 @@ function css(theme: "light" | "dark"): string {
 .fhr3d__mode + .fhr3d__mode { border-left:1px solid ${line}; }
 .fhr3d__mode:hover { background:${hover}; }
 .fhr3d__mode[aria-pressed="true"] { background:${pick}; font-weight:600; }
-.fhr3d__splitbtn { font:inherit; padding:3px 9px; border:1px solid ${line}; border-radius:6px;
-  background:transparent; color:${ink}; cursor:pointer; }
-.fhr3d__splitbtn:hover { background:${hover}; }
-.fhr3d__splitbtn[hidden] { display:none; }
+.fhr3d__splitbtn, .fhr3d__heatbtn { font:inherit; padding:3px 9px; border:1px solid ${line};
+  border-radius:6px; background:transparent; color:${ink}; cursor:pointer; }
+.fhr3d__splitbtn:hover, .fhr3d__heatbtn:hover { background:${hover}; }
+.fhr3d__splitbtn[hidden], .fhr3d__heatbtn[hidden] { display:none; }
+.fhr3d__heatbtn[aria-pressed="true"] { background:${pick}; font-weight:600; }
 .fhr3d__viewport { position:relative; flex:1 1 auto; min-height:0; overflow:hidden; }
 .fhr3d__nodes, .fhr3d__queue { flex:1 1 auto; min-height:0; overflow:auto; }
 .fhr3d__node { display:flex; align-items:center; gap:6px; padding:2px 6px; cursor:pointer;
@@ -248,6 +265,24 @@ export function createChrome(container: HTMLElement, options: ChromeOptions): Ch
   splitButton.setAttribute("data-split", "1");
   opts.appendChild(splitButton);
 
+  // The heatmap is a sub-view of overlay, so its toggle follows overlay the way
+  // the split control follows side-by-side: hidden in the other modes, never
+  // rebuilt. It exists at all only when there is something to measure.
+  let heatmapOn = false;
+  let heatmapButton: HTMLElement | null = null;
+  if (options.heatmap === true) {
+    const el = button("fhr3d__heatbtn", HEATMAP_LABEL, () => {
+      heatmapOn = !heatmapOn;
+      el.setAttribute("aria-pressed", String(heatmapOn));
+      options.onHeatmap?.(heatmapOn);
+    });
+    el.setAttribute("data-heatmap", "1");
+    el.setAttribute("aria-pressed", "false");
+    el.setAttribute("title", HEATMAP_TITLE);
+    opts.appendChild(el);
+    heatmapButton = el;
+  }
+
   bar.append(info, opts);
   const viewport = doc.createElement("div");
   viewport.className = "fhr3d__viewport";
@@ -289,6 +324,12 @@ export function createChrome(container: HTMLElement, options: ChromeOptions): Ch
     for (const [key, el] of modeButtons) el.setAttribute("aria-pressed", String(key === mode));
     if (mode === "side-by-side") splitButton.removeAttribute("hidden");
     else splitButton.setAttribute("hidden", "hidden");
+    if (!heatmapButton) return;
+    // Hidden outside overlay rather than reset: the scene suspends the heatmap
+    // for the same trip and brings it back on return, so a button that forgot
+    // would disagree with the picture the moment the reviewer came back.
+    if (mode === HEATMAP_MODE) heatmapButton.removeAttribute("hidden");
+    else heatmapButton.setAttribute("hidden", "hidden");
   }
 
   function setSplit(orientation: SplitOrientation): void {
@@ -319,6 +360,9 @@ export function createChrome(container: HTMLElement, options: ChromeOptions): Ch
     },
     setMode,
     setSplit,
+    setDeviations(byPath: ReadonlyMap<string, string>): void {
+      queue?.setDeviations(byPath);
+    },
     applyWidth,
     get layout(): ChromeLayout {
       return layout;

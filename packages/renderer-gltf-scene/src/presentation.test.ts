@@ -4,6 +4,7 @@ import {
   availableModes,
   createModeState,
   defaultMode,
+  HEATMAP_MODE,
   MODE_ORDER,
   versionLayers,
 } from "./presentation.js";
@@ -118,5 +119,22 @@ describe("createModeState", () => {
   it("never ends up pointing at nothing", () => {
     const state = createModeState({ initial: "overlay", available: [] });
     expect(state.mode).toBe("structural");
+  });
+});
+
+describe("the heatmap's home on the ladder", () => {
+  it("is a sub-view of overlay, and of a mode that actually exists", () => {
+    // Overlay is already "where, and how far"; the heatmap is that question in
+    // numbers. A fourth ladder position would have to answer what the ghost and
+    // the motion vectors do while it is on, and there is no good answer.
+    expect(HEATMAP_MODE).toBe("overlay");
+    expect(MODE_ORDER).toContain(HEATMAP_MODE);
+  });
+
+  it("only ever appears where the previous version is resident", () => {
+    // The heatmap's own gate needs a base model; so does its host mode. A mount
+    // without one offers neither, so the toggle has nowhere to appear.
+    expect(availableModes({ bothVersionsResident: false })).not.toContain(HEATMAP_MODE);
+    expect(availableModes({ bothVersionsResident: true })).toContain(HEATMAP_MODE);
   });
 });

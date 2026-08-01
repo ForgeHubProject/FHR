@@ -49,8 +49,21 @@ export type QueueView = {
   el: HTMLElement;
   /** Move the highlight and rebuild the panel. null clears both. */
   select(path: string | null): void;
+  /**
+   * Change path → the deviation the heatmap measured for it, formatted.
+   *
+   * Arrives late and only sometimes: the queue is built before the 3D chunk has
+   * loaded a model, and the number does not exist until the reviewer asks for
+   * the heatmap (#46). So it is a *later* fact about a row that is already
+   * there, not a field of the entry — and a row with no entry here simply
+   * doesn't show it, which is the honest reading of "not measured".
+   */
+  setDeviations(byPath: ReadonlyMap<string, string>): void;
   dispose(): void;
 };
+
+/** The panel row label for a measured deviation. */
+export const DEVIATION_LABEL = "max deviation";
 
 export function renderQueue(
   doc: Document,
@@ -147,6 +160,25 @@ export function renderQueue(
     position.textContent = queuePosition(entries, selected).label;
   };
 
+  let deviations: ReadonlyMap<string, string> = new Map();
+
+  /** The heatmap's number for this change, as one more panel row. */
+  const appendDeviation = (path: string): void => {
+    const measured = deviations.get(path);
+    if (measured === undefined) return;
+    const line = doc.createElement("div");
+    line.className = "fhr3d__field";
+    line.setAttribute("data-field", DEVIATION_LABEL);
+    const label = doc.createElement("span");
+    label.className = "fhr3d__fieldlabel";
+    label.textContent = DEVIATION_LABEL;
+    const value = doc.createElement("span");
+    value.className = "fhr3d__delta";
+    value.textContent = measured;
+    line.append(label, value);
+    panel.appendChild(line);
+  };
+
   const fillPanel = (): void => {
     panel.replaceChildren();
     const entry = selected === null ? undefined : entryByPath.get(selected);
@@ -160,6 +192,7 @@ export function renderQueue(
       only.className = "fhr3d__panelnote";
       only.textContent = entry.headline;
       panel.appendChild(only);
+      appendDeviation(entry.path);
       return;
     }
     for (const detail of entry.details) {
@@ -182,6 +215,7 @@ export function renderQueue(
       }
       panel.appendChild(line);
     }
+    appendDeviation(entry.path);
   };
 
   updatePosition();
@@ -198,6 +232,10 @@ export function renderQueue(
         if (typeof scroll === "function" && row) scroll.call(row, { block: "nearest" });
       }
       updatePosition();
+      fillPanel();
+    },
+    setDeviations(byPath: ReadonlyMap<string, string>): void {
+      deviations = byPath;
       fillPanel();
     },
     dispose(): void {
