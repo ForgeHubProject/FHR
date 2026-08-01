@@ -404,7 +404,7 @@ describe("measuring and painting", () => {
     // The regression this pins: the readout answered with `Math.max` of the
     // face's three corners, so on the demo's own car body — side panels whose
     // lower halves never moved — pointing anywhere on a panel printed the full
-    // 12 mm beside geometry the heatmap paints at the foot of the ramp. Picture
+    // 120 mm beside geometry the heatmap paints at the foot of the ramp. Picture
     // and number disagreed by the whole range of the measurement, silently.
     const head = await side(panel(0.12));
     const base = await side(hood(0));
@@ -417,7 +417,8 @@ describe("measuring and painting", () => {
     expect((await heatmap.enable())!.max).toBeCloseTo(0.12, 5);
     const mesh = meshesIn(head.gltf.scene)[0]!;
     // Triangle 0 of the quad: corners (0,0,0) and (1,0,0) never moved, (0,1,0.12)
-    // moved the full amount — the 0 / 0 / 12 mm face.
+    // moved the full amount. The panel is mounted without a node scale, so 0.12
+    // is 0.12 scene metres — the 0 / 0 / 120 mm face.
     const face = { a: 0, b: 1, c: 2 };
     const at = (x: number, y: number, z: number): number =>
       heatmap.readAt(mesh, face, { x, y, z })!.value;
@@ -426,13 +427,38 @@ describe("measuring and painting", () => {
     expect(at(0.5, 0, 0)).toBeCloseTo(0, 6);
     // At the corner that did: the whole deviation, still.
     expect(at(0, 1, 0.12)).toBeCloseTo(0.12, 6);
-    // And in between, the blend the shader interpolates the ramp with — a
-    // quarter of the way up the face reads a quarter of the deviation.
+    // And in between, the measurement's own blend — a quarter of the way up the
+    // face reads a quarter of the deviation. NOT the colour shown there: the
+    // shading blends the corner colours, which reads high (ramp.test.ts).
     expect(at(0, 0.25, 0.03)).toBeCloseTo(0.03, 6);
     expect(at(0.25, 0.5, 0.06)).toBeCloseTo(0.06, 6);
     // Told a face but not where on it, the answer is the face's middle: wrong by
     // at most half its spread, where the worst corner is wrong by all of it.
     expect(heatmap.readAt(mesh, face)!.value).toBeCloseTo(0.04, 6);
+  });
+
+  it("measures the unscaled demo panel at 120 mm, not 12", async () => {
+    // The units the comments around `faceValue` are written in. `panel(0.12)`
+    // carries no node scale, so 0.12 is 0.12 SCENE METRES and every readout on
+    // it — summary, panel row, hover — says 120 mm. The one place "0.12 mm"
+    // is right is the scale-0.001 fixture below, and the two are a thousand
+    // apart; a worked example that mixes them up teaches the next maintainer
+    // the wrong order of magnitude for the only number this slice produces.
+    const head = await side(panel(0.12));
+    const base = await side(hood(0));
+    const heatmap = createHeatmap({
+      head,
+      base,
+      geometry: geometryChanges(geometryDiff()),
+      yieldTo: immediately,
+    })!;
+    const summary = (await heatmap.enable())!;
+    expect(formatDeviation(summary.max)).toBe("120.0 mm");
+    expect(formatDeviation(summary.byPath.get("meshes/HoodMesh")!)).toBe("120.0 mm");
+    const mesh = meshesIn(head.gltf.scene)[0]!;
+    expect(formatDeviation(heatmap.readAt(mesh, { a: 0, b: 1, c: 2 }, { x: 0, y: 1, z: 0.12 })!.value)).toBe(
+      "120.0 mm",
+    );
   });
 
   it("answers a real raycast hit with the value at the hit point", async () => {

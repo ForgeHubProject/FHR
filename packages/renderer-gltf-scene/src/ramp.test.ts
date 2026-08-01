@@ -62,6 +62,55 @@ describe("the deviation ramp", () => {
     expect(rampLinear(1).r).toBeCloseTo(0.9822, 3);
   });
 
+  it("is NOT linear in colour space, so the shading reads high between corners", () => {
+    // The correction this pins, and the reason `heatmap.readAt`'s doc no longer
+    // promises that picture and number agree everywhere.
+    //
+    // `buildColors` writes rampLinear(t) per VERTEX and heatMaterial sets
+    // `vertexColors` on a stock three material, so the GPU blends the three
+    // corner COLOURS across a face. That is lerp(viridis(t)), not
+    // viridis(lerp(t)) — and viridis is a piecewise-linear sRGB curve through a
+    // gamma transfer, so the two are not the same map. `readAt` reports
+    // viridis's ARGUMENT blended, which is the honest reading of the
+    // measurement; the pixel beside it is the other one.
+    //
+    // If this ever fails because the two agree, the ramp lookup has moved into a
+    // fragment shader and `faceValue`'s doc should say so instead.
+    const midColour = (t0: number, t1: number): { r: number; g: number; b: number } => {
+      const a = rampLinear(t0);
+      const b = rampLinear(t1);
+      return { r: (a.r + b.r) / 2, g: (a.g + b.g) / 2, b: (a.b + b.b) / 2 };
+    };
+    // What t the shown pixel decodes to, read off the ramp the legend draws.
+    const decode = (c: { r: number; g: number; b: number }): number => {
+      let best = 0;
+      let closest = Infinity;
+      for (let i = 0; i <= 2000; i++) {
+        const s = rampLinear(i / 2000);
+        const d = (s.r - c.r) ** 2 + (s.g - c.g) ** 2 + (s.b - c.b) ** 2;
+        if (d < closest) {
+          closest = d;
+          best = i / 2000;
+        }
+      }
+      return best;
+    };
+
+    // The demo car body's side panels: corners at 0 mm and at the top of the
+    // range. readAt says t=0.5 (60 mm of 120); the pixel reads ~0.88 (~105 mm).
+    expect(decode(midColour(0, 1))).toBeGreaterThan(0.85);
+    // And it is high, not merely different, right across the ramp.
+    for (const [t0, t1] of [
+      [0, 0.5],
+      [0.25, 0.75],
+      [0.5, 1],
+    ] as const) {
+      expect(decode(midColour(t0, t1))).toBeGreaterThan((t0 + t1) / 2 + 0.01);
+    }
+    // Agreement is exact AT a vertex, which is the part the doc may still claim.
+    for (const t of [0, 0.25, 0.5, 0.75, 1]) expect(decode(rampLinear(t))).toBeCloseTo(t, 2);
+  });
+
   it("renders as a CSS gradient with every anchor in it", () => {
     const gradient = rampGradientCss();
     expect(gradient.startsWith("linear-gradient(90deg,")).toBe(true);
