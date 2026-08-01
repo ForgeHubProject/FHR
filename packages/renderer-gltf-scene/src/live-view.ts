@@ -107,7 +107,14 @@ export function createLiveView(
   const stopList: ReviewStop[] = props.mode === "view" ? [] : entityStops(props.diff);
   const stops = stopList.map((s) => s.row.path);
   const lines = headlines(stopList);
-  const queue = buildQueue(stopList, formatGltfChange, headline);
+  // Built on the first 3D mount, not here. `createLiveView` runs on *every* lite
+  // mount — before the "View in 3D" button exists, and in "merge" mode, which
+  // returns below without one — and building the queue re-formats every detail
+  // row the tree just formatted. A host that never opens the 3D view should not
+  // pay a second full formatting pass for a region it never sees.
+  let queue: QueueEntry[] | null = null;
+  const queueEntries = (): QueueEntry[] =>
+    (queue ??= buildQueue(stopList, formatGltfChange, headline));
 
   const view: LiveView = {
     update(next: MountProps, prev: MountProps): boolean {
@@ -239,7 +246,7 @@ export function createLiveView(
     try {
       const handle = await mountScene(host, props, {
         headlines: lines,
-        queue,
+        queue: queueEntries(),
         onStep: (delta) => {
           if (!disposed) view.step(delta);
         },

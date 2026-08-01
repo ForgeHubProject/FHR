@@ -11,11 +11,39 @@
 // Doing it locally would give the chrome a second, drifting idea of where the
 // reviewer is standing.
 //
+// The rendered worklist is capped (MAX_ROWS), like the structure tree beside it
+// and for the same reason — this builds synchronously inside the 3D mount. The
+// position readout and the panel are keyed on the whole queue regardless, so the
+// cap costs a row, never a place.
+//
 // DOM-only — no three.js.
 
 import { queuePosition, type QueueEntry } from "./queue.js";
 
 const KIND_SYMBOL: Record<string, string> = { added: "+", removed: "−", modified: "~" };
+
+/**
+ * Most rows this region will build. Every row is four elements and a listener,
+ * built synchronously inside the 3D mount, and nothing upstream bounds the change
+ * count (limits.ts caps blob *bytes*, which says nothing about how many changes
+ * are in them): 20 000 changes was 80 000 live elements and ~0.3 s of blocking
+ * DOM work before the canvas existed.
+ *
+ * Lower than the structure tree's cap next door, and for a different reason. The
+ * tree is scrolled, so its cap is about how much list is worth building; the
+ * queue is *stepped* — the position readout and `n`/`p` stay exact over all N
+ * whatever this number is (see below), so past the cap a reviewer loses the row
+ * under the highlight, not their place.
+ */
+export const MAX_ROWS = 2000;
+
+/** The note that stands in for the stops the cap left unrendered. Never silent. */
+export function truncatedQueueMessage(shown: number, total: number): string {
+  return (
+    `Listing the first ${shown} of ${total} changes — the other ${total - shown} are omitted to ` +
+    `keep this view responsive. The position above and n / p still walk all ${total}.`
+  );
+}
 
 export type QueueView = {
   el: HTMLElement;
@@ -62,7 +90,18 @@ export function renderQueue(
   // ── the worklist ────────────────────────────────────────────────────────────
   const list = doc.createElement("div");
   list.className = "fhr3d__stops";
-  for (const entry of entries) {
+  // The panel and the position readout are keyed on the *whole* queue, so a stop
+  // past the cap still fills the panel and still counts: only its row is missing.
+  for (const entry of entries) entryByPath.set(entry.path, entry);
+  const shown = entries.length > MAX_ROWS ? entries.slice(0, MAX_ROWS) : entries;
+  if (shown.length < entries.length) {
+    const note = doc.createElement("div");
+    note.className = "fhr3d__empty";
+    note.setAttribute("data-truncated", String(entries.length - shown.length));
+    note.textContent = truncatedQueueMessage(shown.length, entries.length);
+    list.appendChild(note);
+  }
+  for (const entry of shown) {
     const row = doc.createElement("div");
     row.className = "fhr3d__stop";
     row.setAttribute("data-path", entry.path);
@@ -88,7 +127,6 @@ export function renderQueue(
     teardown.push(() => row.removeEventListener("click", onClick));
 
     rowByPath.set(entry.path, row);
-    entryByPath.set(entry.path, entry);
     list.appendChild(row);
   }
   if (entries.length === 0) {
