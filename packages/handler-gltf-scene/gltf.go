@@ -790,8 +790,15 @@ func (h *Handler) Diff(base, head Blob) (StructuredDiff, error) {
 	// The referenced collections are matched first and shared, because a reference
 	// can only be compared by identity once its referent's pairing is in hand
 	// (collectionMatch.same): a node names a mesh and a primitive names a material.
+	//
+	// THE ORDER IS LOAD-BEARING: materials, then meshes, then nodes. Each pairing
+	// feeds the next collection's content signatures (materialTokens →
+	// meshSignature, nodeIndex.adoptMeshPairs → meshField), which is what lets a
+	// name-stripped file still state its references as cross-file identity.
+	// Reordering these calls would silently degrade those fields to opaque —
+	// TestOptimizerStrippedNamesMatchByContent fails loudly if that happens.
 	mats := matchMaterials(docA, docB)
-	meshes := matchMeshes(docA, docB)
+	meshes := matchMeshes(docA, docB, mats)
 
 	// Non-nil so an empty diff marshals as [] (not null) — every consumer, from
 	// the renderer bundle to ForgeHub, can then trust changes is always a list.
@@ -878,15 +885,26 @@ type meshMatch struct {
 	aSide, bSide meshSide
 }
 
-func matchMeshes(a, b *gltf.Document) meshMatch {
+// matchMeshes needs the materials pairing (mats) because a mesh's content
+// signature states each primitive's material as a cross-file token resolved
+// through it — see Diff for why the collection order is load-bearing.
+func matchMeshes(a, b *gltf.Document, mats collectionMatch) meshMatch {
 	aKeys, bKeys := uniqueKeys(a.Meshes, meshName), uniqueKeys(b.Meshes, meshName)
 	aSide, bSide := newMeshSide(a), newMeshSide(b)
-	aEnts, bEnts := meshEntities(a, aKeys, aSide), meshEntities(b, bKeys, bSide)
+	aTok, bTok := materialTokens(aSide, mats, true), materialTokens(bSide, mats, false)
+	aEnts, bEnts := meshEntities(a, aKeys, aSide, aTok), meshEntities(b, bKeys, bSide, bTok)
+	// The exact-content tier's deep verification: canonical sequences, not their
+	// 64-bit digests, decide an identity asserted from signature equality alone.
+	deepEq := func(ai, bi int) bool {
+		return canonMeshesEqual(aSide, bSide, a.Meshes[ai], b.Meshes[bi])
+	}
+	pairs := matchEntities(aEnts, bEnts, deepEq)
+	matchByPosition(pairs, aEnts, bEnts)
 	return meshMatch{
 		collectionMatch: collectionMatch{
 			aKeys: aKeys, bKeys: bKeys,
 			aEnts: aEnts, bEnts: bEnts,
-			pairs: matchEntities(aEnts, bEnts),
+			pairs: pairs,
 		},
 		aSide: aSide, bSide: bSide,
 	}
@@ -895,11 +913,21 @@ func matchMeshes(a, b *gltf.Document) meshMatch {
 func matchMaterials(a, b *gltf.Document) collectionMatch {
 	aKeys, bKeys := uniqueKeys(a.Materials, materialName), uniqueKeys(b.Materials, materialName)
 	aEnts, bEnts := materialEntities(a, aKeys), materialEntities(b, bKeys)
+	pairs := matchEntities(aEnts, bEnts, nil)
+	matchByPosition(pairs, aEnts, bEnts)
 	return collectionMatch{
 		aKeys: aKeys, bKeys: bKeys,
 		aEnts: aEnts, bEnts: bEnts,
-		pairs: matchEntities(aEnts, bEnts),
+		pairs: pairs,
 	}
+}
+
+// entities returns one side's entity list, for callers holding only a side flag.
+func (m collectionMatch) entities(isBase bool) []entity {
+	if isBase {
+		return m.aEnts
+	}
+	return m.bEnts
 }
 
 // pathKeys hands out the key each change of one collection is reported under, so
@@ -949,8 +977,15 @@ func (p *pathKeys) removed(baseKey string) string {
 
 func diffNodes(a, b *gltf.Document, meshes meshMatch) *DiffChange {
 	aIx, bIx := indexNodes(a), indexNodes(b)
+	// Resolve mesh references through the mesh pairing before any node signature
+	// is built (Diff's load-bearing collection order): a node drawing a
+	// name-stripped-but-content-paired mesh then states real geometry identity
+	// instead of an opaque index.
+	aIx.adoptMeshPairs(meshes, true)
+	bIx.adoptMeshPairs(meshes, false)
 	aEnts, bEnts := nodeEntities(aIx), nodeEntities(bIx)
-	m := matchEntities(aEnts, bEnts)
+	m := matchEntities(aEnts, bEnts, nil)
+	matchByPosition(m, aEnts, bEnts)
 	keys := newPathKeys(bIx.keys)
 
 	// Base order first, then the head elements nothing matched — the same order
@@ -1051,6 +1086,11 @@ type nodeIndex struct {
 	// which the next revision points at a different mesh. Content matching must
 	// know the difference (identity.go, fieldKind opaque).
 	meshNamed []bool
+	// meshPairTok is the cross-file token of each mesh's pairing — the base-side
+	// key, whichever side this index is — or "" for a mesh nothing evidence-based
+	// paired. Set by adoptMeshPairs; nil when this index is not part of a diff
+	// (the animation walk builds nodeIndexes too and never matches on them).
+	meshPairTok []string
 }
 
 const rootIndex = -1
@@ -1112,21 +1152,42 @@ func (ix *nodeIndex) meshKey(idx *int) string {
 	return ix.meshKeys[*idx]
 }
 
+// adoptMeshPairs resolves this side's mesh keys through the meshes pairing, so
+// meshField can state a reference to any evidence-paired mesh — named or not —
+// as the pair's canonical token. A byPosition pair is skipped for pairToken's
+// reason: an equal array index must not be laundered into a stated value.
+func (ix *nodeIndex) adoptMeshPairs(m meshMatch, isBase bool) {
+	ix.meshPairTok = make([]string, len(ix.meshKeys))
+	for k := range ix.meshKeys {
+		if tok, ok := pairToken(m.collectionMatch, k, isBase); ok {
+			ix.meshPairTok[k] = tok
+		}
+	}
+}
+
 // meshField is meshKey as a content-descriptor component, classified by what the
 // string is worth as evidence of identity (identity.go, fieldKind).
 //
 // A mesh nobody assigned is unstated and not a shared value: two nodes that both
 // draw nothing have no geometry in common, and meshWeight is six elevenths of a
 // node's descriptor — enough on its own to pair any deleted empty, joint, camera
-// or light node with any added one. An unnamed mesh resolves to `mesh[1]`, which
-// is the array index this key scheme exists to avoid comparing, so it is opaque:
-// counted, never agreed on.
+// or light node with any added one. A reference is stated when it can be
+// resolved to a cross-file identity: the mesh's own name, or — adoptMeshPairs —
+// the canonical token of whatever pairing the mesh cascade found, which is what
+// lets a node keep its geometry evidence in a file whose mesh names a pipeline
+// tool stripped. An unresolvable unnamed mesh is `mesh[1]`: the array index this
+// key scheme exists to avoid comparing, so it is opaque — counted, never agreed
+// on.
 func (ix *nodeIndex) meshField(idx *int) sigField {
 	f := sigField{value: "mesh=" + ix.meshKey(idx), weight: meshWeight}
 	switch {
 	case idx == nil:
 		f.kind = unstated
-	case *idx < 0 || *idx >= len(ix.meshNamed) || !ix.meshNamed[*idx]:
+	case *idx < 0 || *idx >= len(ix.meshNamed):
+		f.kind = opaque
+	case ix.meshPairTok != nil && ix.meshPairTok[*idx] != "":
+		f.value = "mesh=" + ix.meshPairTok[*idx]
+	case !ix.meshNamed[*idx]:
 		f.kind = opaque
 	}
 	return f
@@ -1560,15 +1621,17 @@ func meshName(m *gltf.Mesh, i int) string {
 
 // meshEntities reduces one side's meshes to what the identity cascade needs
 // (identity.go). The signature closure is what keeps vertex bytes unread until a
-// mesh actually turns out to be a rename candidate.
-func meshEntities(doc *gltf.Document, keys []string, side meshSide) []entity {
+// mesh actually turns out to be a rename candidate; structKey is the byte-free
+// bucket key the exact-content tier uses so bucketing stays that cheap too.
+func meshEntities(doc *gltf.Document, keys []string, side meshSide, matTok refToken) []entity {
 	out := make([]entity, len(doc.Meshes))
 	for i, m := range doc.Meshes {
 		out[i] = entity{
-			key:  keys[i],
-			name: m.Name,
-			uid:  extrasUID(m.Extras),
-			sig:  func() signature { return meshSignature(side, m) },
+			key:       keys[i],
+			name:      m.Name,
+			uid:       extrasUID(m.Extras),
+			sig:       func() signature { return meshSignature(side, m, matTok) },
+			structKey: func() string { return meshStructuralKey(side, m, matTok) },
 		}
 	}
 	return out
