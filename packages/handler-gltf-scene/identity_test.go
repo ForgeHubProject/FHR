@@ -1932,3 +1932,322 @@ func TestMeshSignatureUnnamedMaterialIsNotAgreement(t *testing.T) {
 		}
 	})
 }
+
+// ── structural matching: the node tree (#42) ──────────────────────────────────
+
+// unnamedSubtreeDoc builds [G(unnamed) → P(unnamed, t=(5,5,5)) → k1, k2], with
+// `extra` unnamed root nodes inserted at the FRONT of the array so every index
+// below shifts — the edit that used to cascade. The kids' parent is unnamed, so
+// their parent field is opaque and no per-element content tier can pair them:
+// only the tree can.
+func unnamedSubtreeDoc(t *testing.T, extra ...[]float64) []byte {
+	t.Helper()
+	n := len(extra)
+	nodes := make([]any, 0, n+4)
+	roots := make([]int, 0, n+1)
+	for i, tr := range extra {
+		nodes = append(nodes, map[string]any{"translation": tr})
+		roots = append(roots, i)
+	}
+	nodes = append(nodes,
+		map[string]any{"children": []int{n + 1}},                                           // G
+		map[string]any{"translation": []float64{5, 5, 5}, "children": []int{n + 2, n + 3}}, // P
+		map[string]any{"translation": []float64{1, 0, 0}},                                  // k1
+		map[string]any{"translation": []float64{2, 0, 0}},                                  // k2
+	)
+	roots = append(roots, n)
+	return doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": roots}},
+		"nodes":  nodes,
+	})
+}
+
+// One unrelated node inserted upstream of a fully unnamed subtree: the subtree
+// anchors on its content hash and survives the re-index whole, so the diff is
+// the one thing that happened — a single added node.
+func TestUnnamedSubtreeSurvivesInsertionByAnchoring(t *testing.T) {
+	base := unnamedSubtreeDoc(t)
+	head := unnamedSubtreeDoc(t, []float64{9, 9, 9})
+
+	d := diffOf(t, base, head)
+	if got := kindAt(d, "nodes/node[0]"); got != Added {
+		t.Errorf("nodes/node[0]: kind = %q, want %q", got, Added)
+	}
+	nodes := mustChange(t, d, "nodes")
+	if len(nodes.Children) != 1 {
+		t.Errorf("the insertion is the only change; nodes reported %d: %v", len(nodes.Children), paths(d))
+	}
+}
+
+// The same subtree moved under a new named parent: the anchor pairs the whole
+// subtree (the hash excludes the parent field — a moved subtree's root differs
+// on it by definition), the root reports its re-parent, and the children —
+// whose parent identity is unchanged — emit nothing.
+func TestMovedUnnamedSubtreeReportsReparented(t *testing.T) {
+	base := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{0}}},
+		"nodes": []any{
+			map[string]any{"translation": []float64{5, 5, 5}, "children": []int{1, 2}}, // P at the root
+			map[string]any{"translation": []float64{1, 0, 0}},
+			map[string]any{"translation": []float64{2, 0, 0}},
+		},
+	})
+	head := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{0}}},
+		"nodes": []any{
+			map[string]any{"name": "Rack", "children": []int{1}},
+			map[string]any{"translation": []float64{5, 5, 5}, "children": []int{2, 3}}, // P moved under Rack
+			map[string]any{"translation": []float64{1, 0, 0}},
+			map[string]any{"translation": []float64{2, 0, 0}},
+		},
+	})
+
+	d := diffOf(t, base, head)
+	if got := kindAt(d, "nodes/Rack"); got != Added {
+		t.Errorf("nodes/Rack: kind = %q, want %q", got, Added)
+	}
+	c := mustChange(t, d, "nodes/node[1]/parent")
+	if c.Before != rootParentLabel || c.After != "Rack" {
+		t.Errorf("parent = %v → %v, want %s → Rack", c.Before, c.After, rootParentLabel)
+	}
+	// The children moved with their parent — that is one change, not three.
+	for _, quiet := range []string{"nodes/node[2]", "nodes/node[3]"} {
+		if c := findChange(d, quiet); c != nil {
+			t.Errorf("the child moved with its subtree, nothing about it changed: %+v", c)
+		}
+	}
+	walk(d.Changes, func(c *DiffChange, _ int) {
+		if c.Kind == Removed || c.Kind == Renamed {
+			t.Errorf("nothing was deleted or renamed: %+v", c)
+		}
+	})
+}
+
+// The bottom-up half: a renamed container with no uid and sparse own content —
+// too little for the scored tier's floors — still pairs when at least two of
+// its matched children say where it went, and the evidence states exactly what
+// was measured.
+func TestBottomUpMatchesRenamedContainer(t *testing.T) {
+	group := func(name string) []byte {
+		return doc(t, map[string]any{
+			"scene":  0,
+			"scenes": []any{map[string]any{"nodes": []int{0}}},
+			"nodes": []any{
+				map[string]any{"name": name, "translation": []float64{1, 2, 3}, "children": []int{1, 2}},
+				map[string]any{"name": "Ka", "translation": []float64{1, 0, 0}},
+				map[string]any{"name": "Kb", "translation": []float64{2, 0, 0}},
+			},
+		})
+	}
+
+	d := diffOf(t, group("Group_Old"), group("Group_New"))
+	c := mustRename(t, d, "nodes/Group_New", "Group_Old")
+	if got, want := afterText(c), "Group_New (matched by structure, ~100% of descendants shared)"; got != want {
+		t.Errorf("after = %q, want %q", got, want)
+	}
+	// The children stayed under the same (paired) parent: no re-parent rows.
+	for _, quiet := range []string{"nodes/Ka", "nodes/Kb"} {
+		if c := findChange(d, quiet); c != nil {
+			t.Errorf("the child did not change: %+v", c)
+		}
+	}
+}
+
+// One shared child is the child-count-as-evidence trap the signature floors
+// exist for: "renamed parent of a single child, no uid" stays an honest miss.
+func TestBottomUpRequiresTwoMatchedDescendants(t *testing.T) {
+	group := func(name string) []byte {
+		return doc(t, map[string]any{
+			"scene":  0,
+			"scenes": []any{map[string]any{"nodes": []int{0}}},
+			"nodes": []any{
+				map[string]any{"name": name, "translation": []float64{1, 2, 3}, "children": []int{1}},
+				map[string]any{"name": "Ka", "translation": []float64{1, 0, 0}},
+			},
+		})
+	}
+
+	d := diffOf(t, group("Group_Old"), group("Group_New"))
+	if got := kindAt(d, "nodes/Group_Old"); got != Removed {
+		t.Errorf("nodes/Group_Old: kind = %q, want %q", got, Removed)
+	}
+	if got := kindAt(d, "nodes/Group_New"); got != Added {
+		t.Errorf("nodes/Group_New: kind = %q, want %q", got, Added)
+	}
+}
+
+// Names are inside the subtree hash, so content-identical subtrees whose node
+// names differ do not anchor — with names excluded, the pinned "groups at
+// origin" conservatism cases would anchor and hide a deletion.
+func TestAnchorRequiresIdenticalNames(t *testing.T) {
+	group := func(parent, k1, k2 string) []byte {
+		return doc(t, map[string]any{
+			"scene":  0,
+			"scenes": []any{map[string]any{"nodes": []int{0}}},
+			"nodes": []any{
+				map[string]any{"name": parent, "children": []int{1, 2}},
+				map[string]any{"name": k1, "translation": []float64{1, 0, 0}},
+				map[string]any{"name": k2, "translation": []float64{2, 0, 0}},
+			},
+		})
+	}
+
+	d := diffOf(t, group("Ctrl_Old", "C1", "C2"), group("Light_Rig", "L1", "L2"))
+	walk(d.Changes, func(c *DiffChange, _ int) {
+		if c.Kind == Renamed {
+			t.Errorf("identical shape under different names is not identity: %+v", c)
+		}
+	})
+	if got := kindAt(d, "nodes/Ctrl_Old"); got != Removed {
+		t.Errorf("nodes/Ctrl_Old: kind = %q, want %q", got, Removed)
+	}
+	if got := kindAt(d, "nodes/Light_Rig"); got != Added {
+		t.Errorf("nodes/Light_Rig: kind = %q, want %q", got, Added)
+	}
+}
+
+// subtreeForest builds n unnamed [P → k1, k2] subtrees per document, each with
+// its own kid translations so every subtree hash is unique. Used to drive
+// matchByStructure directly.
+func subtreeForest(t *testing.T, n int) *nodeIndex {
+	t.Helper()
+	nodes := make([]any, 0, 3*n)
+	roots := make([]int, 0, n)
+	for s := range n {
+		at := 3 * s
+		roots = append(roots, at)
+		nodes = append(nodes,
+			map[string]any{"children": []int{at + 1, at + 2}},
+			map[string]any{"translation": []float64{float64(s), 1, 0}},
+			map[string]any{"translation": []float64{float64(s), 2, 0}},
+		)
+	}
+	parsed, err := parseDoc(doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": roots}},
+		"nodes":  nodes,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return indexNodes(parsed)
+}
+
+// Two identical unnamed subtrees on one side against one on the other: the
+// anchor bucket is ambiguous, and ambiguity never pairs.
+func TestAnchorRefusesAmbiguousDuplicates(t *testing.T) {
+	one := subtreeForest(t, 1)
+	// Two copies of the SAME subtree: duplicate the forest's only spec.
+	two := subtreeForest(t, 1)
+	dupDoc, err := parseDoc(doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{0, 3}}},
+		"nodes": []any{
+			map[string]any{"children": []int{1, 2}},
+			map[string]any{"translation": []float64{0, 1, 0}},
+			map[string]any{"translation": []float64{0, 2, 0}},
+			map[string]any{"children": []int{4, 5}},
+			map[string]any{"translation": []float64{0, 1, 0}},
+			map[string]any{"translation": []float64{0, 2, 0}},
+		},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	two = indexNodes(dupDoc)
+
+	p := testPairing()
+	matchByStructure(p, two, one)
+	if len(p.headOf) != 0 {
+		t.Errorf("an ambiguous anchor bucket paired anyway: %v", p.headOf)
+	}
+
+	// The unambiguous control: one identical subtree per side anchors whole.
+	p = testPairing()
+	matchByStructure(p, subtreeForest(t, 1), one)
+	if len(p.headOf) != 3 {
+		t.Errorf("paired %d nodes, want the whole 3-node subtree", len(p.headOf))
+	}
+	for i := range 3 {
+		if ev := p.how[i]; ev.by != byStructure {
+			t.Errorf("node %d evidence = %+v, want %s", i, ev, byStructure)
+		}
+	}
+}
+
+// Over renameLimit² leftovers the tier is skipped outright — the same safe
+// failure direction as matchByContent, mirrored from
+// TestContentMatchingIsSkippedOverTheRenameLimit. The budget must bound the
+// whole algorithm, not just a matrix (#59's commit-7 lesson).
+func TestStructuralTierIsBoundedByRenameLimit(t *testing.T) {
+	// 334 three-node subtrees per side: 1002 leftovers each, and 1002 × 1002
+	// crosses renameLimit². Every subtree would anchor 1:1 below the cap.
+	big := 334
+	p := testPairing()
+	matchByStructure(p, subtreeForest(t, big), subtreeForest(t, big))
+	if len(p.headOf) != 0 {
+		t.Errorf("over the cap the tier must be skipped; paired %d", len(p.headOf))
+	}
+
+	p = testPairing()
+	matchByStructure(p, subtreeForest(t, 2), subtreeForest(t, 2))
+	if len(p.headOf) != 6 {
+		t.Errorf("under the cap, paired %d nodes, want all 6", len(p.headOf))
+	}
+}
+
+// An element pairable by both content and structure carries the CONTENT
+// evidence: the scored tier runs first, and the structural tier never touches
+// an existing pair.
+func TestStructuralTierNeverStealsContentPairs(t *testing.T) {
+	side := func(withRack bool) []byte {
+		g := map[string]any{"mesh": 0, "translation": []float64{5, 5, 5}}
+		nodes := []any{}
+		rootIdx := []int{}
+		shift := 0
+		if withRack {
+			nodes = append(nodes, map[string]any{"name": "Rack", "children": []int{1}})
+			rootIdx = append(rootIdx, 0)
+			shift = 1
+		} else {
+			rootIdx = append(rootIdx, 0)
+		}
+		g["children"] = []int{shift + 1, shift + 2}
+		nodes = append(nodes, g,
+			map[string]any{"name": "Ka", "translation": []float64{1, 0, 0}},
+			map[string]any{"name": "Kb", "translation": []float64{2, 0, 0}},
+		)
+		return doc(t, map[string]any{
+			"scene":  0,
+			"scenes": []any{map[string]any{"nodes": rootIdx}},
+			"nodes":  nodes,
+			"meshes": []any{map[string]any{"name": "Hull", "primitives": []any{map[string]any{"attributes": map[string]any{}}}}},
+		})
+	}
+	docA, err := parseDoc(side(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	docB, err := parseDoc(side(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mats := matchMaterials(docA, docB)
+	meshes := matchMeshes(docA, docB, mats)
+	aIx, bIx := indexNodes(docA), indexNodes(docB)
+	aIx.adoptMeshPairs(meshes, true)
+	bIx.adoptMeshPairs(meshes, false)
+	m := matchEntities(nodeEntities(aIx), nodeEntities(bIx), nil)
+	matchByStructure(m, aIx, bIx)
+
+	// The unnamed mesh-drawing container G: base index 0, head index 1.
+	if got, ok := m.headOf[0]; !ok || got != 1 {
+		t.Fatalf("G paired with %d (ok=%v), want head 1", got, ok)
+	}
+	if ev := m.how[0]; ev.by != byContent {
+		t.Errorf("evidence = %+v; content paired it first and structure must not steal it", ev)
+	}
+}

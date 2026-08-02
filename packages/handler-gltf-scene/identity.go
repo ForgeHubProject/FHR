@@ -37,7 +37,13 @@ package main
 //	                 has stamped, which is the whole point. Open to unnamed and
 //	                 mixed named/unnamed pairs — the optimizer-stripped-names
 //	                 file is exactly the one this tier exists for.
-//	5. position      unnamed leftovers at the SAME array index, nothing else
+//	5. structure     nodes only (matchByStructure): identical subtrees anchor
+//	                 top-down and containers of already-matched elements pair
+//	                 bottom-up. Context is weaker per-element evidence than
+//	                 content, so it runs after every content tier — and it is
+//	                 the tier that survives an insertion re-indexing a file
+//	                 with no names and no unique content per element.
+//	6. position      unnamed leftovers at the SAME array index, nothing else
 //	                 (matchByPosition): the weakest evidence there is, kept as
 //	                 the last resort so an unnamed element edited in place still
 //	                 reports under its own index instead of as a removal plus an
@@ -100,7 +106,10 @@ package main
 // for it (fieldKind opaque) rather than pretending the number travels.
 
 import (
+	"encoding/binary"
 	"fmt"
+	"hash/fnv"
+	"slices"
 	"strings"
 
 	"github.com/qmuntal/gltf"
@@ -552,6 +561,10 @@ type matchEvidence struct {
 	// duplicateUID marks an id that is not unique on one of the sides. The first
 	// occurrence was used; the rest fell through to the weaker tiers.
 	duplicateUID bool
+	// dice marks a byStructure pair made by the bottom-up container pass, whose
+	// similarity is a Dice coefficient over descendants rather than a content
+	// score — the evidence note renders it as such.
+	dice bool
 }
 
 // pairing is one collection's cross-revision matching: which base element is
@@ -1080,8 +1093,421 @@ func renameAfter(newKey string, ev matchEvidence) string {
 			// fields, not a measurement of the geometry.
 			note += fmt.Sprintf(", ~%d%% similar", int(ev.similarity*100+0.5))
 		}
+	case byStructure:
+		note = "matched by structure"
+		if ev.dice {
+			// A bottom-up container match: what was measured is how many of the
+			// two subtrees' descendants paired, so that is what is said.
+			note += fmt.Sprintf(", ~%d%% of descendants shared", int(ev.similarity*100+0.5))
+		}
 	default:
 		return newKey
 	}
 	return newKey + " (" + note + ")"
+}
+
+// ── structural matching: the node tree (#42) ──────────────────────────────────
+
+// diceThreshold is the least share of descendants two containers must have in
+// common — as a Dice coefficient, 2·shared / (|desc(a)| + |desc(b)|) — before
+// the bottom-up pass may pair them. 0.5 follows GumTree (Falleri et al., ASE
+// 2014), whose top-down/bottom-up split this tier borrows. The issue asks for a
+// "tunable" knob; the wire protocol has no configuration channel, so like
+// renameThreshold beside it this is a named compile-time constant, which is as
+// tunable as the contract allows today.
+const diceThreshold = 0.5
+
+// byStructure marks a pair made by the node tree: an anchored identical subtree
+// (similarity 1) or a bottom-up container match (similarity = the dice score,
+// matchEvidence.dice set).
+const byStructure = "structure"
+
+// nodeTree is one side's hierarchy, prepared for structural matching: children
+// lists inverted from nodeIndex.parent, a content hash per subtree, and the
+// bookkeeping the two passes need.
+type nodeTree struct {
+	children  [][]int
+	roots     []int
+	post      []int // node indices in postorder
+	tin, tout []int // Euler intervals: d inside c ⇔ tin[c] < tin[d] && tout[d] < tout[c]
+	hash      []uint64
+	height    []int // leaf = 1
+	poison    []bool
+	specific  []bool // subtree contains at least one specific node
+	desc      []int  // descendant count, self excluded
+	unmatched []int  // unmatched nodes in the subtree, self included
+	content   []string
+}
+
+// buildNodeTree walks one side once. The subtree hash covers the node's NAME,
+// its stated non-parent signature fields (local TRS as already formatted, the
+// mesh pair-token when stated), and the SORTED multiset of child subtree
+// hashes. The parent field is excluded by definition — a moved subtree's root
+// differs on it — and the child count is implied by the multiset. Names are
+// deliberately IN the hash: a name mismatch must veto an anchor, or the pinned
+// "groups at origin" conservatism cases (content-identical subtrees, different
+// names) would anchor and hide a deletion; name-stripped files hash "" on both
+// sides, so the tier's real target anchors on pure content. An opaque field —
+// an unverifiable index-derived reference — poisons the node and every
+// ancestor: content that cannot be verified cross-file never anchors.
+func buildNodeTree(ix *nodeIndex, isMatched func(int) bool) *nodeTree {
+	n := len(ix.nodes)
+	t := &nodeTree{
+		children:  make([][]int, n),
+		post:      make([]int, 0, n),
+		tin:       make([]int, n),
+		tout:      make([]int, n),
+		hash:      make([]uint64, n),
+		height:    make([]int, n),
+		poison:    make([]bool, n),
+		specific:  make([]bool, n),
+		desc:      make([]int, n),
+		unmatched: make([]int, n),
+		content:   make([]string, n),
+	}
+	for i, p := range ix.parent {
+		if p == rootIndex {
+			t.roots = append(t.roots, i)
+		} else {
+			t.children[p] = append(t.children[p], i)
+		}
+	}
+	timer := 0
+	var walk func(i int)
+	walk = func(i int) {
+		timer++
+		t.tin[i] = timer
+		sig := nodeSignature(ix, i)
+		var b strings.Builder
+		b.WriteString(ix.nodes[i].Name)
+		poison := false
+		for _, f := range sig.fields {
+			if strings.HasPrefix(f.value, "parent=") || strings.HasPrefix(f.value, "children=") {
+				continue
+			}
+			switch f.kind {
+			case stated:
+				b.WriteByte(0)
+				b.WriteString(f.value)
+			case opaque:
+				poison = true
+			}
+		}
+		t.content[i] = b.String()
+		t.specific[i] = sig.specific
+		t.height[i] = 1
+		if !isMatched(i) {
+			t.unmatched[i] = 1
+		}
+		childHashes := make([]uint64, 0, len(t.children[i]))
+		for _, c := range t.children[i] {
+			walk(c)
+			childHashes = append(childHashes, t.hash[c])
+			t.height[i] = max(t.height[i], t.height[c]+1)
+			t.desc[i] += t.desc[c] + 1
+			t.specific[i] = t.specific[i] || t.specific[c]
+			poison = poison || t.poison[c]
+			t.unmatched[i] += t.unmatched[c]
+		}
+		t.poison[i] = poison
+		slices.Sort(childHashes)
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(t.content[i]))
+		var buf [8]byte
+		for _, ch := range childHashes {
+			binary.LittleEndian.PutUint64(buf[:], ch)
+			_, _ = h.Write(buf[:])
+		}
+		t.hash[i] = h.Sum64()
+		timer++
+		t.tout[i] = timer
+		t.post = append(t.post, i)
+	}
+	for _, r := range t.roots {
+		walk(r)
+	}
+	// Nodes unreachable from any root (cycles in a malformed file) still need
+	// slots; they can never anchor, but they must not crash the walkers.
+	for i := range n {
+		if t.tin[i] == 0 {
+			timer++
+			t.tin[i] = timer
+			timer++
+			t.tout[i] = timer
+			t.height[i] = 1
+			t.post = append(t.post, i)
+			sig := nodeSignature(ix, i)
+			t.specific[i] = sig.specific
+			if !isMatched(i) {
+				t.unmatched[i] = 1
+			}
+		}
+	}
+	return t
+}
+
+// matchByStructure pairs still-unmatched NODES by their place in the tree —
+// the one collection that has one. It slots after the per-element content
+// tiers (content is stronger evidence about an element than its surroundings)
+// and before the positional fallback (position is the weakest evidence there
+// is), operates strictly on leftovers, and never overrides an existing pair.
+//
+// Phase 1, top-down anchoring (GumTree's greedy subtree isomorphism, with
+// minHeight = 2): unmatched-side subtrees are bucketed by subtree hash and a
+// bucket holding exactly one candidate per side — ambiguity never pairs — whose
+// subtrees are at least two levels tall, entirely unmatched, unpoisoned and
+// contain at least one specific node is VERIFIED by walking both subtrees and
+// comparing stated content (the hash accelerates, the walk proves), then paired
+// root-and-descendants. Equal-hash sibling groups pair in array order: they are
+// interchangeable by construction. Since names are inside the hash, an anchored
+// pair's names are equal or both empty, so an anchor never produces a rename
+// label — a moved unnamed subtree surfaces as its root's re-parent instead.
+//
+// Phase 2, bottom-up container matching: an unmatched base node with matched
+// descendants is a candidate against the nearest unmatched head ancestor of
+// each descendant's counterpart; a pair must clear diceThreshold, share at
+// least TWO matched descendant pairs (one shared child is the child-count-as-
+// evidence trap the signature floors exist for — "renamed parent of a single
+// child, no uid" stays an honest miss), and be the strict mutual best in both
+// directions. These pairs may be labeled renamed when isRename says so; the
+// both-unnamed invariant holds because isRename is the only label gate.
+//
+// COST, the #59 commit-7 lesson — bound time, not just memory: the whole tier
+// is skipped when leftBase × leftHead exceeds renameLimit², and phase 2 counts
+// its dice evaluations against the same budget, aborting (and leaving the
+// remaining leftovers as the additions and removals they are — the safe failure
+// direction) rather than letting a pathological file hang a browser tab.
+func matchByStructure(p pairing, aIx, bIx *nodeIndex) {
+	var leftBase, leftHead []int
+	for i := range aIx.nodes {
+		if _, done := p.headOf[i]; !done {
+			leftBase = append(leftBase, i)
+		}
+	}
+	for j := range bIx.nodes {
+		if _, done := p.baseOf[j]; !done {
+			leftHead = append(leftHead, j)
+		}
+	}
+	if len(leftBase) == 0 || len(leftHead) == 0 {
+		return
+	}
+	if len(leftBase) > renameLimit*renameLimit/len(leftHead) {
+		return
+	}
+
+	aT := buildNodeTree(aIx, func(i int) bool { _, ok := p.headOf[i]; return ok })
+	bT := buildNodeTree(bIx, func(j int) bool { _, ok := p.baseOf[j]; return ok })
+
+	// ── phase 1: anchors ──
+	type anchor struct{ a, b, height int }
+	aBuckets := make(map[uint64][]int)
+	bBuckets := make(map[uint64][]int)
+	eligible := func(t *nodeTree, i int) bool {
+		return t.height[i] >= 2 && !t.poison[i] && t.specific[i] && t.unmatched[i] == t.desc[i]+1
+	}
+	for _, i := range leftBase {
+		if eligible(aT, i) {
+			aBuckets[aT.hash[i]] = append(aBuckets[aT.hash[i]], i)
+		}
+	}
+	for _, j := range leftHead {
+		if eligible(bT, j) {
+			bBuckets[bT.hash[j]] = append(bBuckets[bT.hash[j]], j)
+		}
+	}
+	var anchors []anchor
+	for h, as := range aBuckets {
+		bs := bBuckets[h]
+		if len(as) == 1 && len(bs) == 1 {
+			anchors = append(anchors, anchor{as[0], bs[0], aT.height[as[0]]})
+		}
+	}
+	// Taller subtrees claim first, deterministically (map order is random).
+	slices.SortFunc(anchors, func(x, y anchor) int {
+		if x.height != y.height {
+			return y.height - x.height
+		}
+		return x.a - y.a
+	})
+	for _, an := range anchors {
+		var pairs [][2]int
+		if collectSubtreePairs(p, aT, bT, an.a, an.b, &pairs) {
+			for _, pr := range pairs {
+				p.pair(pr[0], pr[1], matchEvidence{by: byStructure, similarity: 1})
+			}
+		}
+	}
+
+	// ── phase 2: bottom-up containers ──
+	// Matched base nodes sorted by tin, so a subtree's matched descendants are a
+	// binary-searched range instead of a per-candidate walk.
+	matchedByTin := make([]int, 0, len(p.headOf))
+	for i := range p.headOf {
+		matchedByTin = append(matchedByTin, i)
+	}
+	slices.SortFunc(matchedByTin, func(x, y int) int { return aT.tin[x] - aT.tin[y] })
+	matchedDescendants := func(b int) []int {
+		lo, _ := slices.BinarySearchFunc(matchedByTin, aT.tin[b], func(i, tin int) int { return aT.tin[i] - tin })
+		out := matchedByTin[lo:]
+		hi := len(out)
+		for k, i := range out {
+			if aT.tin[i] > aT.tout[b] {
+				hi = k
+				break
+			}
+		}
+		return out[:hi]
+	}
+	// nearestUnmatched[j] is head node j's closest ancestor that is still
+	// unmatched, or -1. Memoized: phase 2 evaluates against the pre-phase-2
+	// matched set and applies its pairs only at the end.
+	nearestUnmatched := make([]int, len(bIx.nodes))
+	for j := range nearestUnmatched {
+		nearestUnmatched[j] = -2
+	}
+	var nearest func(j int) int
+	nearest = func(j int) int {
+		if j < 0 || j >= len(nearestUnmatched) {
+			return -1
+		}
+		if nearestUnmatched[j] != -2 {
+			return nearestUnmatched[j]
+		}
+		nearestUnmatched[j] = -1 // break cycles in malformed files
+		up := bIx.parent[j]
+		if up == rootIndex {
+			return -1
+		}
+		if _, done := p.baseOf[up]; !done {
+			nearestUnmatched[j] = up
+		} else {
+			nearestUnmatched[j] = nearest(up)
+		}
+		return nearestUnmatched[j]
+	}
+
+	type candidate struct {
+		b, c   int
+		dice   float64
+		shared int
+	}
+	var cands []candidate
+	baseBest := make(map[int]*bestTracker)
+	headBest := make(map[int]*bestTracker)
+	evals := 0
+	for _, b := range aT.post {
+		if _, done := p.headOf[b]; done {
+			continue
+		}
+		if aT.desc[b] == 0 {
+			continue
+		}
+		descs := matchedDescendants(b)
+		if len(descs) == 0 {
+			continue
+		}
+		seen := make(map[int]bool)
+		for _, d := range descs {
+			c := nearest(p.headOf[d])
+			if c < 0 || seen[c] {
+				continue
+			}
+			seen[c] = true
+			evals++
+			if evals > renameLimit*renameLimit {
+				// Over budget: the whole bottom-up pass aborts unapplied. Phase 1's
+				// anchors stand — they are verified pairs, the safe thing to keep.
+				return
+			}
+			shared := 0
+			for _, dd := range descs {
+				hd := p.headOf[dd]
+				if bT.tin[c] < bT.tin[hd] && bT.tout[hd] < bT.tout[c] {
+					shared++
+				}
+			}
+			dice := 2 * float64(shared) / float64(aT.desc[b]+bT.desc[c])
+			if dice < diceThreshold {
+				continue
+			}
+			// Every threshold-clearing candidate enters the trackers — even one
+			// that will fail the two-descendant floor — so a near-tie always blocks.
+			cands = append(cands, candidate{b, c, dice, shared})
+			if baseBest[b] == nil {
+				baseBest[b] = &bestTracker{best: -1}
+			}
+			if headBest[c] == nil {
+				headBest[c] = &bestTracker{best: -1}
+			}
+			baseBest[b].add(c, dice)
+			headBest[c].add(b, dice)
+		}
+	}
+	for _, cd := range cands {
+		if cd.shared < 2 {
+			continue
+		}
+		if bb, _, ok := baseBest[cd.b].strict(); !ok || bb != cd.c {
+			continue
+		}
+		if hb, _, ok := headBest[cd.c].strict(); !ok || hb != cd.b {
+			continue
+		}
+		if _, done := p.headOf[cd.b]; done {
+			continue
+		}
+		if _, done := p.baseOf[cd.c]; done {
+			continue
+		}
+		p.pair(cd.b, cd.c, matchEvidence{by: byStructure, similarity: cd.dice, dice: true})
+	}
+}
+
+// collectSubtreePairs verifies that two subtrees hold identical stated content
+// — names, non-parent fields, and shape — and collects the node pairs, root
+// included. The hash got the two candidates into one bucket; this walk is the
+// proof. Children are matched in sorted-hash order, equal hashes in array
+// order: equal-hash siblings are interchangeable by construction.
+func collectSubtreePairs(p pairing, aT, bT *nodeTree, a, b int, out *[][2]int) bool {
+	if _, done := p.headOf[a]; done {
+		return false
+	}
+	if _, done := p.baseOf[b]; done {
+		return false
+	}
+	if aT.content[a] != bT.content[b] {
+		return false
+	}
+	ac, bc := aT.children[a], bT.children[b]
+	if len(ac) != len(bc) {
+		return false
+	}
+	as := sortedByHash(aT, ac)
+	bs := sortedByHash(bT, bc)
+	for k := range as {
+		if aT.hash[as[k]] != bT.hash[bs[k]] {
+			return false
+		}
+		if !collectSubtreePairs(p, aT, bT, as[k], bs[k], out) {
+			return false
+		}
+	}
+	*out = append(*out, [2]int{a, b})
+	return true
+}
+
+func sortedByHash(t *nodeTree, nodes []int) []int {
+	out := slices.Clone(nodes)
+	slices.SortStableFunc(out, func(x, y int) int {
+		switch {
+		case t.hash[x] < t.hash[y]:
+			return -1
+		case t.hash[x] > t.hash[y]:
+			return 1
+		default:
+			return 0
+		}
+	})
+	return out
 }
