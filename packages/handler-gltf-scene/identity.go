@@ -357,9 +357,15 @@ func materialFields(doc *gltf.Document, m *gltf.Material) []sigField {
 }
 
 // meshSignature describes a mesh by its primitives: what each one is made of
-// (the same stream descriptors the geometry compare reports, digest included) and
-// which material it uses. This is the one descriptor that reads buffer bytes,
-// which is why signatures are built lazily.
+// (a canonical quantized digest of each vertex stream — quantize.go — falling
+// back to the geometry compare's exact descriptors when the data cannot be
+// canonicalized) and which material it uses. This is the one descriptor that
+// reads buffer bytes, which is why signatures are built lazily.
+//
+// The stream descriptors are the quantized form and not the wire's exact hashes
+// on purpose: matching asks "is this the same mesh after a re-export", where
+// vertex order and float jitter at the exporter's precision are noise. The wire
+// rows keep the exact hashes — the scope fence is quantize.go's header.
 //
 // The primitive *count* is deliberately not a field of its own. It is already
 // implied by the field list's length, and stating it separately would hand every
@@ -370,7 +376,7 @@ func meshSignature(s meshSide, m *gltf.Mesh) signature {
 	for _, p := range m.Primitives {
 		parts := []string{"material=" + s.materialKey(p.Material)}
 		for _, stream := range primitiveStreams(p, p) {
-			parts = append(parts, stream+"="+readStream(s.doc, p, stream).describe(s.doc))
+			parts = append(parts, stream+"="+s.streamDescriptor(p, stream))
 		}
 		fields = append(fields, sigField{strings.Join(parts, " "), 1, stated})
 	}

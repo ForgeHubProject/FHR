@@ -1607,10 +1607,19 @@ type meshSide struct {
 	// collection is diffed under, resolved once per document rather than once per
 	// primitive.
 	materialKeys []string
+	// canon memoizes each primitive's canonical quantized form (quantize.go), so
+	// the one expensive decode-and-sort runs at most once per primitive per diff
+	// however many candidate pairs look at it. A map field so the memo is shared
+	// by every copy of this value.
+	canon map[*gltf.Primitive]*canonPrim
 }
 
 func newMeshSide(doc *gltf.Document) meshSide {
-	return meshSide{doc: doc, materialKeys: uniqueKeys(doc.Materials, materialName)}
+	return meshSide{
+		doc:          doc,
+		materialKeys: uniqueKeys(doc.Materials, materialName),
+		canon:        make(map[*gltf.Primitive]*canonPrim),
+	}
 }
 
 // diffMeshPrimitives compares the primitive lists of one mesh that exists on
