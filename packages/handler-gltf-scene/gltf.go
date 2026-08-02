@@ -985,6 +985,10 @@ func diffNodes(a, b *gltf.Document, meshes meshMatch) *DiffChange {
 	bIx.adoptMeshPairs(meshes, false)
 	aEnts, bEnts := nodeEntities(aIx), nodeEntities(bIx)
 	m := matchEntities(aEnts, bEnts, nil)
+	// Nodes have a tree, so their leftovers get the structural tier — after the
+	// per-element content tiers (stronger evidence) and before the positional
+	// fallback (the weakest).
+	matchByStructure(m, aIx, bIx)
 	matchByPosition(m, aEnts, bEnts)
 	keys := newPathKeys(bIx.keys)
 
