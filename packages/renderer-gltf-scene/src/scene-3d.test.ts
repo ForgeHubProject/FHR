@@ -9,42 +9,54 @@ import { describe, it, expect } from "vitest";
 import { framingForNode, NOT_IN_CHANGE_LIST } from "./scene-3d.js";
 
 const facts = (options: {
-  changes?: string[];
+  /** Node name → the path of the change the diff makes about that node itself. */
+  own?: Record<string, string>;
+  /** Node name → the path of a change reaching it through mesh or material. */
   reaches?: Record<string, string>;
   sceneRootName?: string | null;
 }) => ({
-  isChangeName: (name: string): boolean => (options.changes ?? []).includes(name),
+  changePathOfNode: (name: string): string | null => options.own?.[name] ?? null,
   changeOfNode: (name: string): string | null => options.reaches?.[name] ?? null,
   sceneRootName: options.sceneRootName ?? null,
 });
 
 describe("framingForNode — what clicking a structure-tree row means", () => {
   it("treats a node the diff names as the queue does", () => {
-    expect(framingForNode("Mirror_L", facts({ changes: ["Mirror_L"] }))).toEqual({
+    expect(framingForNode("Mirror_L", facts({ own: { Mirror_L: "nodes/Mirror_L" } }))).toEqual({
       via: "change",
-      change: "Mirror_L",
+      change: "nodes/Mirror_L",
     });
   });
 
-  // The regression: `boxByChangeName` is keyed on change names, and #51's mesh
-  // and material changes are named for the mesh or the material. Asking that map
+  // The regression: the overlay's maps are keyed on *changes*, and #51's mesh
+  // and material changes are about geometry a node merely carries. Asking them
   // "is this node in the change list" answered no for geometry the overlay had
   // just painted orange, so the callout captioned it "not in the change list" —
   // over a part that is in the change queue and highlighted on screen.
   it("names the change that reaches a node through its mesh or material", () => {
-    const reached = facts({ changes: ["BodyMesh"], reaches: { Body: "BodyMesh" } });
-    expect(framingForNode("Body", reached)).toEqual({ via: "entity", change: "BodyMesh" });
+    const reached = facts({ reaches: { Body: "meshes/BodyMesh" } });
+    expect(framingForNode("Body", reached)).toEqual({ via: "entity", change: "meshes/BodyMesh" });
   });
 
   it("never calls a painted node unlisted", () => {
-    const reached = facts({ changes: ["WheelMesh"], reaches: { Wheel_FL: "WheelMesh", Wheel_FR: "WheelMesh" } });
+    const reached = facts({
+      reaches: { Wheel_FL: "meshes/WheelMesh", Wheel_FR: "meshes/WheelMesh" },
+    });
     for (const wheel of ["Wheel_FL", "Wheel_FR"]) {
       expect(framingForNode(wheel, reached).via).not.toBe("none");
     }
   });
 
+  // A node's own change is the more specific fact about it, and the one whose
+  // path the queue is keyed on — so it must not be shadowed by the mesh change
+  // that also reaches it.
+  it("prefers a node's own change to one that merely reaches it", () => {
+    const both = facts({ own: { Body: "nodes/Body" }, reaches: { Body: "meshes/BodyMesh" } });
+    expect(framingForNode("Body", both)).toEqual({ via: "change", change: "nodes/Body" });
+  });
+
   it("still says so for a node nothing reaches", () => {
-    expect(framingForNode("Chassis", facts({ changes: ["BodyMesh"], reaches: { Body: "BodyMesh" } }))).toEqual({
+    expect(framingForNode("Chassis", facts({ reaches: { Body: "meshes/BodyMesh" } }))).toEqual({
       via: "none",
     });
     expect(NOT_IN_CHANGE_LIST).toBe("not in the change list");
@@ -58,9 +70,9 @@ describe("framingForNode — what clicking a structure-tree row means", () => {
   });
 
   it("lets a change on the root row win over the scene reading", () => {
-    expect(framingForNode("Car", facts({ changes: ["Car"], sceneRootName: "Car" }))).toEqual({
+    expect(framingForNode("Car", facts({ own: { Car: "nodes/Car" }, sceneRootName: "Car" }))).toEqual({
       via: "change",
-      change: "Car",
+      change: "nodes/Car",
     });
   });
 });

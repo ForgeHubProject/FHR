@@ -9,12 +9,16 @@
 // inside segments ("%25", "%2F"). `label` always carries the raw display name;
 // the path is the escaped machine key.
 //
-// What this module deliberately does *not* read: the `before`/`after` values.
-// They are display strings in Blender coordinate space ("[1 2 -3]"), so deriving
-// a motion vector from them would mean string-parsing plus a coordinate-space
-// round trip. The renderer has both files loaded, so it takes old and new
-// transforms from the two scene graphs instead — exact, and immune to changes in
-// how the handler formats values.
+// What this module deliberately does *not* read: the `before`/`after` values of
+// a *measured* change. They are display strings in Blender coordinate space
+// ("[1 2 -3]"), so deriving a motion vector from them would mean string-parsing
+// plus a coordinate-space round trip. The renderer has both files loaded, so it
+// takes old and new transforms from the two scene graphs instead — exact, and
+// immune to changes in how the handler formats values.
+//
+// The one exception is a `renamed` change's `before` (#47), which is not a
+// measurement but the node's name in the base file — the only place that name
+// exists, and the only key that finds the node in the previous version.
 
 import type { StructuredDiff, DiffChange, ChangeKind } from "@fhr/types";
 import { unescapeSegment } from "./change-path.js";
@@ -44,15 +48,35 @@ export type NodeChange = {
    * has seen both the name and the path the handler paired it with.
    */
   path: string;
+  /**
+   * For a `renamed` change (#47), the name the *base* file uses for this node.
+   * `name` is always the head file's name, so anything that has to find the node
+   * in the previous version — the ghost, the motion vector — has to look it up
+   * under this one or find nothing at all.
+   */
+  oldName?: string;
 };
 
 /**
  * Per-node change kinds, keyed by node name. Kept for the scene-graph outline
  * view and for callers that only need the colour; `nodeChanges` carries detail.
+ *
+ * One kind per name, and a name can now carry two changes (see `nodeChanges`).
+ * The tie-break is not diff order — a removal may be emitted first or second, and
+ * taking the first painted a node that still exists in the removal colour. It is
+ * what the view being coloured draws: the outline is built from the HEAD file's
+ * scene graph, and a `removed` node is precisely the one that is not in it. So
+ * every other kind outranks `removed`, which keeps a name only while nothing
+ * about a surviving node claims it.
  */
 export function diffChangeTypes(diff: StructuredDiff | undefined): Map<string, ChangeKind> {
   const acc = new Map<string, ChangeKind>();
-  for (const change of nodeChanges(diff)) acc.set(change.name, change.kind);
+  for (const change of nodeChanges(diff)) {
+    const held = acc.get(change.name);
+    if (held === undefined || (held === "removed" && change.kind !== "removed")) {
+      acc.set(change.name, change.kind);
+    }
+  }
   return acc;
 }
 
@@ -74,14 +98,24 @@ export function nodeChanges(diff: StructuredDiff | undefined): NodeChange[] {
     const name = nodeNameOf(change);
     if (name === "") return;
     const fields = (change.children ?? []).map(fieldNameOf).filter((f) => f !== "");
-    const existing = seen.get(name);
+    // Keyed on the path, not the name. Since #47 a name can legitimately appear
+    // twice in one diff and mean two different nodes: the previous version's
+    // "Wheel" was deleted while an unrelated node was *renamed to* "Wheel", which
+    // is one removal and one rename, each about a different object. Merging them
+    // by name kept the first kind and dropped the deletion — the one thing a diff
+    // must never lose — and folded the dead node's field labels into the rename,
+    // so the overlay drew a move that never happened. The handler guarantees one
+    // change per path, which is what makes the path the identity here.
+    const existing = seen.get(change.path);
     if (existing) {
-      // Same node named twice in one diff: keep the first kind, union the fields.
+      // The same change reached twice by the walk: keep the kind, union the fields.
       for (const f of fields) if (!existing.fields.includes(f)) existing.fields.push(f);
       return;
     }
     const entry: NodeChange = { name, kind: change.kind, fields, path: change.path };
-    seen.set(name, entry);
+    const oldName = previousNameOf(change);
+    if (oldName !== undefined) entry.oldName = oldName;
+    seen.set(change.path, entry);
     out.push(entry);
   };
 
@@ -210,7 +244,9 @@ function collectionChanges(diff: StructuredDiff | undefined, collection: string)
   forEachEntityChange(diff, collection, (change, name) => {
     const fields = (change.children ?? []).map(fieldNameOf).filter((f) => f !== "");
     const primitives = primitivesUnder(change);
-    const existing = seen.get(name);
+    // By path, for `nodeChanges`' reason: a deleted mesh and a mesh renamed into
+    // the name it vacated are two changes about two meshes.
+    const existing = seen.get(change.path);
     if (existing) {
       for (const f of fields) if (!existing.fields.includes(f)) existing.fields.push(f);
       for (const p of primitives) if (!existing.primitives.includes(p)) existing.primitives.push(p);
@@ -218,7 +254,7 @@ function collectionChanges(diff: StructuredDiff | undefined, collection: string)
       return;
     }
     const entry: EntityChange = { name, kind: change.kind, fields, path: change.path, primitives };
-    seen.set(name, entry);
+    seen.set(change.path, entry);
     out.push(entry);
   });
   return out;
@@ -291,6 +327,17 @@ export function geometryChanges(diff: StructuredDiff | undefined): GeometryChang
     out.push(entry);
   });
   return out;
+}
+
+/**
+ * The previous name carried by a `renamed` change, or undefined for every other
+ * kind. `before` is the bare old name and `after` is the new one *plus* the
+ * evidence the handler matched on ("Fender (matched by content, ~91% similar)"),
+ * so the new name is read from `label` and never parsed back out of `after`.
+ */
+function previousNameOf(change: DiffChange): string | undefined {
+  if (change.kind !== "renamed") return undefined;
+  return typeof change.before === "string" && change.before !== "" ? change.before : undefined;
 }
 
 /** True when a node moved/rotated/scaled and nothing else about it changed. */

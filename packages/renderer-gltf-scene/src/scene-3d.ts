@@ -47,19 +47,23 @@ const SIDE_LABEL: Record<PaneSide, string> = {
 export type SceneHandle = {
   dispose(): void;
   /**
-   * Frame a named change (the change-list ⇄ 3D wiring in #45 calls this).
-   * Returns false when the name isn't one of the painted changes.
+   * Frame one change, by the handler's change path (the change-list ⇄ 3D wiring
+   * in #45 calls this). Returns false when the path isn't a painted change.
    */
-  flyToChange?(name: string): boolean;
+  flyToChange?(path: string): boolean;
   /** Frame every change at once — what the view does on load. */
   flyToChanges?(): void;
   /**
-   * Select a change by name: fly to it, isolate it, and call it out (#45). null
+   * Select a change by path: fly to it, isolate it, and call it out (#45). null
    * clears the selection. `fly: false` selects without moving the camera — what a
    * click *in* the viewport does, since the reviewer is already looking at it.
-   * Returns false when the name isn't one of the painted changes.
+   * Returns false when the path isn't one of the painted changes.
+   *
+   * By path and not by name: since #47 two changes in one diff can share a name
+   * and mean different objects (a deletion and a rename into the name it
+   * vacated), and the path is what tells them apart — see model-overlay.ts.
    */
-  selectChange?(name: string | null, options?: { fly?: boolean }): boolean;
+  selectChange?(path: string | null, options?: { fly?: boolean }): boolean;
   /**
    * Frame a node of the *current* version by name, changed or not — what the
    * structure tree asks for. Returns false when this file has no such node.
@@ -223,12 +227,12 @@ export type ModelSceneOptions = {
   /** Fly to the changes once mounted (the reveal on load). Default: on. */
   flyToChangesOnLoad?: boolean;
   /**
-   * The viewer clicked geometry: the change name they hit, or null for a click
-   * that landed on unchanged geometry or on nothing. The scene has already
+   * The viewer clicked geometry: the path of the change they hit, or null for a
+   * click that landed on unchanged geometry or on nothing. The scene has already
    * applied the selection's visuals by the time this runs.
    */
-  onPick?: (name: string | null) => void;
-  /** Change name → the one-line headline its callout shows (see review.ts). */
+  onPick?: (path: string | null) => void;
+  /** Change path → the one-line headline its callout shows (see review.ts). */
   headlines?: Record<string, string>;
   /**
    * The change that reaches a node through geometry the node does not own — a
@@ -254,11 +258,11 @@ export type ModelSceneOptions = {
   onHeatmap?: (summary: HeatmapSummary) => void;
 };
 
-/** How framing a structure-tree row should read. */
+/** How framing a structure-tree row should read. `change` is a change *path*. */
 export type NodeFraming =
   /** The diff names this node: behave exactly as the queue does for it. */
   | { via: "change"; change: string }
-  /** Painted, but through a mesh or a material — the change has another name. */
+  /** Painted, but through a mesh or a material the node merely carries. */
   | { via: "entity"; change: string }
   /** The tree's root row, which is the glTF scene rather than a node. */
   | { via: "scene" }
@@ -272,21 +276,25 @@ export const NOT_IN_CHANGE_LIST = "not in the change list";
  * What clicking a structure-tree row means, as a decision with no pixels in it.
  *
  * Split out because mounting the view needs WebGL and this is the part that can
- * lie. `boxByChangeName` is keyed on *change* names, and #51's two change
- * classes are named for a mesh or a material rather than for the node they
- * paint — so asking that map "is this node in the change list" answers no for
- * geometry the overlay has just painted orange, and the row that used to caption
- * it "not in the change list" was contradicting the picture next to it.
+ * lie. Asking only "does the diff name this node" answers no for #51's two
+ * change classes, which are named for a mesh or a material rather than for the
+ * node they paint — so a row over geometry the overlay has just painted orange
+ * was captioned "not in the change list", contradicting the picture next to it.
+ *
+ * Both facts answer with a change *path*, never a name: the caller feeds the
+ * answer straight to `applySelection` and to the headline map, and since #47
+ * neither is keyed on anything else.
  */
 export function framingForNode(
   name: string,
   facts: {
-    isChangeName(name: string): boolean;
+    changePathOfNode(name: string): string | null;
     changeOfNode(name: string): string | null;
     sceneRootName: string | null;
   },
 ): NodeFraming {
-  if (facts.isChangeName(name)) return { via: "change", change: name };
+  const own = facts.changePathOfNode(name);
+  if (own !== null) return { via: "change", change: own };
   const entity = facts.changeOfNode(name);
   if (entity !== null) return { via: "entity", change: entity };
   // The root row must not borrow the unchanged node's headline: "not in the
@@ -447,18 +455,28 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     if (fly && next) flyTo.to(next.box);
   };
 
-  const applySelection = (name: string | null, fly: boolean): boolean => {
-    if (name === null) {
+  const applySelection = (path: string | null, fly: boolean): boolean => {
+    if (path === null) {
       mark(null, false);
       return true;
     }
-    const box = overlay.boxByChangeName.get(name);
-    const objects = overlay.objectsByChangeName.get(name);
+    const box = overlay.boxByChangePath.get(path);
+    const objects = overlay.objectsByChangePath.get(path);
     if (!box || box.isEmpty() || !objects || objects.length === 0) {
       mark(null, false);
       return false;
     }
-    mark({ name, headline: options.headlines?.[name] ?? "changed", box, isolate: objects }, fly);
+    // The path is the key; the label is what a reviewer reads. They differ for a
+    // change the handler had to disambiguate ("nodes/Wheel#1" labelled "Wheel").
+    mark(
+      {
+        name: overlay.labelByChangePath.get(path) ?? path,
+        headline: options.headlines?.[path] ?? "changed",
+        box,
+        isolate: objects,
+      },
+      fly,
+    );
     return true;
   };
 
@@ -642,14 +660,14 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
       raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), viewport.camera);
       hits = raycaster.intersectObjects(pickTargets, true);
     });
-    const name = changeAtHits(hits, {
-      changeNameByObject: overlay.changeNameByObject,
-      changeNameByNodeIndex: overlay.changeNameByNodeIndex,
+    const path = changeAtHits(hits, {
+      changePathByObject: overlay.changePathByObject,
+      changePathByNodeIndex: overlay.changePathByNodeIndex,
       nodeIndexOf: overlay.nodeIndexOfObject,
     });
     // Selecting without flying: the reviewer is already looking at what they hit.
-    applySelection(name, false);
-    options.onPick?.(name);
+    applySelection(path, false);
+    options.onPick?.(path);
   };
   canvas.addEventListener("pointerdown", onPointerDown as EventListener);
   canvas.addEventListener("pointerup", onPointerUp as EventListener);
@@ -707,8 +725,8 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
       heatmap?.dispose();
       overlay.dispose();
     },
-    flyToChange(name: string): boolean {
-      const box = overlay.boxByChangeName.get(name);
+    flyToChange(path: string): boolean {
+      const box = overlay.boxByChangePath.get(path);
       if (!box || box.isEmpty()) return false;
       flyTo.to(box);
       return true;
@@ -716,12 +734,12 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     flyToChanges(): void {
       flyTo.to(overlay.changeBox);
     },
-    selectChange(name: string | null, selectOptions: { fly?: boolean } = {}): boolean {
-      return applySelection(name, selectOptions.fly !== false);
+    selectChange(path: string | null, selectOptions: { fly?: boolean } = {}): boolean {
+      return applySelection(path, selectOptions.fly !== false);
     },
     frameNode(name: string): boolean {
       const framing = framingForNode(name, {
-        isChangeName: (n) => overlay.boxByChangeName.has(n),
+        changePathOfNode: (n) => overlay.changePathOfNode(n),
         changeOfNode: options.changeOfNode ?? ((): null => null),
         sceneRootName: overlay.sceneRootName,
       });
@@ -740,7 +758,7 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
             name,
             headline: options.headlines?.[framing.change] ?? "changed",
             box,
-            isolate: overlay.objectsByChangeName.get(framing.change) ?? null,
+            isolate: overlay.objectsByChangePath.get(framing.change) ?? null,
           },
           true,
         );

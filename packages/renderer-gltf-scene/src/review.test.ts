@@ -168,6 +168,43 @@ describe("headline (the one viewport callout's text)", () => {
     expect(of("materials/Paint")).toBe("recoloured");
   });
 
+  it("reads a rename as old → new, leaving the evidence to the panel", () => {
+    const renameDiff: StructuredDiff = {
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [
+        {
+          path: "nodes",
+          label: "nodes",
+          kind: "modified",
+          children: [
+            {
+              path: "nodes/Fender",
+              label: "Fender",
+              kind: "renamed",
+              before: "Cube.003",
+              after: "Fender (matched by content, ~91% similar)",
+              children: [
+                {
+                  path: "nodes/Fender/translation",
+                  label: "translation",
+                  kind: "modified",
+                  before: "[0.00 0.00 0.00]",
+                  after: "[0.00 0.00 0.05]",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const stops = entityStops(renameDiff);
+    expect(stops).toHaveLength(1);
+    // The callout carries one line: which object this was. The similarity figure
+    // and the move stay in the panel below it.
+    expect(headline(stops[0]!)).toBe("renamed Cube.003 → Fender");
+  });
+
   it("prefers the transform when several things changed at once", () => {
     const stops = entityStops({
       version: "1.0",
@@ -229,6 +266,38 @@ describe("headline (the one viewport callout's text)", () => {
       "nodes/Wheel_FL": "moved 50 mm",
       "nodes/Mirror_L": "removed",
       "materials/Paint": "recoloured",
+    });
+  });
+
+  // That map is keyed on the path, which is what makes it safe for a name to
+  // appear twice: since #47 a node can be renamed *into* a name the previous
+  // version's deleted node had. Both callouts have to survive — one path, one
+  // change, per the handler's own guarantee.
+  it("keeps both callouts when a rename takes over a deleted node's name", () => {
+    const diff: StructuredDiff = {
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [
+        {
+          path: "nodes",
+          label: "nodes",
+          kind: "modified",
+          children: [
+            { path: "nodes/B", label: "B", kind: "renamed", before: "A", after: "B (matched by fhr_uid)" },
+            {
+              path: "nodes/B#1",
+              label: "B",
+              kind: "removed",
+              before: "node",
+              children: [{ path: "nodes/B#1/mesh", label: "mesh", kind: "removed", before: "BodyMesh" }],
+            },
+          ],
+        },
+      ],
+    };
+    expect(headlines(entityStops(diff))).toEqual({
+      "nodes/B": "renamed A → B",
+      "nodes/B#1": "removed",
     });
   });
 });

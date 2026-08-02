@@ -47,6 +47,13 @@ func (h *Handler) Match(path string) bool {
 // which leaves the overwhelmingly common "." untouched and keeps paths readable.
 // Path is the machine key; Label always carries the raw, unescaped name, so no
 // UI ever displays an escaped form.
+//
+// An element that exists on both sides is addressed by its name in the *head*
+// document, which is only visible once identity survives a rename (identity.go):
+// a renamed element's path and label are its new name, before/after carry
+// old → new, and anything else that changed at the same time hangs off it as a
+// child. A consumer selecting by path is therefore always addressing the file in
+// front of it and never the one it replaced.
 const pathSep = "/"
 
 // escapeSegment percent-escapes the path separator (and the escape character
@@ -780,16 +787,22 @@ func (h *Handler) Diff(base, head Blob) (StructuredDiff, error) {
 		return StructuredDiff{}, fmt.Errorf("parsing head: %w", err)
 	}
 
+	// The referenced collections are matched first and shared, because a reference
+	// can only be compared by identity once its referent's pairing is in hand
+	// (collectionMatch.same): a node names a mesh and a primitive names a material.
+	mats := matchMaterials(docA, docB)
+	meshes := matchMeshes(docA, docB)
+
 	// Non-nil so an empty diff marshals as [] (not null) — every consumer, from
 	// the renderer bundle to ForgeHub, can then trust changes is always a list.
 	changes := []DiffChange{}
-	if c := diffNodes(docA, docB); c != nil {
+	if c := diffNodes(docA, docB, meshes); c != nil {
 		changes = append(changes, *c)
 	}
-	if c := diffMaterials(docA, docB); c != nil {
+	if c := diffMaterials(docA, docB, mats); c != nil {
 		changes = append(changes, *c)
 	}
-	if c := diffMeshes(docA, docB); c != nil {
+	if c := diffMeshes(docA, docB, meshes, mats); c != nil {
 		changes = append(changes, *c)
 	}
 	if c := diffAnimations(docA, docB); c != nil {
@@ -817,47 +830,180 @@ func parseDoc(blob Blob) (*gltf.Document, error) {
 	return doc, nil
 }
 
+// ── cross-collection identity ─────────────────────────────────────────────────
+
+// collectionMatch is one collection's cross-revision identity match (identity.go)
+// plus what reporting it needs: the diff key each side is walked under and the
+// entities the cascade saw.
+//
+// It is built once per document pair and shared, because the collections
+// reference each other. A node names a mesh, a primitive names a material, and
+// those references are array indices — so comparing one across revisions needs
+// the *referent's* pairing, not its key string (same).
+type collectionMatch struct {
+	aKeys, bKeys []string
+	aEnts, bEnts []entity
+	pairs        pairing
+}
+
+// same reports whether a base-side reference and a head-side reference point at
+// the same element of this collection.
+//
+// By identity and not by rendered key, for the reason diffNodeProps compares a
+// node's parent through pairing.sameEntity: renaming the *referent* changes every
+// key that names it, so a string compare reports every node instancing a renamed
+// mesh as re-meshed and every primitive using a renamed material as reassigned —
+// edits nobody made, which the renderer then tints as modified geometry. The
+// index behind the reference did not move.
+//
+// Comparing the raw indices instead is the other failure and the one the keys
+// exist to avoid: inserting an unrelated mesh upstream renumbers every mesh after
+// it. A dangling reference is the one case with no element to pair on either
+// side, so there the index is all that is left to compare.
+func (m collectionMatch) same(ai, bi *int) bool {
+	switch {
+	case ai == nil || bi == nil:
+		return ai == nil && bi == nil
+	case *ai < 0 || *ai >= len(m.aKeys) || *bi < 0 || *bi >= len(m.bKeys):
+		return *ai == *bi
+	}
+	return m.pairs.sameEntity(*ai, *bi)
+}
+
+// meshMatch is the meshes collection's match plus the per-side lookups the mesh
+// compare reads buffers through, so both readers of the mesh pairing — the node
+// diff, for what each node instances, and the mesh diff itself — build it once.
+type meshMatch struct {
+	collectionMatch
+	aSide, bSide meshSide
+}
+
+func matchMeshes(a, b *gltf.Document) meshMatch {
+	aKeys, bKeys := uniqueKeys(a.Meshes, meshName), uniqueKeys(b.Meshes, meshName)
+	aSide, bSide := newMeshSide(a), newMeshSide(b)
+	aEnts, bEnts := meshEntities(a, aKeys, aSide), meshEntities(b, bKeys, bSide)
+	return meshMatch{
+		collectionMatch: collectionMatch{
+			aKeys: aKeys, bKeys: bKeys,
+			aEnts: aEnts, bEnts: bEnts,
+			pairs: matchEntities(aEnts, bEnts),
+		},
+		aSide: aSide, bSide: bSide,
+	}
+}
+
+func matchMaterials(a, b *gltf.Document) collectionMatch {
+	aKeys, bKeys := uniqueKeys(a.Materials, materialName), uniqueKeys(b.Materials, materialName)
+	aEnts, bEnts := materialEntities(a, aKeys), materialEntities(b, bKeys)
+	return collectionMatch{
+		aKeys: aKeys, bKeys: bKeys,
+		aEnts: aEnts, bEnts: bEnts,
+		pairs: matchEntities(aEnts, bEnts),
+	}
+}
+
+// pathKeys hands out the key each change of one collection is reported under, so
+// that no two siblings ever land on the same path.
+//
+// Before identity matching there was one key namespace per collection: both sides
+// were walked in a merged key order (mergeKeyOrder), so a key named one element
+// and one element only. Matching by id or by content breaks that, because the two
+// namespaces come apart — a matched element is reported under its *head* key
+// while an unmatched base element is reported under its *base* key. Base
+// [A(id=1), B] against head [B(id=1)] emits the rename A→B at `nodes/B` and the
+// removal of the old B at `nodes/B`: two unrelated nodes at one path.
+//
+// That is not merely confusing. A path is the selection key the change tree, the
+// host and the renderer all address a row by, and every one of them keys a map or
+// a set on it — so one of the two rows is dropped, and the one that loses is the
+// deletion, which is the single thing identity.go's own header says a diff must
+// never hide.
+//
+// Head keys are handed out unchanged: a consumer selecting by path is addressing
+// the file in front of it. A base key that collides takes uniqueKeys' own `#N`
+// suffix, and `label` keeps the element's key in its own file, so a consumer that
+// resolves the label against the revision the change is about still finds it.
+type pathKeys struct{ taken map[string]bool }
+
+// newPathKeys reserves the whole head-side namespace up front, because the base
+// side is walked first and must not claim a key a later head-side row needs.
+func newPathKeys(headKeys []string) *pathKeys {
+	taken := make(map[string]bool, len(headKeys))
+	for _, k := range headKeys {
+		taken[k] = true
+	}
+	return &pathKeys{taken: taken}
+}
+
+// removed returns the key a removed base element is reported under.
+func (p *pathKeys) removed(baseKey string) string {
+	k := baseKey
+	for dup := 1; p.taken[k]; dup++ {
+		k = fmt.Sprintf("%s#%d", baseKey, dup)
+	}
+	p.taken[k] = true
+	return k
+}
+
 // ── nodes ─────────────────────────────────────────────────────────────────────
 
-func diffNodes(a, b *gltf.Document) *DiffChange {
-	aIx, bIx := indexNodes(a.Nodes), indexNodes(b.Nodes)
-	keys := mergeKeyOrder(aIx.keys, bIx.keys)
+func diffNodes(a, b *gltf.Document, meshes meshMatch) *DiffChange {
+	aIx, bIx := indexNodes(a), indexNodes(b)
+	aEnts, bEnts := nodeEntities(aIx), nodeEntities(bIx)
+	m := matchEntities(aEnts, bEnts)
+	keys := newPathKeys(bIx.keys)
 
+	// Base order first, then the head elements nothing matched — the same order
+	// mergeKeyOrder produced when a name was the only way to pair two elements.
 	var children []DiffChange
-	for _, key := range keys {
-		ai, inA := aIx.byKey[key]
-		bi, inB := bIx.byKey[key]
-		path := joinPath("nodes", key)
-
-		switch {
-		case !inA:
+	for ai := range aIx.nodes {
+		bi, matched := m.headOf[ai]
+		if !matched {
+			path := joinPath("nodes", keys.removed(aIx.keys[ai]))
 			c := DiffChange{
-				Path: path, Label: key,
-				Kind: Added, After: "node",
-			}
-			if props := nodePropsOneSide(bIx, bi, path, Added); len(props) > 0 {
-				c.Children = props
-			}
-			children = append(children, c)
-		case !inB:
-			c := DiffChange{
-				Path: path, Label: key,
+				Path: path, Label: aIx.keys[ai],
 				Kind: Removed, Before: "node",
 			}
 			if props := nodePropsOneSide(aIx, ai, path, Removed); len(props) > 0 {
 				c.Children = props
 			}
 			children = append(children, c)
-		default:
-			if props := diffNodeProps(aIx, ai, bIx, bi, path); len(props) > 0 {
-				children = append(children, DiffChange{
-					Path:     path,
-					Label:    key,
-					Kind:     Modified,
-					Children: props,
-				})
-			}
+			continue
 		}
+		// A matched element is reported under its *current* name: the path a
+		// consumer selects with has to address the file it is looking at.
+		bKey := bIx.keys[bi]
+		path := joinPath("nodes", bKey)
+		props := diffNodeProps(aIx, ai, bIx, bi, path, m, meshes)
+		switch {
+		case isRename(aEnts[ai], bEnts[bi]):
+			children = append(children, DiffChange{
+				Path: path, Label: bKey, Kind: Renamed,
+				Before: bareName(aEnts[ai]), After: renameAfter(bareName(bEnts[bi]), m.how[ai]),
+				Children: props,
+			})
+		case len(props) > 0:
+			children = append(children, DiffChange{
+				Path:     path,
+				Label:    bKey,
+				Kind:     Modified,
+				Children: props,
+			})
+		}
+	}
+	for bi := range bIx.nodes {
+		if _, matched := m.baseOf[bi]; matched {
+			continue
+		}
+		path := joinPath("nodes", bIx.keys[bi])
+		c := DiffChange{
+			Path: path, Label: bIx.keys[bi],
+			Kind: Added, After: "node",
+		}
+		if props := nodePropsOneSide(bIx, bi, path, Added); len(props) > 0 {
+			c.Children = props
+		}
+		children = append(children, c)
 	}
 
 	if len(children) == 0 {
@@ -887,15 +1033,24 @@ func nodeName(n *gltf.Node, i int) string {
 }
 
 // nodeIndex is a document's node array plus the derived lookups the diff needs:
-// a unique key per node and the parent of every node. glTF stores the hierarchy
-// as child index lists, so the parent has to be inverted out of them — without
-// it a re-parent (moving Mirror_L from Body to Door_L) changes nothing the flat
-// node walk can see, and diffs as no change at all.
+// a unique key per node, the parent of every node, and the key of every mesh the
+// nodes can point at. glTF stores the hierarchy as child index lists, so the
+// parent has to be inverted out of them — without it a re-parent (moving
+// Mirror_L from Body to Door_L) changes nothing the flat node walk can see, and
+// diffs as no change at all.
 type nodeIndex struct {
 	nodes  []*gltf.Node
-	keys   []string       // diff key per node index
-	byKey  map[string]int // diff key → node index
-	parent []int          // parent node index, or rootIndex for a top-level node
+	keys   []string // diff key per node index
+	parent []int    // parent node index, or rootIndex for a top-level node
+	// meshKeys maps a mesh index to the disambiguated key the meshes collection
+	// is diffed under, resolved once per document rather than once per node —
+	// meshSide.materialKeys, for the mesh a node instances.
+	meshKeys []string
+	// meshNamed says, per mesh index, whether that key came from the mesh's own
+	// name. An unnamed mesh's key is `mesh[3]`: the array index in a wrapper,
+	// which the next revision points at a different mesh. Content matching must
+	// know the difference (identity.go, fieldKind opaque).
+	meshNamed []bool
 }
 
 const rootIndex = -1
@@ -904,15 +1059,19 @@ const rootIndex = -1
 // hierarchy (a scene root, or an orphan no node lists as a child).
 const rootParentLabel = "<root>"
 
-func indexNodes(nodes []*gltf.Node) *nodeIndex {
+func indexNodes(doc *gltf.Document) *nodeIndex {
+	nodes := doc.Nodes
 	ix := &nodeIndex{
-		nodes:  nodes,
-		keys:   uniqueKeys(nodes, nodeName),
-		byKey:  make(map[string]int, len(nodes)),
-		parent: make([]int, len(nodes)),
+		nodes:     nodes,
+		keys:      uniqueKeys(nodes, nodeName),
+		parent:    make([]int, len(nodes)),
+		meshKeys:  uniqueKeys(doc.Meshes, meshName),
+		meshNamed: make([]bool, len(doc.Meshes)),
 	}
-	for i, k := range ix.keys {
-		ix.byKey[k] = i
+	for i, m := range doc.Meshes {
+		ix.meshNamed[i] = m.Name != ""
+	}
+	for i := range nodes {
 		ix.parent[i] = rootIndex
 	}
 	for i, n := range nodes {
@@ -935,19 +1094,90 @@ func (ix *nodeIndex) parentKey(i int) string {
 	return ix.keys[ix.parent[i]]
 }
 
+// meshKey names the mesh a node instances, using the same disambiguated key the
+// meshes collection is diffed under. The *name* and not the array index is
+// deliberate, for meshSide.materialKey's reason one level up: inserting an
+// unrelated mesh upstream shifts every index after it. Comparing raw indices
+// would report every node below the insertion as having been re-meshed, and —
+// because the mesh is the heaviest component of a node's content descriptor
+// (meshWeight) — would hand a node that draws something else a perfect content
+// match with whichever node happens to sit at its old number.
+func (ix *nodeIndex) meshKey(idx *int) string {
+	if idx == nil {
+		return "<none>"
+	}
+	if *idx < 0 || *idx >= len(ix.meshKeys) {
+		return fmt.Sprintf("<dangling mesh %d>", *idx)
+	}
+	return ix.meshKeys[*idx]
+}
+
+// meshField is meshKey as a content-descriptor component, classified by what the
+// string is worth as evidence of identity (identity.go, fieldKind).
+//
+// A mesh nobody assigned is unstated and not a shared value: two nodes that both
+// draw nothing have no geometry in common, and meshWeight is six elevenths of a
+// node's descriptor — enough on its own to pair any deleted empty, joint, camera
+// or light node with any added one. An unnamed mesh resolves to `mesh[1]`, which
+// is the array index this key scheme exists to avoid comparing, so it is opaque:
+// counted, never agreed on.
+func (ix *nodeIndex) meshField(idx *int) sigField {
+	f := sigField{value: "mesh=" + ix.meshKey(idx), weight: meshWeight}
+	switch {
+	case idx == nil:
+		f.kind = unstated
+	case *idx < 0 || *idx >= len(ix.meshNamed) || !ix.meshNamed[*idx]:
+		f.kind = opaque
+	}
+	return f
+}
+
+// parentField is meshField for a node's place in the hierarchy: the root is
+// where everything nobody parented ends up, and an unnamed parent contributes
+// its array index, which names a different node in the next revision.
+func (ix *nodeIndex) parentField(i int) sigField {
+	f := sigField{value: "parent=" + ix.parentKey(i), weight: 1}
+	switch p := ix.parent[i]; {
+	case p == rootIndex:
+		f.kind = unstated
+	case ix.nodes[p].Name == "":
+		f.kind = opaque
+	}
+	return f
+}
+
+// nodeEntities reduces one side's nodes to what the identity cascade needs
+// (identity.go).
+func nodeEntities(ix *nodeIndex) []entity {
+	out := make([]entity, len(ix.nodes))
+	for i, n := range ix.nodes {
+		out[i] = entity{
+			key:  ix.keys[i],
+			name: n.Name,
+			uid:  extrasUID(n.Extras),
+			sig:  func() signature { return nodeSignature(ix, i) },
+		}
+	}
+	return out
+}
+
 // diffNodeProps compares the properties of one node across both sides. path is
 // the node's own fully-qualified path; every child change is qualified against
-// it so consumers get a usable selection key without composing anything.
-func diffNodeProps(aIx *nodeIndex, ai int, bIx *nodeIndex, bi int, path string) []DiffChange {
+// it so consumers get a usable selection key without composing anything. m is the
+// node pairing and meshes the mesh one, which is what makes "the same parent" and
+// "the same mesh" answerable across a rename.
+func diffNodeProps(aIx *nodeIndex, ai int, bIx *nodeIndex, bi int, path string, m pairing, meshes meshMatch) []DiffChange {
 	a, b := aIx.nodes[ai], bIx.nodes[bi]
 	var changes []DiffChange
 
 	// Hierarchy first: a re-parent is a structural change and reads better above
-	// the transform noise it usually comes with.
-	if pa, pb := aIx.parentKey(ai), bIx.parentKey(bi); pa != pb {
+	// the transform noise it usually comes with. The comparison is by identity and
+	// not by name — renaming a parent must not report every one of its children as
+	// having been moved onto a different one.
+	if !m.sameEntity(aIx.parent[ai], bIx.parent[bi]) {
 		changes = append(changes, DiffChange{
 			Path: childPath(path, "parent"), Label: "parent",
-			Kind: Modified, Before: pa, After: pb,
+			Kind: Modified, Before: aIx.parentKey(ai), After: bIx.parentKey(bi),
 		})
 	}
 	if ta, tb := a.TranslationOrDefault(), b.TranslationOrDefault(); !nearEq3(ta, tb) {
@@ -968,11 +1198,12 @@ func diffNodeProps(aIx *nodeIndex, ai int, bIx *nodeIndex, bi int, path string) 
 			Kind: Modified, Before: fmtVec3(blenderScale(sa)), After: fmtVec3(blenderScale(sb)),
 		})
 	}
-	meshA, meshB := ptrLabel(a.Mesh, "mesh"), ptrLabel(b.Mesh, "mesh")
-	if meshA != meshB {
+	// The mesh, like the parent, by identity: renaming a mesh must not report every
+	// node that draws it as having been pointed at different geometry.
+	if !meshes.same(a.Mesh, b.Mesh) {
 		changes = append(changes, DiffChange{
 			Path: childPath(path, "mesh"), Label: "mesh",
-			Kind: Modified, Before: meshA, After: meshB,
+			Kind: Modified, Before: aIx.meshKey(a.Mesh), After: bIx.meshKey(b.Mesh),
 		})
 	}
 	return changes
@@ -1003,42 +1234,52 @@ func nodePropsOneSide(ix *nodeIndex, i int, path string, kind ChangeKind) []Diff
 		add("scale", fmtVec3(blenderScale(s)))
 	}
 	if n.Mesh != nil {
-		add("mesh", ptrLabel(n.Mesh, "mesh"))
+		add("mesh", ix.meshKey(n.Mesh))
 	}
 	return changes
 }
 
 // ── materials ─────────────────────────────────────────────────────────────────
 
-func diffMaterials(a, b *gltf.Document) *DiffChange {
-	aMap, aOrder := materialMap(a.Materials)
-	bMap, bOrder := materialMap(b.Materials)
-	names := mergeKeyOrder(aOrder, bOrder)
+func diffMaterials(a, b *gltf.Document, m collectionMatch) *DiffChange {
+	aKeys, bKeys, aEnts, bEnts := m.aKeys, m.bKeys, m.aEnts, m.bEnts
+	keys := newPathKeys(bKeys)
 
 	var children []DiffChange
-	for _, name := range names {
-		am, inA := aMap[name]
-		bm, inB := bMap[name]
-		path := joinPath("materials", name)
-		switch {
-		case !inA:
+	for ai, am := range a.Materials {
+		bi, matched := m.pairs.headOf[ai]
+		if !matched {
 			children = append(children, DiffChange{
-				Path: path, Label: name,
-				Kind: Added, After: "material",
-			})
-		case !inB:
-			children = append(children, DiffChange{
-				Path: path, Label: name,
+				Path: joinPath("materials", keys.removed(aKeys[ai])), Label: aKeys[ai],
 				Kind: Removed, Before: "material",
 			})
-		default:
-			if props := diffMaterialProps(am, bm, a, b, path); len(props) > 0 {
-				children = append(children, DiffChange{
-					Path: path, Label: name,
-					Kind: Modified, Children: props,
-				})
-			}
+			continue
 		}
+		bKey := bKeys[bi]
+		path := joinPath("materials", bKey)
+		props := diffMaterialProps(am, b.Materials[bi], a, b, path)
+		switch {
+		case isRename(aEnts[ai], bEnts[bi]):
+			children = append(children, DiffChange{
+				Path: path, Label: bKey, Kind: Renamed,
+				Before: bareName(aEnts[ai]), After: renameAfter(bareName(bEnts[bi]), m.pairs.how[ai]),
+				Children: props,
+			})
+		case len(props) > 0:
+			children = append(children, DiffChange{
+				Path: path, Label: bKey,
+				Kind: Modified, Children: props,
+			})
+		}
+	}
+	for bi := range b.Materials {
+		if _, matched := m.pairs.baseOf[bi]; matched {
+			continue
+		}
+		children = append(children, DiffChange{
+			Path: joinPath("materials", bKeys[bi]), Label: bKeys[bi],
+			Kind: Added, After: "material",
+		})
 	}
 	if len(children) == 0 {
 		return nil
@@ -1063,6 +1304,21 @@ func materialName(m *gltf.Material, i int) string {
 		return m.Name
 	}
 	return fmt.Sprintf("material[%d]", i)
+}
+
+// materialEntities reduces one side's materials to what the identity cascade
+// needs (identity.go).
+func materialEntities(doc *gltf.Document, keys []string) []entity {
+	out := make([]entity, len(doc.Materials))
+	for i, m := range doc.Materials {
+		out[i] = entity{
+			key:  keys[i],
+			name: m.Name,
+			uid:  extrasUID(m.Extras),
+			sig:  func() signature { return materialSignature(doc, m) },
+		}
+	}
+	return out
 }
 
 // diffMaterialProps compares one material across both sides. docA/docB are the
@@ -1238,36 +1494,44 @@ func samplerRefLabel(doc *gltf.Document, s *int) string {
 
 // ── meshes ────────────────────────────────────────────────────────────────────
 
-func diffMeshes(a, b *gltf.Document) *DiffChange {
-	aMap, aOrder := meshMap(a.Meshes)
-	bMap, bOrder := meshMap(b.Meshes)
-	names := mergeKeyOrder(aOrder, bOrder)
-
-	aSide, bSide := newMeshSide(a), newMeshSide(b)
+func diffMeshes(a, b *gltf.Document, m meshMatch, mats collectionMatch) *DiffChange {
+	aKeys, bKeys, aEnts, bEnts := m.aKeys, m.bKeys, m.aEnts, m.bEnts
+	keys := newPathKeys(bKeys)
 
 	var children []DiffChange
-	for _, name := range names {
-		am, inA := aMap[name]
-		bm, inB := bMap[name]
-		path := joinPath("meshes", name)
-		switch {
-		case !inA:
+	for ai, am := range a.Meshes {
+		bi, matched := m.pairs.headOf[ai]
+		if !matched {
 			children = append(children, DiffChange{
-				Path: path, Label: name,
-				Kind: Added, After: fmt.Sprintf("%d primitives", len(bm.Primitives)),
-			})
-		case !inB:
-			children = append(children, DiffChange{
-				Path: path, Label: name,
+				Path: joinPath("meshes", keys.removed(aKeys[ai])), Label: aKeys[ai],
 				Kind: Removed, Before: fmt.Sprintf("%d primitives", len(am.Primitives)),
 			})
-		default:
-			if props := diffMeshPrimitives(am, bm, aSide, bSide, path); len(props) > 0 {
-				children = append(children, DiffChange{
-					Path: path, Label: name, Kind: Modified, Children: props,
-				})
-			}
+			continue
 		}
+		bKey := bKeys[bi]
+		path := joinPath("meshes", bKey)
+		props := diffMeshPrimitives(am, b.Meshes[bi], m.aSide, m.bSide, path, mats)
+		switch {
+		case isRename(aEnts[ai], bEnts[bi]):
+			children = append(children, DiffChange{
+				Path: path, Label: bKey, Kind: Renamed,
+				Before: bareName(aEnts[ai]), After: renameAfter(bareName(bEnts[bi]), m.pairs.how[ai]),
+				Children: props,
+			})
+		case len(props) > 0:
+			children = append(children, DiffChange{
+				Path: path, Label: bKey, Kind: Modified, Children: props,
+			})
+		}
+	}
+	for bi, bm := range b.Meshes {
+		if _, matched := m.pairs.baseOf[bi]; matched {
+			continue
+		}
+		children = append(children, DiffChange{
+			Path: joinPath("meshes", bKeys[bi]), Label: bKeys[bi],
+			Kind: Added, After: fmt.Sprintf("%d primitives", len(bm.Primitives)),
+		})
 	}
 	if len(children) == 0 {
 		return nil
@@ -1292,6 +1556,22 @@ func meshName(m *gltf.Mesh, i int) string {
 		return m.Name
 	}
 	return fmt.Sprintf("mesh[%d]", i)
+}
+
+// meshEntities reduces one side's meshes to what the identity cascade needs
+// (identity.go). The signature closure is what keeps vertex bytes unread until a
+// mesh actually turns out to be a rename candidate.
+func meshEntities(doc *gltf.Document, keys []string, side meshSide) []entity {
+	out := make([]entity, len(doc.Meshes))
+	for i, m := range doc.Meshes {
+		out[i] = entity{
+			key:  keys[i],
+			name: m.Name,
+			uid:  extrasUID(m.Extras),
+			sig:  func() signature { return meshSignature(side, m) },
+		}
+	}
+	return out
 }
 
 // ── mesh primitives: geometry, metrics, material ──────────────────────────────
@@ -1341,7 +1621,7 @@ func newMeshSide(doc *gltf.Document) meshSide {
 // own row while the overlapping prefix is still compared. Content-based
 // primitive matching, like content-based node matching, belongs with the
 // identity cascade of issue #42.
-func diffMeshPrimitives(am, bm *gltf.Mesh, a, b meshSide, path string) []DiffChange {
+func diffMeshPrimitives(am, bm *gltf.Mesh, a, b meshSide, path string, mats collectionMatch) []DiffChange {
 	var changes []DiffChange
 	primitivesPath := childPath(path, "primitives")
 	if len(am.Primitives) != len(bm.Primitives) {
@@ -1353,7 +1633,7 @@ func diffMeshPrimitives(am, bm *gltf.Mesh, a, b meshSide, path string) []DiffCha
 	}
 	for i := range min(len(am.Primitives), len(bm.Primitives)) {
 		primPath := childPath(primitivesPath, strconv.Itoa(i))
-		props := diffPrimitive(am.Primitives[i], bm.Primitives[i], a, b, primPath)
+		props := diffPrimitive(am.Primitives[i], bm.Primitives[i], a, b, primPath, mats)
 		if len(props) > 0 {
 			changes = append(changes, DiffChange{
 				Path: primPath, Label: fmt.Sprintf("primitive[%d]", i),
@@ -1365,7 +1645,7 @@ func diffMeshPrimitives(am, bm *gltf.Mesh, a, b meshSide, path string) []DiffCha
 }
 
 // diffPrimitive compares one primitive across both sides.
-func diffPrimitive(ap, bp *gltf.Primitive, a, b meshSide, path string) []DiffChange {
+func diffPrimitive(ap, bp *gltf.Primitive, a, b meshSide, path string, mats collectionMatch) []DiffChange {
 	var changes []DiffChange
 	emit := func(segment, before, after string) {
 		changes = append(changes, DiffChange{
@@ -1376,9 +1656,12 @@ func diffPrimitive(ap, bp *gltf.Primitive, a, b meshSide, path string) []DiffCha
 
 	// Which material a primitive points at. Assigning an object a different
 	// material that already exists in the file changes nothing but this index,
-	// which used to diff as no change whatsoever.
-	if am, bm := a.materialKey(ap.Material), b.materialKey(bp.Material); am != bm {
-		emit("material", am, bm)
+	// which used to diff as no change whatsoever. Compared by identity for
+	// collectionMatch.same's reason: a renamed material is still the same material,
+	// and reporting the primitives that use it as reassigned contradicts the rename
+	// the materials collection reports two changes further down the same diff.
+	if !mats.same(ap.Material, bp.Material) {
+		emit("material", a.materialKey(ap.Material), b.materialKey(bp.Material))
 	}
 
 	geometry, positionChanged := diffPrimitiveGeometry(ap, bp, a, b, path)
@@ -1691,7 +1974,7 @@ func diffAnimations(a, b *gltf.Document) *DiffChange {
 	bMap, bOrder := animMap(b.Animations)
 	names := mergeKeyOrder(aOrder, bOrder)
 
-	aIx, bIx := indexNodes(a.Nodes), indexNodes(b.Nodes)
+	aIx, bIx := indexNodes(a), indexNodes(b)
 
 	var children []DiffChange
 	for _, name := range names {

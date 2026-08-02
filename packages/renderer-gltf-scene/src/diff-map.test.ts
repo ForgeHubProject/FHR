@@ -117,6 +117,31 @@ describe("nodeChanges", () => {
     ]);
   });
 
+  // Since #47 one name can carry two changes about two different nodes: the
+  // previous version's "B" was deleted, and an unrelated node was renamed *to*
+  // "B". The handler keeps them apart by path — the removal takes the `#1` suffix
+  // — and merging them by name kept only the rename, folded the dead node's field
+  // labels into it, and lost the deletion entirely.
+  it("keeps a deletion whose name a rename took over", () => {
+    const diff = diffOf(
+      { path: "nodes/B", label: "B", kind: "renamed", before: "A", after: "B (matched by fhr_uid)" },
+      {
+        path: "nodes/B#1",
+        label: "B",
+        kind: "removed",
+        before: "node",
+        children: [
+          { path: "nodes/B#1/translation", label: "translation", kind: "removed", before: "[2 0 0]" },
+          { path: "nodes/B#1/mesh", label: "mesh", kind: "removed", before: "BodyMesh" },
+        ],
+      },
+    );
+    expect(nodeChanges(diff)).toEqual([
+      { name: "B", kind: "renamed", fields: [], path: "nodes/B", oldName: "A" },
+      { name: "B", kind: "removed", fields: ["translation", "mesh"], path: "nodes/B#1" },
+    ]);
+  });
+
   it("survives an absent diff and a null changes array from the wire", () => {
     expect(nodeChanges(undefined)).toEqual([]);
     const nulled = { version: "1.0", format: "gltf-scene", changes: null } as unknown as StructuredDiff;
@@ -140,6 +165,25 @@ describe("diffChangeTypes", () => {
   it("returns an empty map for no diff", () => {
     expect(diffChangeTypes(undefined).size).toBe(0);
   });
+
+  // The outline is a box per node of the HEAD file, and a `removed` node is
+  // exactly the one that isn't in it. Since #47 a name can carry two changes —
+  // the deletion of one node and the rename of another *into* the name it
+  // vacated — and either may be emitted first, so diff order cannot decide which
+  // colours the row. Taking the first painted a node that still exists as
+  // deleted whenever the removal happened to sort first.
+  it("colours a name a deletion and a rename share by the change that survives", () => {
+    const removal = { path: "nodes/B#1", label: "B", kind: "removed" } as const;
+    const rename = { path: "nodes/B", label: "B", kind: "renamed", before: "A" } as const;
+    expect(diffChangeTypes(diffOf(removal, rename)).get("B")).toBe("renamed");
+    expect(diffChangeTypes(diffOf(rename, removal)).get("B")).toBe("renamed");
+  });
+
+  it("still colours a name only a deletion claims as removed", () => {
+    expect(
+      diffChangeTypes(diffOf({ path: "nodes/Gone", label: "Gone", kind: "removed" })).get("Gone"),
+    ).toBe("removed");
+  });
 });
 
 describe("transform-change classification (drives the move ghost)", () => {
@@ -157,6 +201,70 @@ describe("transform-change classification (drives the move ghost)", () => {
     expect(isTransformOnly({ name: "A", kind: "added", fields: ["translation"], path: "nodes/A" })).toBe(false);
     expect(isTransformOnly({ name: "A", kind: "modified", fields: [], path: "nodes/A" })).toBe(false);
     expect(hasTransformChange({ name: "A", kind: "modified", fields: ["mesh"], path: "nodes/A" })).toBe(false);
+  });
+});
+
+describe("renamed nodes (#47)", () => {
+  it("keys the change on the head name and carries the base name alongside", () => {
+    const diff = diffOf({
+      path: "nodes/Fender",
+      label: "Fender",
+      kind: "renamed",
+      before: "Cube.003",
+      after: "Fender (matched by content, ~91% similar)",
+      children: [
+        { path: "nodes/Fender/translation", label: "translation", kind: "modified", before: "[0 0 0]", after: "[0 0 1]" },
+      ],
+    });
+    expect(nodeChanges(diff)).toEqual([
+      {
+        name: "Fender",
+        oldName: "Cube.003",
+        kind: "renamed",
+        fields: ["translation"],
+        path: "nodes/Fender",
+      },
+    ]);
+  });
+
+  it("never reads the evidence parenthetical as part of a name", () => {
+    // `after` is the new name plus how the handler matched it; the new name comes
+    // from `label`, so nothing has to parse that string back apart.
+    const diff = diffOf({
+      path: "nodes/Fender",
+      label: "Fender",
+      kind: "renamed",
+      before: "Cube.003",
+      after: "Fender (matched by fhr_uid)",
+    });
+    const [change] = nodeChanges(diff);
+    expect(change!.name).toBe("Fender");
+    expect(change!.oldName).toBe("Cube.003");
+  });
+
+  it("leaves oldName off every other kind", () => {
+    const diff = diffOf(
+      { path: "nodes/Lamp", label: "Lamp", kind: "added", after: "node" },
+      { path: "nodes/Mirror", label: "Mirror", kind: "removed", before: "node" },
+    );
+    for (const change of nodeChanges(diff)) expect(change.oldName).toBeUndefined();
+  });
+
+  it("reports a rename that also moved as a transform change", () => {
+    const diff = diffOf({
+      path: "nodes/Fender",
+      label: "Fender",
+      kind: "renamed",
+      before: "Cube.003",
+      after: "Fender (matched by fhr_uid)",
+      children: [{ path: "nodes/Fender/translation", label: "translation", kind: "modified" }],
+    });
+    const [change] = nodeChanges(diff);
+    // Not "transform only" — the rename is a change in its own right — but the
+    // move grammar still applies, so the overlay draws the old pose and a vector.
+    expect(hasTransformChange(change!)).toBe(true);
+    expect(isTransformOnly(change!)).toBe(false);
+    expect(diffChangeTypes(diff).get("Fender")).toBe("renamed");
   });
 });
 

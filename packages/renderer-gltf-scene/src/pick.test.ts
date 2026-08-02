@@ -1,7 +1,8 @@
 // Click → change resolution. The raycast itself is three.js's (and is exercised
 // here against a real Raycaster on real geometry, which needs no WebGL); what
 // this file is really about is the walk from the Mesh that got hit to the change
-// the diff is talking about.
+// the diff is talking about — which is named by its PATH, since #47: a name can
+// belong to two changes at once, a path to exactly one.
 
 import { describe, it, expect } from "vitest";
 import { BoxGeometry, Group, Mesh, MeshBasicMaterial, Object3D, PerspectiveCamera, Raycaster, Vector2 } from "three";
@@ -39,86 +40,86 @@ describe("changeAtObject", () => {
 
   it("walks up from the mesh that was hit to the painted change", () => {
     const { nodeGroup, primitive } = tree();
-    const lookup = { changeNameByObject: new Map<Object3D, string>([[nodeGroup, "Wheel_FL"]]) };
-    expect(changeAtObject(primitive, lookup)).toBe("Wheel_FL");
+    const lookup = { changePathByObject: new Map<Object3D, string>([[nodeGroup, "nodes/Wheel_FL"]]) };
+    expect(changeAtObject(primitive, lookup)).toBe("nodes/Wheel_FL");
   });
 
   it("resolves an object that is itself the painted one", () => {
     const { primitive } = tree();
-    const lookup = { changeNameByObject: new Map<Object3D, string>([[primitive, "Paint"]]) };
-    expect(changeAtObject(primitive, lookup)).toBe("Paint");
+    const lookup = { changePathByObject: new Map<Object3D, string>([[primitive, "materials/Paint"]]) };
+    expect(changeAtObject(primitive, lookup)).toBe("materials/Paint");
   });
 
   it("is null for geometry no change was painted on", () => {
     const { primitive } = tree();
-    expect(changeAtObject(primitive, { changeNameByObject: new Map() })).toBeNull();
-    expect(changeAtObject(null, { changeNameByObject: new Map() })).toBeNull();
+    expect(changeAtObject(primitive, { changePathByObject: new Map() })).toBeNull();
+    expect(changeAtObject(null, { changePathByObject: new Map() })).toBeNull();
   });
 
   it("falls back to the loader's node association", () => {
     const { primitive } = tree();
     expect(
       changeAtObject(primitive, {
-        changeNameByObject: new Map(),
+        changePathByObject: new Map(),
         nodeIndexOf: () => 7,
-        changeNameByNodeIndex: new Map([[7, "Hood"]]),
+        changePathByNodeIndex: new Map([[7, "nodes/Hood"]]),
       }),
-    ).toBe("Hood");
+    ).toBe("nodes/Hood");
   });
 
   it("prefers the painted map over the association", () => {
     const { nodeGroup, primitive } = tree();
     expect(
       changeAtObject(primitive, {
-        changeNameByObject: new Map<Object3D, string>([[nodeGroup, "Wheel_FL"]]),
+        changePathByObject: new Map<Object3D, string>([[nodeGroup, "nodes/Wheel_FL"]]),
         nodeIndexOf: () => 7,
-        changeNameByNodeIndex: new Map([[7, "Hood"]]),
+        changePathByNodeIndex: new Map([[7, "nodes/Hood"]]),
       }),
-    ).toBe("Wheel_FL");
+    ).toBe("nodes/Wheel_FL");
   });
 });
 
 describe("changeAtHits", () => {
-  const meshFor = (name: string): { mesh: Mesh; lookupEntry: [Object3D, string] } => {
+  const meshFor = (path: string): { mesh: Mesh; lookupEntry: [Object3D, string] } => {
     const mesh = new Mesh(new BoxGeometry(), new MeshBasicMaterial());
-    return { mesh, lookupEntry: [mesh as Object3D, name] };
+    return { mesh, lookupEntry: [mesh as Object3D, path] };
   };
 
   it("takes the frontmost hit that resolves", () => {
-    const front = meshFor("Front");
-    const back = meshFor("Back");
-    const lookup = { changeNameByObject: new Map<Object3D, string>([front.lookupEntry, back.lookupEntry]) };
-    expect(changeAtHits([{ object: front.mesh }, { object: back.mesh }], lookup)).toBe("Front");
+    const front = meshFor("nodes/Front");
+    const back = meshFor("nodes/Back");
+    const lookup = { changePathByObject: new Map<Object3D, string>([front.lookupEntry, back.lookupEntry]) };
+    expect(changeAtHits([{ object: front.mesh }, { object: back.mesh }], lookup)).toBe("nodes/Front");
   });
 
   it("looks past hits on unchanged geometry", () => {
     const unchanged = new Mesh(new BoxGeometry(), new MeshBasicMaterial());
-    const changed = meshFor("Wheel_FL");
-    const lookup = { changeNameByObject: new Map<Object3D, string>([changed.lookupEntry]) };
-    expect(changeAtHits([{ object: unchanged }, { object: changed.mesh }], lookup)).toBe("Wheel_FL");
+    const changed = meshFor("nodes/Wheel_FL");
+    const lookup = { changePathByObject: new Map<Object3D, string>([changed.lookupEntry]) };
+    expect(changeAtHits([{ object: unchanged }, { object: changed.mesh }], lookup)).toBe("nodes/Wheel_FL");
   });
 
   // three.js's raycaster tests layers, not visibility, so an isolated view still
   // has every hidden mesh in the ray's path.
   it("ignores hits on hidden geometry", () => {
-    const hidden = meshFor("Hidden");
+    const hidden = meshFor("nodes/Hidden");
     hidden.mesh.visible = false;
-    const shown = meshFor("Shown");
-    const lookup = { changeNameByObject: new Map<Object3D, string>([hidden.lookupEntry, shown.lookupEntry]) };
-    expect(changeAtHits([{ object: hidden.mesh }, { object: shown.mesh }], lookup)).toBe("Shown");
+    const shown = meshFor("nodes/Shown");
+    const lookup = { changePathByObject: new Map<Object3D, string>([hidden.lookupEntry, shown.lookupEntry]) };
+    expect(changeAtHits([{ object: hidden.mesh }, { object: shown.mesh }], lookup)).toBe("nodes/Shown");
   });
 
   it("ignores hits under a hidden ancestor", () => {
     const group = new Group();
     group.visible = false;
-    const child = meshFor("Inside");
+    const child = meshFor("nodes/Inside");
     group.add(child.mesh);
-    const lookup = { changeNameByObject: new Map<Object3D, string>([child.lookupEntry]) };
+    const lookup = { changePathByObject: new Map<Object3D, string>([child.lookupEntry]) };
     expect(changeAtHits([{ object: child.mesh }], lookup)).toBeNull();
   });
 
   it("is null when nothing was hit", () => {
-    expect(changeAtHits([], { changeNameByObject: new Map() })).toBeNull();
+    expect(changeAtHits([], { changePathByObject: new Map() })).toBeNull();
   });
 
   // The whole path, with three.js's own raycaster doing the geometry: no WebGL is
@@ -138,8 +139,8 @@ describe("changeAtHits", () => {
     const hits = raycaster.intersectObjects([nodeGroup], true);
     expect(hits.length).toBeGreaterThan(0);
     expect(
-      changeAtHits(hits, { changeNameByObject: new Map<Object3D, string>([[nodeGroup, "Wheel_FL"]]) }),
-    ).toBe("Wheel_FL");
+      changeAtHits(hits, { changePathByObject: new Map<Object3D, string>([[nodeGroup, "nodes/Wheel_FL"]]) }),
+    ).toBe("nodes/Wheel_FL");
   });
 });
 

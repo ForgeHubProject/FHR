@@ -151,7 +151,7 @@ describe("indirectNodeChanges — where a mesh or material change lands on the n
 
   it("resolves a mesh change to every node instancing it, not just the first", () => {
     const found = indirectNodeChanges(buildNameIndex(car), [entity("WheelMesh", "meshes/WheelMesh")], []);
-    expect(found.byChange.get("WheelMesh")).toEqual(["Wheel_FL", "Wheel_FR"]);
+    expect(found.byChange.get("meshes/WheelMesh")).toEqual(["Wheel_FL", "Wheel_FR"]);
     expect([...found.byNode.keys()]).toEqual(["Wheel_FL", "Wheel_FR"]);
     expect(found.byNode.get("Wheel_FR")!.name).toBe("WheelMesh");
   });
@@ -160,7 +160,7 @@ describe("indirectNodeChanges — where a mesh or material change lands on the n
     const found = indirectNodeChanges(buildNameIndex(car), [], [entity("Rubber", "materials/Rubber")]);
     // Rubber is on one primitive of BodyMesh and the whole of WheelMesh, so it
     // reaches three nodes — and Body only once, however many primitives hit.
-    expect(found.byChange.get("Rubber")).toEqual(["Body", "Wheel_FL", "Wheel_FR"]);
+    expect(found.byChange.get("materials/Rubber")).toEqual(["Body", "Wheel_FL", "Wheel_FR"]);
   });
 
   it("carries the change's own kind, so a row can be marked with it", () => {
@@ -177,18 +177,37 @@ describe("indirectNodeChanges — where a mesh or material change lands on the n
       [entity("Paint", "materials/Paint")],
     );
     expect(found.byNode.get("Body")!.name).toBe("BodyMesh");
-    expect(found.byChange.get("Paint")).toEqual(["Body"]);
+    expect(found.byChange.get("materials/Paint")).toEqual(["Body"]);
   });
 
   it("yields no row for a change nothing in the file draws", () => {
     const found = indirectNodeChanges(buildNameIndex(car), [entity("Spoiler", "meshes/Spoiler")], []);
-    expect(found.byChange.has("Spoiler")).toBe(false);
+    expect(found.byChange.has("meshes/Spoiler")).toBe(false);
     expect(found.byNode.size).toBe(0);
   });
 
   it("matches a mangled key the same way the paint does", () => {
     const found = indirectNodeChanges(buildNameIndex(car), [entity("wheel-mesh", "meshes/wheel-mesh")], []);
-    expect(found.byChange.get("wheel-mesh")).toEqual(["Wheel_FL", "Wheel_FR"]);
+    expect(found.byChange.get("meshes/wheel-mesh")).toEqual(["Wheel_FL", "Wheel_FR"]);
+  });
+
+  // Keyed on the path, because since #47 a name is not a change's identity: one
+  // diff can delete "WheelMesh" and rename an unrelated mesh *into* that name,
+  // and the handler disambiguates with the path. Keyed by name the second wrote
+  // over the first, so one of the two changes highlighted the other's rows.
+  it("keeps two changes that share a name apart", () => {
+    const found = indirectNodeChanges(
+      buildNameIndex(car),
+      [
+        entity("WheelMesh", "meshes/WheelMesh#1", "removed"),
+        entity("WheelMesh", "meshes/WheelMesh", "renamed"),
+      ],
+      [],
+    );
+    expect(found.byChange.get("meshes/WheelMesh#1")).toEqual(["Wheel_FL", "Wheel_FR"]);
+    expect(found.byChange.get("meshes/WheelMesh")).toEqual(["Wheel_FL", "Wheel_FR"]);
+    // Both rows still describe the change a reviewer meets first, as ever.
+    expect(found.byNode.get("Wheel_FL")!.kind).toBe("removed");
   });
 
   it("dedups in constant time per node, not by rescanning the keys it has kept", () => {
@@ -244,8 +263,8 @@ describe("indirectNodeChanges — where a mesh or material change lands on the n
 
     // …and it still reaches every node, deduped, in document order.
     const found = indirectNodeChanges(large, mesh, []);
-    expect(found.byChange.get("BoltMesh")).toHaveLength(20_000);
-    expect(found.byChange.get("BoltMesh")!.slice(0, 2)).toEqual(["Bolt_0", "Bolt_1"]);
+    expect(found.byChange.get("meshes/BoltMesh")).toHaveLength(20_000);
+    expect(found.byChange.get("meshes/BoltMesh")!.slice(0, 2)).toEqual(["Bolt_0", "Bolt_1"]);
     expect(found.byNode.size).toBe(20_000);
   });
 
@@ -258,6 +277,6 @@ describe("indirectNodeChanges — where a mesh or material change lands on the n
       meshes: [{ name: "Tri", primitives: [] }],
     };
     const found = indirectNodeChanges(buildNameIndex(anonymous), [entity("Tri", "meshes/Tri")], []);
-    expect(found.byChange.get("Tri")).toEqual(["node[0]"]);
+    expect(found.byChange.get("meshes/Tri")).toEqual(["node[0]"]);
   });
 });

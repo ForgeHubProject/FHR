@@ -1,6 +1,6 @@
 # FHR — Forge Handler Repository Specification
 
-> Version: 1.2 · Status: Draft
+> Version: 1.3 · Status: Draft
 
 This document is the authoritative specification for the FHR ecosystem. It covers the full contract between Forge (the CLI), ForgeHub (the web platform), and FHR packages (format handler + renderer bundles).
 
@@ -364,7 +364,7 @@ interface ArtifactHandler {
 ```ts
 type DiffChange = {
   path: string;
-  kind: "added" | "removed" | "modified";
+  kind: "added" | "removed" | "modified" | "renamed";
   label?: string;
   before?: unknown;
   after?: unknown;
@@ -377,6 +377,42 @@ type StructuredDiff = {
   changes: DiffChange[];
 };
 ```
+
+**`renamed`** — one entity that kept its identity and changed its name. `path` and `label` use the entity's **new** name (a consumer selecting by path is always addressing the file in front of it); `before` is the bare old name and `after` the new name plus the evidence the handler matched on, e.g. `Fender (matched by content, ~91% similar)`. Anything else that changed at the same time hangs off it as a child, so a rename plus a move is one change with the move under it.
+
+**`path` identifies one change.** No two changes in a diff share a path, and a consumer may key on it. Renames make that worth stating, because they break the assumption that a name identifies an element across a pair of revisions: the previous version's `Wheel` can be deleted while an unrelated element is renamed *to* `Wheel`, which is two changes about two different objects that a name-keyed consumer would merge — losing the deletion. A handler whose two sides collide on a key disambiguates the **base-side** one (`nodes/Wheel#1`, the same `#` disambiguator duplicate names take) and leaves `label` as the element's key in its own file, so a label still resolves against the revision its change is about.
+
+`ChangeKind` is an **open** union in practice: it may gain members without a `version` or `fhrVersion` bump, and consumers must carry a kind they do not recognise rather than drop it (count it in summaries, render it with a neutral marker). The `@fhr/renderer-sdk` change tree does exactly this, which is why `renamed` needed no SDK change to appear in a summary bar.
+
+### Stable entity identity — the `fhr_uid` convention
+
+Resolves [#47](https://github.com/ForgeHubProject/FHR/issues/47).
+
+Many artifact formats have **no identity mechanism**: elements are addressed by array index, and a `name` is optional, non-unique, and routinely rewritten by pipeline tools. Matching purely on name means the commonest edit in a review — renaming something — reads as one element deleted and an unrelated one added. glTF is the case in hand: Khronos acknowledges the gap ([glTF#2337](https://github.com/KhronosGroup/glTF/issues/2337), [#1713](https://github.com/KhronosGroup/glTF/issues/1713)), and the glTF 2.1 proposal ([#2585](https://github.com/KhronosGroup/glTF/issues/2585)) lists an unshipped "Unique IDs" explainer.
+
+**The convention.** An entity may carry an opaque, stable identifier under its format's free-form annotation slot. For glTF that is `extras`:
+
+```json
+{ "name": "Fender", "mesh": 2, "extras": { "fhr_uid": "b6f1c2e4-8a1d-4c93-9f0e-2d7a5c1b8e30" } }
+```
+
+| | |
+|---|---|
+| **Key** | `fhr_uid`, directly under `extras`. Applies to nodes, meshes and materials today; animations are the same idea and follow. |
+| **Value** | An opaque non-empty string. A UUIDv4 is the recommended shape, but nothing reads into it — handlers compare for equality and nothing else. Anything that is not a non-empty string is not an id (`extras` is author data, and a number under this key is someone else's field that happens to collide). |
+| **Lifecycle** | Written **once**, when the entity is created, and never regenerated on edit — that is the whole property. Renaming, moving, re-parenting, re-meshing, re-exporting must all leave it alone. A clone must get a **new** id; reusing one is the documented BIM failure mode. |
+| **Who writes it** | Authoring tools and stamping utilities, not FHR handlers. A handler **reads** ids and never invents, rewrites or removes one — a diff must not mutate the thing it is comparing. Blender round-trips custom properties through glTF `extras` on both export and import, so an authored id survives the standard pipeline with no exporter changes. |
+| **Scope** | Unique within one file. Ids are not expected to be globally unique or to survive a re-author from scratch. |
+
+**How it is used.** Ids are the first tier of a cascade, strongest evidence first: **id → name → content signature**. Same id + different name is a rename, never a delete plus an add. Nothing depends on ids being present: a document with none matches on name, and then on content.
+
+**Degradation.** An id duplicated on one side is untrusted past its first occurrence — the same rule this spec's handlers already apply to duplicated names — and the rest of the claimants fall through to the weaker tiers. A rename that a duplicated id produced says so in its `after` value, so the guess is visible rather than silent. Absent, empty and non-string ids are simply not ids.
+
+**Relation to glTF 2.1 and to names.** [The position put by @aaronfranke on #47](https://github.com/ForgeHubProject/FHR/issues/47#issuecomment-5106755096) is that the forthcoming `uid` property has a fallback rule: an object with no `uid` whose `name` is file-unique against all other names and ids, and which avoids the reserved characters `"` `#` `*` `.` `:` `|` `?` `@` `<` `>` `{` `}` `[` `]` `/` `\` `%` and controls, *is* identified by that name — so unique ids can be used today with no new property at all. FHR adopts that where it costs nothing: the cascade's second tier **is** the name, so a document that writes identity-bearing names matches exactly with no `extras` at all, and tools that cannot write `extras` should prefer names that satisfy those rules. (FHR's own duplicate-name disambiguator uses `#`, a reserved character, so a generated key can never collide with a uid-conformant name.)
+
+FHR keeps `fhr_uid` as the first tier anyway, for one reason: a name is the thing the user edits. It is displayed, typed, and changed constantly — which is precisely the event this whole mechanism exists to survive — and pipeline tools rewrite or drop names as a matter of course (`gltf-transform`'s `dedup()` merges same-content elements regardless of name by default). An identifier that doubles as the display name cannot be stable and human-editable at the same time. So: `fhr_uid` when it is there, a unique name when it is not.
+
+`extras` is preferred over `KHR_xmp_json_ld` (per-node XMP with `xmpMM:DocumentID`/`InstanceID`) for v1 on simplicity and round-tripping alone; XMP remains the standards-blessed carrier for anyone who needs it. When glTF 2.1 ships `uid`, it becomes tier 0 ahead of `fhr_uid` and this convention becomes the legacy carrier — a strictly additive migration, since both are read-only equality checks.
 
 ### Forge CLI subprocess protocol
 
@@ -630,6 +666,7 @@ forge formats add .myext --source my-org
 | Community FHR loading | `<iframe>` + postMessage |
 | `plain-text` | Built into Forge; not an FHR package |
 | First migration | `gltf-scene` (Phase 1) |
+| Stable entity identity for formats with none (#47) | Resolved. `extras.fhr_uid`: an opaque, write-once string, read (never written) by handlers, first tier of an id → name → content cascade, duplicates untrusted past the first occurrence. See [§7](#7-backend-handler-contract). Names stay the second tier, which is also the glTF 2.1 explainer's own name-as-uid fallback; migrates to glTF 2.1 `uid` additively when it ships. |
 
 ### Still open **[HUMAN DECISION]**
 
