@@ -20,8 +20,11 @@ package main
 //	1. Each float component is quantized to a per-semantic decimal precision
 //	   (trimesh's constants, as the issue directs): POSITION 8 decimals,
 //	   NORMAL/TANGENT 2, TEXCOORD_* 4, COLOR_*/WEIGHTS_* 4, unknown float
-//	   semantics 8. Integer streams (indices, JOINTS_*) are never quantized.
-//	   −0 normalizes to 0 through the rounding itself.
+//	   semantics 8. Integer streams (indices, JOINTS_*, a ubyte COLOR_*) are
+//	   never quantized: their components pass through exactly, so a skinned or
+//	   byte-colored mesh canonicalizes like any other instead of losing this
+//	   tier to its one integer attribute. −0 normalizes to 0 through the
+//	   rounding itself.
 //	2. Vertices are put in a canonical order: one record per vertex — the
 //	   quantized components of every attribute stream, in sorted semantic
 //	   order — sorted lexicographically and deduplicated, so a permutation of
@@ -36,7 +39,7 @@ package main
 //
 // Refuse-don't-guess, mirroring primitiveCentroid: only plain little-endian
 // data reachable through accessorSpan is decoded. A sparse accessor, an
-// unreadable buffer, a non-float POSITION (KHR_mesh_quantization), a NaN, a
+// unreadable buffer, a NaN, a float whose quantum does not fit an int64, a
 // count mismatch between streams — any of them makes the whole primitive fall
 // back to today's exact-hash-or-<unreadable> descriptors, because a canonical
 // form built from bytes we cannot fully read could digest two different meshes
@@ -89,15 +92,30 @@ func semanticDecimals(semantic string) int {
 	}
 }
 
+// quantumLimit is the first magnitude a quantum may NOT hold: 2^63, exactly
+// representable as a float64, and one past what an int64 can.
+const quantumLimit = float64(1 << 63)
+
 // quantize maps one float component to its quantized integer at the given
-// decimal precision. Rounding takes −0 to 0 on its own. ok is false for a NaN
-// or an infinity, either of which disqualifies the primitive from canonical
-// digesting outright — there is no honest quantum for them.
+// decimal precision. Rounding takes −0 to 0 on its own. ok is false for a NaN,
+// an infinity, or a finite value whose quantum overflows int64 — for any of
+// them there is no honest quantum, so the primitive is disqualified from
+// canonical digesting outright. The overflow refusal is load-bearing, not
+// pedantry: Go defines an out-of-range float→int conversion as
+// implementation-dependent (amd64 saturates to minInt64), so without it every
+// |v·pow10| ≥ 2^63 — a POSITION beyond ~9.2e10, which garbage or corrupted
+// exports reach — collapsed to ONE quantum and genuinely different
+// out-of-range geometries canonicalized equal, the exact false pair the NaN
+// refusal above exists to prevent.
 func quantize(v float64, pow10 float64) (int64, bool) {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0, false
 	}
-	return int64(math.Round(v * pow10)), true
+	r := math.Round(v * pow10)
+	if r >= quantumLimit || r <= -quantumLimit {
+		return 0, false
+	}
+	return int64(r), true
 }
 
 // canonPrim is one primitive's canonical form: a quantized descriptor per
@@ -151,12 +169,14 @@ func buildCanonPrim(doc *gltf.Document, p *gltf.Primitive) *canonPrim {
 		return fail
 	}
 
-	// Decode every attribute stream to quantized integer components. All streams
-	// of one primitive must agree on the vertex count, or the per-vertex record
-	// below would be built from misaligned data.
+	// Decode every attribute stream to integer components: float streams
+	// quantized at their semantic's precision, integer streams (JOINTS_*, a
+	// byte-encoded COLOR_*) exactly as written — never quantized, per the
+	// header. All streams of one primitive must agree on the vertex count, or
+	// the per-vertex record below would be built from misaligned data.
 	type streamData struct {
 		acc   *gltf.Accessor
-		comps []int64 // count × components(), quantized
+		comps []int64 // count × components(), quantized (floats) or exact (ints)
 		width int
 	}
 	streams := make(map[string]streamData, len(semantics))
@@ -167,7 +187,13 @@ func buildCanonPrim(doc *gltf.Document, p *gltf.Primitive) *canonPrim {
 			return fail
 		}
 		acc := doc.Accessors[idx]
-		comps, ok := decodeQuantized(doc, acc, semanticDecimals(sem))
+		var comps []int64
+		var ok bool
+		if acc.ComponentType == gltf.ComponentFloat {
+			comps, ok = decodeQuantized(doc, acc, semanticDecimals(sem))
+		} else {
+			comps, ok = decodeIntComponents(doc, acc)
+		}
 		if !ok {
 			return fail
 		}
@@ -306,7 +332,11 @@ func rotateTriangle(t []int64) {
 
 // quantizedLabel renders a canonical stream descriptor. Shape mirrors
 // accessorLabel so the two read in one voice, with `qhash` marking that the
-// digest is over the canonical quantized form rather than the raw bytes.
+// digest is over the canonical quantized form rather than the raw bytes. The
+// normalized flag is part of the label because a normalized integer stream
+// holds the same raw components as an unnormalized one while meaning different
+// geometry (255 as a color channel vs 1.0's encoding) — the descriptor must
+// keep them from ever comparing equal.
 func quantizedLabel(acc *gltf.Accessor, seq []int64) string {
 	h := fnv.New64a()
 	var buf [8]byte
@@ -314,7 +344,11 @@ func quantizedLabel(acc *gltf.Accessor, seq []int64) string {
 		binary.LittleEndian.PutUint64(buf[:], uint64(v))
 		_, _ = h.Write(buf[:])
 	}
-	return fmt.Sprintf("count=%d type=%v component=%v qhash=%016x", acc.Count, acc.Type, acc.ComponentType, h.Sum64())
+	norm := ""
+	if acc.Normalized {
+		norm = " normalized"
+	}
+	return fmt.Sprintf("count=%d type=%v component=%v%s qhash=%016x", acc.Count, acc.Type, acc.ComponentType, norm, h.Sum64())
 }
 
 // decodeQuantized reads one float accessor's components as quantized integers.
@@ -344,6 +378,39 @@ func decodeQuantized(doc *gltf.Document, acc *gltf.Accessor, decimals int) ([]in
 				return nil, false
 			}
 			out = append(out, q)
+		}
+	}
+	return out, true
+}
+
+// decodeIntComponents reads one integer accessor's components exactly — the
+// attribute-stream counterpart of decodeInts, for JOINTS_* and byte-encoded
+// COLOR_* streams, which the header promises are never quantized. Only the
+// integer component types readComponentInt knows are accepted; anything else
+// refuses.
+func decodeIntComponents(doc *gltf.Document, acc *gltf.Accessor) ([]int64, bool) {
+	data, stride, ok := accessorSpan(doc, acc)
+	if !ok {
+		return nil, false
+	}
+	width := acc.Type.Components()
+	size := acc.ComponentType.ByteSize()
+	if size == 0 {
+		return nil, false
+	}
+	elem := size * width
+	out := make([]int64, 0, acc.Count*width)
+	for i := range acc.Count {
+		v := data[i*stride:]
+		if len(v) < elem {
+			return nil, false
+		}
+		for cmp := range width {
+			n, ok := readComponentInt(v[cmp*size:], acc.ComponentType)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, n)
 		}
 	}
 	return out, true
@@ -415,7 +482,13 @@ func canonMeshesEqual(a, b meshSide, am, bm *gltf.Mesh) bool {
 			}
 			for name, sa := range ca.seqs {
 				sb, ok := cb.seqs[name]
-				if !ok || !slices.Equal(sa, sb) {
+				// The descriptors are compared as well as the sequences: two
+				// streams can hold identical integers and mean different data —
+				// a normalized ubyte color against an unnormalized one, or a
+				// quantized float that happens to land on an integer stream's
+				// values. The label carries type, component and normalization,
+				// so equality here is equality of meaning, not just of numbers.
+				if !ok || ca.desc[name] != cb.desc[name] || !slices.Equal(sa, sb) {
 					return false
 				}
 			}
