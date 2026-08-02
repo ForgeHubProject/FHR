@@ -42,12 +42,12 @@ import type { QueueEntry } from "./queue.js";
 /**
  * What the lite bundle wires into the scene: the selection round trip (#45).
  *
- * The two halves speak different keys, on purpose. The lite bundle and the host
- * speak the handler's fully-qualified *paths*, which are what a diff row and a
- * host's selection state are keyed on. The scene speaks *node names*, which is
- * what the overlay's maps are keyed on (model-overlay.ts). This module owns the
- * translation, because `nodeChanges` is the one place that has seen the pairing
- * the handler wrote — so neither half has to re-derive an escaping rule.
+ * Both halves speak the handler's fully-qualified change *paths* — what a diff
+ * row, a host's selection state and (since #47) the overlay's own maps are all
+ * keyed on. A name is not a change's identity: one diff can carry a deletion and
+ * a rename that share a name and mean different objects, so translating to node
+ * names here merged them and lost one. All that is left to reconcile is a
+ * selection that names a field of a change (see selection-keys.ts).
  */
 export type SceneHooks = {
   /**
@@ -100,9 +100,10 @@ export async function mount3d(
   // Built only for the real-model view (the fallbacks have no viewport chrome to
   // wrap), and null until then.
   let chrome: Chrome | null = null;
-  // Which node rows a mesh/material change lands on, once the file has been
-  // indexed. Identity until then: the fallbacks have no structure tree.
-  let rowOf: (name: string) => string = (name) => name;
+  // Which structure-tree row a change path lands on, once the file has been
+  // indexed. Null until then, and null after it for a change with no row: the
+  // fallbacks have no tree at all, and an animation has nothing in one.
+  let rowOf: (path: string) => string | null = () => null;
 
   const withCleanup = (handle: SceneHandle | null): SceneHandle => ({
     dispose(): void {
@@ -199,7 +200,28 @@ export async function mount3d(
   // and the colour on the geometry come from one answer, not two.
   const indirect = indirectPaint(head.index, props);
   const structure = structureRows(headDoc, props, indirect);
-  rowOf = (name) => indirect.byChange.get(name)?.[0] ?? name;
+  // The two directions between a change and a tree row, both keyed on the
+  // change's path (#47) — a name identifies neither end of this any more.
+  //
+  //   path → row   a node change's row is the node itself; a mesh or material
+  //                change's is the first node its geometry reaches.
+  //   row → path   the overlay's own answer, resolved against the head model, so
+  //                the row that lights up and the geometry that is painted come
+  //                from one resolution rather than two. A node's own change wins
+  //                over one that only reaches it, which is how the overlay
+  //                recorded it.
+  const rowByChangePath = new Map<string, string>();
+  for (const change of nodeChanges(props.diff)) rowByChangePath.set(change.path, change.name);
+  for (const [path, rows] of indirect.byChange) {
+    const first = rows[0];
+    if (first !== undefined) rowByChangePath.set(path, first);
+  }
+  rowOf = (path) => rowByChangePath.get(path) ?? null;
+  const changePathByRow = new Map<string, string>();
+  for (const [nodeIndex, path] of overlay.changePathByNodeIndex) {
+    const row = head.index.keyByIndex[nodeIndex];
+    if (row !== undefined && !changePathByRow.has(row)) changePathByRow.set(row, path);
+  }
   const queue = hooks.queue ?? [];
   // Overlay and side-by-side both need the previous version in hand, so a mount
   // that couldn't load it offers neither rather than offering an empty toggle.
@@ -236,23 +258,22 @@ export async function mount3d(
       scene?.setSplit?.(orientation);
     },
     onQueueSelect: (path) => {
-      const name = keys.nameOf(path);
-      if (name !== null) scene?.selectChange?.(name);
+      const changePath = keys.changePathOf(path);
+      if (changePath !== null) scene?.selectChange?.(changePath);
       chrome?.selectChange(path);
-      chrome?.highlightNode(name === null ? null : rowOf(name));
+      chrome?.highlightNode(changePath === null ? null : rowOf(changePath));
       hooks.onPick?.(path);
     },
     onStep: (delta) => hooks.onStep?.(delta),
-    onNode: (name) => {
-      scene?.frameNode?.(name);
-      chrome?.highlightNode(name);
+    onNode: (row) => {
+      scene?.frameNode?.(row);
+      chrome?.highlightNode(row);
       // A node the diff touched is a queue selection like any other, whether the
       // diff named the node itself or the mesh/material it carries. One the diff
       // doesn't reach at all leaves the queue where it is — there is nothing for
       // it to show, and moving the position would lose the reviewer's place.
-      const via = overlay.boxByChangeName.has(name) ? name : indirect.byNode.get(name)?.name;
-      if (via === undefined) return;
-      const path = keys.pathOf(via);
+      const path = changePathByRow.get(row);
+      if (path === undefined) return;
       chrome?.selectChange(path);
       hooks.onPick?.(path);
     },
@@ -264,11 +285,12 @@ export async function mount3d(
     mode: modeState.mode,
     split,
     blink: overlay.baseSolidGroup !== null,
-    headlines: keys.headlinesByName(hooks.headlines),
-    // The tree's rows are nodes and the overlay's keys are change names, so
-    // framing a row has to be able to ask which change reaches it — otherwise a
-    // node painted through its mesh gets captioned "not in the change list".
-    changeOfNode: (name) => indirect.byNode.get(name)?.name ?? null,
+    headlines: hooks.headlines ?? {},
+    // The tree's rows are nodes and a mesh or material change is about geometry
+    // a node merely carries, so framing a row has to be able to ask which change
+    // reaches it — otherwise a node painted through its mesh gets captioned "not
+    // in the change list".
+    changeOfNode: (name) => indirect.byNode.get(name)?.path ?? null,
     heatmap,
     // The queue's panel carries the number the heatmap's colours are of, so a
     // reviewer stepping the worklist reads "max deviation 12 mm" without having
@@ -278,10 +300,9 @@ export async function mount3d(
       for (const [path, value] of summary.byPath) byPath.set(path, formatDeviation(value));
       chrome?.setDeviations(byPath);
     },
-    onPick: (name) => {
-      const path = name === null ? null : keys.pathOf(name);
+    onPick: (path) => {
       chrome?.selectChange(path);
-      chrome?.highlightNode(name === null ? null : rowOf(name));
+      chrome?.highlightNode(path === null ? null : rowOf(path));
       hooks.onPick?.(path);
     },
   });
@@ -294,15 +315,16 @@ export type SelectionSurfaces = {
   keys: SelectionKeys;
   handle: SceneHandle | null;
   /**
-   * Change name → the structure tree's row for it. A mesh or material change is
-   * named for the mesh or the material ("BodyMesh"), which is not a row of a
-   * tree of *nodes*: highlighting that name clears the tree instead of moving
-   * it, so a worklist of #51 changes left the left region inert for its whole
-   * length. The mount supplies the resolution; without one — the fallbacks,
-   * which have no tree — a name stands for itself, which is what a node change
-   * wants anyway.
+   * Change path → the structure tree's row for it, or null when the tree has
+   * none. A mesh or material change is named for the mesh or the material
+   * ("BodyMesh"), which is not a row of a tree of *nodes*: highlighting that
+   * name clears the tree instead of moving it, so a worklist of #51 changes left
+   * the left region inert for its whole length. The mount supplies the
+   * resolution, and only the mount can: it takes both directions from the name
+   * index the paint itself resolved through. Without one — the fallbacks, which
+   * have no tree — there is nothing to highlight and nothing to guess from.
    */
-  rowOf?: (name: string) => string;
+  rowOf?: (path: string) => string | null;
 };
 
 /**
@@ -310,15 +332,20 @@ export type SelectionSurfaces = {
  * an `n`/`p` step, a host push — to the surfaces that have to agree about it.
  *
  * **Each surface is given the key it is itself keyed on; neither key is derived
- * from the other.** The queue is keyed on `DiffChange.path`, so it gets the path
- * this call was handed, normalised to the object that owns it (a field row
+ * from the other.** The queue and the scene both work in `DiffChange.path`, so
+ * both get the path — the queue the one this call was handed, the scene that
+ * path resolved to a change this diff actually carries (a field row
  * "…/translation" selects its stop rather than dropping the position readout).
- * Re-deriving that path from the node name instead is neither total nor
- * injective: it is null for every change with no node behind it — an animation,
- * a material — which would clear the highlight and reset the readout to the size
- * of the job, and it lands on the wrong row whenever a mesh and a node share a
- * name, which exporters produce routinely. The node name is the structure tree's
- * and the scene's key, and only theirs.
+ * Only the structure tree works in node names, because its rows are the head
+ * file's nodes, and `rowOf` is the one thing that may translate.
+ *
+ * A path is never re-derived from a name in either direction. That derivation is
+ * neither total nor injective: it is null for every change with no node behind
+ * it — an animation, a material — which would clear the highlight and reset the
+ * readout to the size of the job; it lands on the wrong row whenever a mesh and
+ * a node share a name, which exporters produce routinely; and since #47 it
+ * cannot even tell two changes apart, because a deletion and a rename into the
+ * name it vacated share a name and mean different objects.
  *
  * Exported because mounting the real view needs WebGL, and this routing is what
  * keeps the queue's position honest on every route into it.
@@ -329,12 +356,12 @@ export function routeSelection(
   options?: { fly?: boolean },
 ): boolean {
   const { chrome, keys, handle, rowOf } = surfaces;
-  const name = path === null ? null : keys.nameOf(path);
+  const changePath = path === null ? null : keys.changePathOf(path);
   chrome?.selectChange(path === null ? null : entityPath(path));
-  chrome?.highlightNode(name === null ? null : rowOf?.(name) ?? name);
+  chrome?.highlightNode(changePath === null ? null : rowOf?.(changePath) ?? null);
   if (!handle?.selectChange) return false;
   if (path === null) return handle.selectChange(null, options);
-  return name === null ? false : handle.selectChange(name, options);
+  return changePath === null ? false : handle.selectChange(changePath, options);
 }
 
 /** The centre's top-left line: what this view is showing, in two numbers. */

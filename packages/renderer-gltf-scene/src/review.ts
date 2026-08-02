@@ -68,6 +68,10 @@ function verbFor(label: string, dominantDelta: number | undefined): string {
 export function headline(stop: ReviewStop): string {
   if (stop.row.kind === "removed") return "removed";
   if (stop.row.kind === "added") return "added";
+  // A rename's own news is the pair of names. The evidence the handler matched on
+  // rides along in `after` and stays in the panel: it is what a reviewer checks
+  // *after* being told, not the thing the callout exists to say.
+  if (stop.row.kind === "renamed") return `renamed ${renameFrom(stop)} → ${stop.row.label}`;
 
   for (const label of HEADLINE_ORDER) {
     const detail = stop.details.find((d) => d.label === label);
@@ -91,6 +95,11 @@ export function headline(stop: ReviewStop): string {
   if (counted.length === 1) return `${counted[0]!.label} changed`;
   if (counted.length > 1) return `${counted.length} changes`;
   return "changed";
+}
+
+/** A rename's previous name; "?" only if a handler emitted one without a `before`. */
+function renameFrom(stop: ReviewStop): string {
+  return typeof stop.row.before === "string" && stop.row.before !== "" ? stop.row.before : "?";
 }
 
 /** A row with something in it, as opposed to a header above other rows. */

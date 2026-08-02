@@ -7,13 +7,21 @@ describe("palette", () => {
     expect(KIND_COLOR["added"]).toBe(0x0072b2); // blue
     expect(KIND_COLOR["modified"]).toBe(0xe69f00); // orange
     expect(KIND_COLOR["removed"]).toBe(0xcc79a7); // reddish purple
+    expect(KIND_COLOR["renamed"]).toBe(0x009e73); // bluish green
     // The pair that made a deletion look like an addition is gone.
     expect(Object.values(KIND_COLOR)).not.toContain(0xcf222e);
     expect(Object.values(KIND_COLOR)).not.toContain(0x2ea043);
   });
 
+  it("gives renamed a hue of its own, and emphatically not the deletion hue", () => {
+    // A rename's whole news is that the object was *not* deleted; painting it in
+    // or near removed's colour would say the opposite of what the change means.
+    expect(KIND_COLOR["renamed"]).not.toBe(KIND_COLOR["removed"]);
+    expect(new Set(Object.values(KIND_COLOR)).size).toBe(Object.keys(KIND_COLOR).length);
+  });
+
   it("keeps the numeric and CSS forms of each colour in agreement", () => {
-    for (const kind of ["added", "modified", "removed"] as const) {
+    for (const kind of ["added", "modified", "removed", "renamed"] as const) {
       expect(KIND_CSS[kind]!.toLowerCase()).toBe(hexCss(KIND_COLOR[kind]!));
     }
   });
@@ -39,13 +47,32 @@ describe("palette", () => {
       }
     }
   });
+
+  it("separates renamed from the kinds painted beside it on the same solid model", () => {
+    // Hue is the only cue between kinds tinted onto one opaque surface, and
+    // renamed joins added and modified there. Removed is the exception this
+    // palette has always made — it is drawn as a translucent ghost of the previous
+    // version, so it is never told apart by colour alone, which is just as well:
+    // bluish green and reddish purple sit closer together on this axis than the
+    // solid-model kinds are allowed to.
+    const bStar = (hex: number): number => {
+      const b = (hex & 0xff) / 255;
+      const r = ((hex >> 16) & 0xff) / 255;
+      const g = ((hex >> 8) & 0xff) / 255;
+      return (r + g) / 2 - b;
+    };
+    const renamed = bStar(KIND_COLOR["renamed"]!);
+    for (const kind of ["added", "modified"] as const) {
+      expect(Math.abs(renamed - bStar(KIND_COLOR[kind]!))).toBeGreaterThan(0.15);
+    }
+  });
 });
 
 describe("changeTreeCss (the lite change tree's palette override)", () => {
   const css = changeTreeCss();
 
   it("restates every change kind's colour for marks and count chips", () => {
-    for (const kind of ["added", "modified", "removed"] as const) {
+    for (const kind of ["added", "modified", "removed", "renamed"] as const) {
       expect(css).toContain(`.fhr-diff__mark--${kind}{color:${KIND_CSS[kind]}}`);
       expect(css).toContain(`.fhr-diff__count--${kind}`);
     }

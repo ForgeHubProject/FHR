@@ -1,6 +1,14 @@
 // ─── Wire format (mirrors forge/internal/handler/handler.go) ─────────────────
 
-export type ChangeKind = "added" | "removed" | "modified";
+/**
+ * "renamed" is additive: `fhrVersion` stays 1, and consumers are required to
+ * carry a kind they do not recognise rather than drop it (see the SDK's
+ * `countKinds`), so a renderer built before this kind existed still counts and
+ * shows it. A renamed change's label and path use the entity's *new* name, with
+ * `before`/`after` carrying old → new; anything else that changed at the same
+ * time hangs off it as a child.
+ */
+export type ChangeKind = "added" | "removed" | "modified" | "renamed";
 
 export type DiffChange = {
   path: string;

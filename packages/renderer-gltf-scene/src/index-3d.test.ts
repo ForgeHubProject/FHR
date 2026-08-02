@@ -28,6 +28,7 @@ type Surfaces = SelectionSurfaces & {
   framed: (string | null)[];
 };
 
+/** `painted` is the change *paths* the scene can show — its own key since #47. */
 function surfaces(changes: (NodeChange | EntityChange)[], painted: string[]): Surfaces {
   const queued: (string | null)[] = [];
   const highlighted: (string | null)[] = [];
@@ -38,12 +39,18 @@ function surfaces(changes: (NodeChange | EntityChange)[], painted: string[]): Su
   } as unknown as Chrome;
   const handle: SceneHandle = {
     dispose(): void {},
-    selectChange(name: string | null): boolean {
-      framed.push(name);
-      return name === null || painted.includes(name);
+    selectChange(path: string | null): boolean {
+      framed.push(path);
+      return path === null || painted.includes(path);
     },
   };
-  return { chrome, keys: selectionKeys(changes), handle, queued, highlighted, framed };
+  // The mount's `rowOf`, in the only part of it these cases exercise: a node
+  // change's row is the node itself. A mesh or material change's row is
+  // whichever nodes draw its geometry, which needs the file — so it is null
+  // here, and the describe below supplies a real one.
+  const rowOf = (path: string): string | null =>
+    changes.find((c) => c.path === path && path.startsWith("nodes/"))?.name ?? null;
+  return { chrome, keys: selectionKeys(changes), handle, rowOf, queued, highlighted, framed };
 }
 
 describe("routeSelection", () => {
@@ -52,14 +59,14 @@ describe("routeSelection", () => {
   // so the keys are built from the node change alone, exactly as the mount does
   // (index-3d.ts hands `selectionKeys` nodes, meshes and materials; animations
   // have nowhere in the scene to resolve to).
-  const animated = (): Surfaces => surfaces([node("Base", "nodes/Base")], ["Base"]);
+  const animated = (): Surfaces => surfaces([node("Base", "nodes/Base")], ["nodes/Base"]);
 
-  it("gives the queue the path it was handed, and the tree the node name", () => {
+  it("gives the queue and the scene the path, and the tree the node name", () => {
     const s = animated();
     routeSelection(s, "nodes/Base");
     expect(s.queued).toEqual(["nodes/Base"]);
     expect(s.highlighted).toEqual(["Base"]);
-    expect(s.framed).toEqual(["Base"]);
+    expect(s.framed).toEqual(["nodes/Base"]);
   });
 
   it("keeps the queue on a change with no node behind it", () => {
@@ -81,13 +88,27 @@ describe("routeSelection", () => {
     // onto "nodes/Base" and reported a lower position number.
     const s = surfaces(
       [node("Base", "nodes/Base"), entity("Base", "meshes/Base")],
-      ["Base"],
+      ["meshes/Base"],
     );
     routeSelection(s, "meshes/Base");
     expect(s.queued).toEqual(["meshes/Base"]);
-    // The scene and the tree still work in node names, and "Base" is the node.
-    expect(s.highlighted).toEqual(["Base"]);
-    expect(s.framed).toEqual(["Base"]);
+    // The scene is keyed on the path too, so it lands on the mesh change and not
+    // on the node that happens to share its name. (Which tree row lights up is
+    // the mount's `rowOf`; see the describe below.)
+    expect(s.framed).toEqual(["meshes/Base"]);
+  });
+
+  // The #47 case, end to end through the router: one diff, one name, two
+  // changes. Each has to reach its own object, in either emission order.
+  it("tells a deletion from a rename into the name it vacated", () => {
+    const s = surfaces(
+      [node("Wheel", "nodes/Wheel#1"), node("Wheel", "nodes/Wheel")],
+      ["nodes/Wheel#1", "nodes/Wheel"],
+    );
+    routeSelection(s, "nodes/Wheel#1");
+    routeSelection(s, "nodes/Wheel");
+    expect(s.queued).toEqual(["nodes/Wheel#1", "nodes/Wheel"]);
+    expect(s.framed).toEqual(["nodes/Wheel#1", "nodes/Wheel"]);
   });
 
   it("routes a field row to the stop that owns it", () => {
@@ -95,6 +116,7 @@ describe("routeSelection", () => {
     routeSelection(s, "nodes/Base/translation");
     expect(s.queued).toEqual(["nodes/Base"]);
     expect(s.highlighted).toEqual(["Base"]);
+    expect(s.framed).toEqual(["nodes/Base"]);
     routeSelection(s, "animations/Spin/channels/0/output");
     expect(s.queued).toEqual(["nodes/Base", "animations/Spin"]);
   });
@@ -108,14 +130,18 @@ describe("routeSelection", () => {
   });
 
   it("reports whether the scene could show it, without touching the chrome's answer", () => {
-    const s = animated();
-    // Painted: the scene framed it.
+    // "Ghost" is in the diff but not in this model — a node the previous version
+    // had. The scene cannot frame it; the queue still has a row for it.
+    const s = surfaces(
+      [node("Base", "nodes/Base"), node("Ghost", "nodes/Ghost")],
+      ["nodes/Base"],
+    );
     expect(routeSelection(s, "nodes/Base")).toBe(true);
-    // A node the diff names but the model doesn't carry.
     expect(routeSelection(s, "nodes/Ghost")).toBe(false);
-    // No node at all: nothing to frame, but the queue still moved.
+    // No change at that path at all: nothing to frame, but the queue still moved.
     expect(routeSelection(s, "animations/Spin")).toBe(false);
     expect(s.queued).toEqual(["nodes/Base", "nodes/Ghost", "animations/Spin"]);
+    expect(s.framed).toEqual(["nodes/Base", "nodes/Ghost"]);
   });
 
   it("moves the queue and the tree even before the scene exists", () => {
@@ -128,30 +154,44 @@ describe("routeSelection", () => {
   });
 });
 
-// #56 + #51: a mesh or material change is named for the mesh or the material,
+// #56 + #51: a mesh or material change is about geometry a node merely carries,
 // and the structure tree's rows are nodes. The mount resolves one to the other;
-// without it every step through a worklist of such changes handed the tree a
-// name it has no row for, and the tree cleared instead of following.
+// without it every step through a worklist of such changes handed the tree a key
+// it has no row for, and the tree cleared instead of following.
 describe("routeSelection — the tree row for a change named after geometry", () => {
-  const rows = (s: Surfaces, rowOf: (name: string) => string): SelectionSurfaces => ({ ...s, rowOf });
-
-  it("highlights the node a mesh change paints, not the mesh's own name", () => {
-    const s = surfaces([entity("BodyMesh", "meshes/BodyMesh")], ["BodyMesh"]);
-    routeSelection(rows(s, (name) => (name === "BodyMesh" ? "Body" : name)), "meshes/BodyMesh");
-    expect(s.queued).toEqual(["meshes/BodyMesh"]);
-    expect(s.highlighted).toEqual(["Body"]);
-    // The scene is still keyed on change names — only the tree is re-keyed.
-    expect(s.framed).toEqual(["BodyMesh"]);
+  const rows = (s: Surfaces, rowOf: (path: string) => string | null): SelectionSurfaces => ({
+    ...s,
+    rowOf,
   });
 
-  it("leaves a node change's name alone", () => {
-    const s = surfaces([node("Base", "nodes/Base")], ["Base"]);
-    routeSelection(rows(s, (name) => name), "nodes/Base");
+  it("highlights the node a mesh change paints, not the mesh's own name", () => {
+    const s = surfaces([entity("BodyMesh", "meshes/BodyMesh")], ["meshes/BodyMesh"]);
+    routeSelection(rows(s, (path) => (path === "meshes/BodyMesh" ? "Body" : null)), "meshes/BodyMesh");
+    expect(s.queued).toEqual(["meshes/BodyMesh"]);
+    expect(s.highlighted).toEqual(["Body"]);
+    // The scene is keyed on the path, same as the queue — only the tree is
+    // re-keyed, because only the tree works in node names.
+    expect(s.framed).toEqual(["meshes/BodyMesh"]);
+  });
+
+  it("gives a node change the node's own row", () => {
+    const s = surfaces([node("Base", "nodes/Base")], ["nodes/Base"]);
+    routeSelection(rows(s, (path) => (path === "nodes/Base" ? "Base" : null)), "nodes/Base");
     expect(s.highlighted).toEqual(["Base"]);
   });
 
+  // An unreferenced mesh, an animation: real changes with nothing in a tree of
+  // nodes. Highlighting the change's own key there would clear the tree anyway,
+  // so the router says null rather than inventing a row name.
+  it("clears the tree for a change no row carries", () => {
+    const s = surfaces([entity("Spoiler", "meshes/Spoiler")], ["meshes/Spoiler"]);
+    routeSelection(rows(s, () => null), "meshes/Spoiler");
+    expect(s.queued).toEqual(["meshes/Spoiler"]);
+    expect(s.highlighted).toEqual([null]);
+  });
+
   it("still clears the tree for a null selection", () => {
-    const s = surfaces([entity("BodyMesh", "meshes/BodyMesh")], ["BodyMesh"]);
+    const s = surfaces([entity("BodyMesh", "meshes/BodyMesh")], ["meshes/BodyMesh"]);
     routeSelection(rows(s, () => "Body"), null);
     expect(s.highlighted).toEqual([null]);
   });

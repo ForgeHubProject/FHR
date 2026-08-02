@@ -220,9 +220,13 @@ export type IndirectPaint = {
    */
   byNode: Map<string, EntityChange>;
   /**
-   * Change key → the node display keys it reaches, in document order. Empty for
-   * a change nothing in this file draws (an unreferenced mesh) — those have no
-   * row to point at, which `model-overlay` already counts as unpaintable.
+   * Change *path* → the node display keys it reaches, in document order. Empty
+   * for a change nothing in this file draws (an unreferenced mesh) — those have
+   * no row to point at, which `model-overlay` already counts as unpaintable.
+   *
+   * By path, not by the mesh's or material's name: since #47 a name does not
+   * identify a change, and every other surface in the round trip (the overlay's
+   * maps, the queue, the host) keys on the path.
    */
   byChange: Map<string, string[]>;
 };
@@ -256,7 +260,7 @@ export function indirectNodeChanges(
       keys.push(key);
       if (!byNode.has(key)) byNode.set(key, change);
     }
-    if (keys.length > 0) byChange.set(change.name, keys);
+    if (keys.length > 0) byChange.set(change.path, keys);
   };
 
   for (const change of meshes) record(change, resolveMeshNodes(index, change.name));
@@ -297,5 +301,20 @@ export function ambiguousNameMessage(label: string, count: number): string {
   return (
     `${count} nodes in this file are called "${label}", so a change to that name can't be pinned to one of them — ` +
     `only the first is highlighted.`
+  );
+}
+
+/**
+ * The same, for the name a rename left behind (#47). A rename records the bare
+ * old name and nothing more — the previous revision's array index would mean
+ * whatever sits at that number *now* — so when that name was shared, which side
+ * of the pair moved cannot be recovered from the diff. Said out loud, because the
+ * ghost drawn from the wrong twin is otherwise a confident picture of a move that
+ * did not happen.
+ */
+export function ambiguousPreviousNameMessage(label: string, count: number): string {
+  return (
+    `${count} nodes in the previous version are called "${label}", and a rename records only the old name — ` +
+    `so the ghost of where this one stood is drawn from the first of them.`
   );
 }

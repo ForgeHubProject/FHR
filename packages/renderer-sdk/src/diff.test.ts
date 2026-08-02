@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { StructuredDiff } from "@fhr/types";
-import { flattenDiff, diffSummary, formatValue, reviewStops, stepIndex } from "./diff.js";
+import { flattenDiff, diffSummary, countKinds, formatValue, reviewStops, stepIndex } from "./diff.js";
 
 const nested: StructuredDiff = {
   version: "1.0",
@@ -111,9 +111,11 @@ describe("diffSummary", () => {
     });
   });
 
-  // A handler that starts emitting a kind this SDK build has never heard of
-  // (#40's slice 1 adds renames) must still be counted, not silently dropped
-  // from the summary bar.
+  // A handler that starts emitting a kind this SDK build has never heard of must
+  // still be counted, not silently dropped from the summary bar. "renamed" is the
+  // case that actually shipped (#47): it is a real ChangeKind on the wire now,
+  // and this SDK still carries it without knowing anything about it — which is
+  // why adding it needed no change here at all.
   it("counts kinds it has never heard of, known ones first", () => {
     const withRename = {
       version: "1.0",
@@ -129,6 +131,21 @@ describe("diffSummary", () => {
     expect(s.byKind).toEqual({ renamed: 2, added: 1, moved: 1 });
     expect(s.kinds).toEqual(["added", "moved", "renamed"]);
     expect(s.total).toBe(4);
+  });
+
+  // The same property, stated against the *typed* wire format rather than a cast:
+  // a diff a type-checker accepts must survive this SDK unchanged.
+  it("counts a typed renamed change without knowing what a rename is", () => {
+    const diff: StructuredDiff = {
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [
+        { path: "nodes/Fender", label: "Fender", kind: "renamed", before: "Cube.003", after: "Fender" },
+        { path: "nodes/Lamp", label: "Lamp", kind: "added" },
+      ],
+    };
+    expect(diffSummary(diff).byKind["renamed"]).toBe(1);
+    expect(countKinds(diff.changes).kinds).toEqual(["added", "renamed"]);
   });
 });
 
