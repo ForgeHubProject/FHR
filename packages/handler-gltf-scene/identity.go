@@ -1070,40 +1070,66 @@ func bareName(e entity) string {
 	return e.key
 }
 
-// renameAfter renders a rename's `after` value: the new name, plus the evidence
-// that tied it to the old one in the parenthetical form the rest of this handler
-// uses for a measured value ("40 mm (moved 12 mm)").
-//
-// The label stays the bare new name and `before` the bare old one, so a consumer
-// reads names off those two fields and never has to parse this string.
-func renameAfter(newKey string, ev matchEvidence) string {
-	var note string
+// evidenceNote renders the evidence behind a non-trivial pairing, for the
+// parenthetical form the rest of this handler uses for a measured value
+// ("40 mm (moved 12 mm)"). "" for the trivial tiers: a name match needs no
+// explaining, and a positional pair has no evidence to state — an index is not
+// evidence.
+func evidenceNote(ev matchEvidence) string {
 	switch ev.by {
 	case byUID:
-		note = "matched by " + uidExtrasKey
+		note := "matched by " + uidExtrasKey
 		if ev.duplicateUID {
 			// The id was claimed by more than one element on one of the sides, so
 			// this pairing is the first-occurrence rule's guess, not a fact.
 			note += ", duplicated — first occurrence used"
 		}
+		return note
 	case byContent:
-		note = "matched by content"
+		note := "matched by content"
 		if ev.similarity < 1 {
 			// Approximate by construction: the score is a fraction of descriptor
 			// fields, not a measurement of the geometry.
 			note += fmt.Sprintf(", ~%d%% similar", int(ev.similarity*100+0.5))
 		}
+		return note
 	case byStructure:
-		note = "matched by structure"
+		note := "matched by structure"
 		if ev.dice {
 			// A bottom-up container match: what was measured is how many of the
 			// two subtrees' descendants paired, so that is what is said.
 			note += fmt.Sprintf(", ~%d%% of descendants shared", int(ev.similarity*100+0.5))
 		}
+		return note
 	default:
+		return ""
+	}
+}
+
+// renameAfter renders a rename's `after` value: the new name, plus the evidence
+// that tied it to the old one.
+//
+// The label stays the bare new name and `before` the bare old one, so a consumer
+// reads names off those two fields and never has to parse this string.
+func renameAfter(newKey string, ev matchEvidence) string {
+	note := evidenceNote(ev)
+	if note == "" {
 		return newKey
 	}
 	return newKey + " (" + note + ")"
+}
+
+// reparentAfter renders a reparented change's `after` value: the new parent's
+// key, plus the evidence when the pair was made by a non-trivial tier — the
+// same convention renameAfter uses, so 'reparented' reads in the same voice as
+// 'renamed'. The bare new parent key stays readable off the change's `parent`
+// child row, which consumers should prefer over parsing this string.
+func reparentAfter(newParent string, ev matchEvidence) string {
+	note := evidenceNote(ev)
+	if note == "" {
+		return newParent
+	}
+	return newParent + " (" + note + ")"
 }
 
 // ── structural matching: the node tree (#42) ──────────────────────────────────

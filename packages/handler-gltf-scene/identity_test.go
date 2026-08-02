@@ -864,6 +864,13 @@ func TestRenamedParentDoesNotReparentItsChildren(t *testing.T) {
 	if c := findChange(d, "nodes/Door_L"); c != nil {
 		t.Errorf("nothing about the child changed; got %+v", c)
 	}
+	// And nothing here is `reparented` either: the child sits under the same
+	// (renamed) parent, and identity — not the parent's key — decides the kind.
+	walk(d.Changes, func(c *DiffChange, _ int) {
+		if c.Kind == Reparented {
+			t.Errorf("renaming a parent moves none of its children: %+v", c)
+		}
+	})
 }
 
 // `before` and `after` are the elements' bare *names* (SPEC.md §7), never
@@ -2009,6 +2016,16 @@ func TestMovedUnnamedSubtreeReportsReparented(t *testing.T) {
 	if got := kindAt(d, "nodes/Rack"); got != Added {
 		t.Errorf("nodes/Rack: kind = %q, want %q", got, Added)
 	}
+	// The subtree's root is REPARENTED — an unnamed pair may carry that label
+	// (the never-label invariant is about `renamed` only; parent keys resolve
+	// within each file) — and the structural evidence is stated on it.
+	root := mustChange(t, d, "nodes/node[1]")
+	if root.Kind != Reparented {
+		t.Errorf("nodes/node[1]: kind = %q, want %q", root.Kind, Reparented)
+	}
+	if got, want := afterText(root), "Rack (matched by structure)"; got != want {
+		t.Errorf("after = %q, want %q", got, want)
+	}
 	c := mustChange(t, d, "nodes/node[1]/parent")
 	if c.Before != rootParentLabel || c.After != "Rack" {
 		t.Errorf("parent = %v → %v, want %s → Rack", c.Before, c.After, rootParentLabel)
@@ -2249,5 +2266,154 @@ func TestStructuralTierNeverStealsContentPairs(t *testing.T) {
 	}
 	if ev := m.how[0]; ev.by != byContent {
 		t.Errorf("evidence = %+v; content paired it first and structure must not steal it", ev)
+	}
+}
+
+// ── reparented: its own ChangeKind (#42) ──────────────────────────────────────
+
+// reparentDoc hangs `child` under the named parent, with `other` as a second
+// top-level node the child can move to.
+func reparentDoc(t *testing.T, parent string, child map[string]any, other string) []byte {
+	t.Helper()
+	return doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{0, 1}}},
+		"nodes": []any{
+			map[string]any{"name": parent, "children": []int{2}},
+			map[string]any{"name": other},
+			child,
+		},
+	})
+}
+
+// A pure re-parent is its own kind, not a bag of modified fields: the node
+// kept its identity and moved. The existing `parent` child row is KEPT under
+// it — wraps, not replaces — and a name-matched pair carries no evidence note.
+func TestReparentIsItsOwnKind(t *testing.T) {
+	child := map[string]any{"name": "Mirror_L"}
+	base := reparentDoc(t, "Body", child, "Door_L")
+	head := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{0, 1}}},
+		"nodes": []any{
+			map[string]any{"name": "Body"},
+			map[string]any{"name": "Door_L", "children": []int{2}},
+			child,
+		},
+	})
+
+	d := diffOf(t, base, head)
+	c := mustChange(t, d, "nodes/Mirror_L")
+	if c.Kind != Reparented {
+		t.Fatalf("nodes/Mirror_L: kind = %q, want %q", c.Kind, Reparented)
+	}
+	if c.Before != "Body" || c.After != "Door_L" {
+		t.Errorf("reparented = %v → %v, want Body → Door_L with no evidence note for a name match", c.Before, c.After)
+	}
+	// The carry-through row for consumers that predate the kind.
+	row := mustChange(t, d, "nodes/Mirror_L/parent")
+	if row.Kind != Modified || row.Before != "Body" || row.After != "Door_L" {
+		t.Errorf("parent child row = %q %v → %v, want modified Body → Door_L", row.Kind, row.Before, row.After)
+	}
+}
+
+// The root is a parent like any other, spelled <root> on both ends.
+func TestReparentToAndFromRoot(t *testing.T) {
+	attached := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{0}}},
+		"nodes": []any{
+			map[string]any{"name": "Body", "children": []int{1}},
+			map[string]any{"name": "Mirror_L"},
+		},
+	})
+	detached := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{0, 1}}},
+		"nodes": []any{
+			map[string]any{"name": "Body"},
+			map[string]any{"name": "Mirror_L"},
+		},
+	})
+
+	out := mustChange(t, diffOf(t, attached, detached), "nodes/Mirror_L")
+	if out.Kind != Reparented || out.Before != "Body" || out.After != rootParentLabel {
+		t.Errorf("detach = %q %v → %v, want reparented Body → %s", out.Kind, out.Before, out.After, rootParentLabel)
+	}
+	in := mustChange(t, diffOf(t, detached, attached), "nodes/Mirror_L")
+	if in.Kind != Reparented || in.Before != rootParentLabel || in.After != "Body" {
+		t.Errorf("attach = %q %v → %v, want reparented %s → Body", in.Kind, in.Before, in.After, rootParentLabel)
+	}
+}
+
+// #59's precedence, pinned: a rename plus a move is ONE change — the rename —
+// with the parent row hanging under it. `reparented` never competes.
+func TestReparentPlusRenameIsOneRenamedChange(t *testing.T) {
+	base := reparentDoc(t, "Body", withUID("u-m", map[string]any{"name": "Mirror_L"}), "Door_L")
+	head := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{0, 1}}},
+		"nodes": []any{
+			map[string]any{"name": "Body"},
+			map[string]any{"name": "Door_L", "children": []int{2}},
+			withUID("u-m", map[string]any{"name": "Mirror_Left"}),
+		},
+	})
+
+	d := diffOf(t, base, head)
+	mustRename(t, d, "nodes/Mirror_Left", "Mirror_L")
+	mustChange(t, d, "nodes/Mirror_Left/parent")
+	walk(d.Changes, func(c *DiffChange, _ int) {
+		if c.Kind == Reparented {
+			t.Errorf("a rename plus a move is one renamed change: %+v", c)
+		}
+	})
+}
+
+// A re-parent that also moved in space is still the re-parent, with the
+// transform under it — NOT a transform-only modification.
+func TestReparentWithTransformChange(t *testing.T) {
+	base := reparentDoc(t, "Body",
+		map[string]any{"name": "Mirror_L", "translation": []float64{1, 0, 0}}, "Door_L")
+	head := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{0, 1}}},
+		"nodes": []any{
+			map[string]any{"name": "Body"},
+			map[string]any{"name": "Door_L", "children": []int{2}},
+			map[string]any{"name": "Mirror_L", "translation": []float64{1, 0, 5}},
+		},
+	})
+
+	d := diffOf(t, base, head)
+	if c := mustChange(t, d, "nodes/Mirror_L"); c.Kind != Reparented {
+		t.Errorf("nodes/Mirror_L: kind = %q, want %q", c.Kind, Reparented)
+	}
+	mustChange(t, d, "nodes/Mirror_L/parent")
+	mustChange(t, d, "nodes/Mirror_L/translation")
+}
+
+// A non-trivial pairing states its evidence on the reparented row, the same
+// parenthetical convention renames use — here the uid that paired an unnamed
+// node across the move.
+func TestReparentEvidenceStatesThePairing(t *testing.T) {
+	base := reparentDoc(t, "Body", withUID("u-m", map[string]any{"translation": []float64{1, 0, 0}}), "Door_L")
+	head := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{0, 1}}},
+		"nodes": []any{
+			map[string]any{"name": "Body"},
+			map[string]any{"name": "Door_L", "children": []int{2}},
+			withUID("u-m", map[string]any{"translation": []float64{1, 0, 0}}),
+		},
+	})
+
+	d := diffOf(t, base, head)
+	c := mustChange(t, d, "nodes/node[2]")
+	if c.Kind != Reparented {
+		t.Fatalf("nodes/node[2]: kind = %q, want %q", c.Kind, Reparented)
+	}
+	if got, want := afterText(c), "Door_L (matched by "+uidExtrasKey+")"; got != want {
+		t.Errorf("after = %q, want %q", got, want)
 	}
 }

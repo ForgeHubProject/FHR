@@ -25,6 +25,15 @@
 // are vermillion (too close to orange at small sizes), sky blue (too close to
 // blue), and yellow (unreadable on a light background) — bluish green is the one
 // that stays distinct from all three kinds already in use.
+//
+// "Reparented" (#42) REUSES modified's orange, deliberately. The overlay must
+// paint a reparented node the way a reviewer thinks of it — the object
+// survives, something about it changed — and reusing KIND_COLOR[kind] gets that
+// with zero overlay code. A hue of its own is not available: the three unused
+// Wong hues are already rejected above, and renamed's green would wrongly claim
+// name-identity news. Hue reuse is safe here because the kind is never conveyed
+// by hue alone — the tree chip carries the kind text, and the callout says
+// "reparented under X".
 
 /** Change-kind colours as three.js-ready 24-bit ints. */
 export const KIND_COLOR: Record<string, number> = {
@@ -32,6 +41,7 @@ export const KIND_COLOR: Record<string, number> = {
   modified: 0xe69f00,
   removed: 0xcc79a7,
   renamed: 0x009e73,
+  reparented: 0xe69f00,
 };
 
 /** Unchanged geometry: desaturated grey, so changes are the only saturated thing. */
@@ -43,6 +53,7 @@ export const KIND_CSS: Record<string, string> = {
   modified: "#E69F00",
   removed: "#CC79A7",
   renamed: "#009E73",
+  reparented: "#E69F00",
 };
 
 /** Low-alpha background tints for chips/badges, matching KIND_CSS hues. */
@@ -51,6 +62,7 @@ export const KIND_TINT_CSS: Record<string, string> = {
   modified: "rgba(230,159,0,0.14)",
   removed: "rgba(204,121,167,0.14)",
   renamed: "rgba(0,158,115,0.14)",
+  reparented: "rgba(230,159,0,0.14)",
 };
 
 /** 0x0072b2 → "#0072b2" (for stylesheet text built from the numeric palette). */
@@ -76,7 +88,7 @@ export function hexCss(color: number): string {
  */
 export function changeTreeCss(): string {
   const rules: string[] = [];
-  for (const kind of ["added", "modified", "removed", "renamed"] as const) {
+  for (const kind of ["added", "modified", "removed", "renamed", "reparented"] as const) {
     const color = KIND_CSS[kind];
     rules.push(
       `.fhr-diff .fhr-diff__mark--${kind},.fhr-diff[data-theme] .fhr-diff__mark--${kind}{color:${color}}`,

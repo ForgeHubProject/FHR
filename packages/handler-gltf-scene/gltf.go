@@ -1014,11 +1014,29 @@ func diffNodes(a, b *gltf.Document, meshes meshMatch) *DiffChange {
 		bKey := bIx.keys[bi]
 		path := joinPath("nodes", bKey)
 		props := diffNodeProps(aIx, ai, bIx, bi, path, m, meshes)
+		// The same identity test diffNodeProps makes for the parent child row,
+		// recomputed rather than sniffed out of props: did this node move to a
+		// different parent?
+		reparented := !m.sameEntity(aIx.parent[ai], bIx.parent[bi])
 		switch {
+		// Precedence per #59: a rename plus a move is ONE change, the rename, with
+		// the move hanging under it — `reparented` is the node-level kind only when
+		// the pair is not also a rename.
 		case isRename(aEnts[ai], bEnts[bi]):
 			children = append(children, DiffChange{
 				Path: path, Label: bKey, Kind: Renamed,
 				Before: bareName(aEnts[ai]), After: renameAfter(bareName(bEnts[bi]), m.how[ai]),
+				Children: props,
+			})
+		// Wraps, not replaces: the `<node>/parent` child row (Before/After = the
+		// old/new parent KEY) stays in props under this change, so a consumer that
+		// predates the kind still sees the move, and diff-map's field list still
+		// contains "parent". Before/After here are parent keys too — matching what
+		// the child row prints — plus the pairing evidence, renameAfter-style.
+		case reparented:
+			children = append(children, DiffChange{
+				Path: path, Label: bKey, Kind: Reparented,
+				Before: aIx.parentKey(ai), After: reparentAfter(bIx.parentKey(bi), m.how[ai]),
 				Children: props,
 			})
 		case len(props) > 0:

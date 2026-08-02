@@ -268,6 +268,47 @@ describe("renamed nodes (#47)", () => {
   });
 });
 
+describe("reparented nodes (#42)", () => {
+  it("plumbs the kind and the parent field through untouched", () => {
+    // No special handling: the kind flows as a ChangeKind, and the kept `parent`
+    // child row keeps "parent" in the fields — which is what the overlay and the
+    // review panel already key on. A pure reparent keeps its name, so base-file
+    // lookups by `name` keep working with no oldName.
+    const diff = diffOf({
+      path: "nodes/Mirror_L",
+      label: "Mirror_L",
+      kind: "reparented",
+      before: "Body",
+      after: "Door_L (matched by structure)",
+      children: [
+        { path: "nodes/Mirror_L/parent", label: "parent", kind: "modified", before: "Body", after: "Door_L" },
+      ],
+    });
+    expect(nodeChanges(diff)).toEqual([
+      { name: "Mirror_L", kind: "reparented", fields: ["parent"], path: "nodes/Mirror_L" },
+    ]);
+    expect(diffChangeTypes(diff).get("Mirror_L")).toBe("reparented");
+  });
+
+  it("keeps the move grammar when a reparent also moved in space", () => {
+    const diff = diffOf({
+      path: "nodes/Mirror_L",
+      label: "Mirror_L",
+      kind: "reparented",
+      before: "Body",
+      after: "Door_L",
+      children: [
+        { path: "nodes/Mirror_L/parent", label: "parent", kind: "modified", before: "Body", after: "Door_L" },
+        { path: "nodes/Mirror_L/translation", label: "translation", kind: "modified" },
+      ],
+    });
+    const [change] = nodeChanges(diff);
+    expect(hasTransformChange(change!)).toBe(true);
+    expect(isTransformOnly(change!)).toBe(false);
+    expect(change!.oldName).toBeUndefined();
+  });
+});
+
 describe("path escaping (handler scheme: %2F for '/', %25 for '%')", () => {
   it("unescapes a slash-bearing name from the path when there is no label", () => {
     const diff: StructuredDiff = {
