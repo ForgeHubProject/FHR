@@ -12,21 +12,38 @@ package main
 // node — reads as one element removed and an unrelated one added, which is the
 // single most misleading thing a diff can say.
 //
-// Two layers, strongest evidence first:
+// The cascade, strongest evidence first:
 //
 //	1. authored id   extras.fhr_uid, the FHR convention (SPEC.md §7). An opaque
 //	                 string written once and never regenerated. Present → it wins
 //	                 outright: same id with a different name is a rename, never a
 //	                 delete plus an add. Durable but only as good as its adoption.
-//	2. name          the diff key, which is uniqueKeys' disambiguated name. This
-//	                 is also the glTF 2.1 explainer's own fallback rule — a
-//	                 file-unique name *is* a unique id — so a document that writes
-//	                 identity-bearing names and no extras still matches exactly.
-//	3. content       leftovers only: pair a removed candidate with an added one
-//	                 when their content descriptors agree. Works today, on files
-//	                 nobody has stamped, which is the whole point.
+//	2. name          the diff key, which is uniqueKeys' disambiguated name — for
+//	                 elements that HAVE a name. A synthetic `node[3]` key is a
+//	                 position, not a name; matching on it is what made an
+//	                 insertion re-index and falsely "modify" every unnamed
+//	                 element after it (issue #42's cascade), so unnamed elements
+//	                 skip this tier entirely. This is also the glTF 2.1
+//	                 explainer's own fallback rule — a file-unique name *is* a
+//	                 unique id — so a document that writes identity-bearing names
+//	                 and no extras still matches exactly.
+//	3. exact content both-unnamed leftovers only (matchByExactContent): pair two
+//	                 elements whose full stated signatures are identical, and
+//	                 only when the pairing is unique on both sides — ambiguity
+//	                 never pairs, and an opaque field disqualifies outright.
+//	4. content       scored leftovers (matchByContent): pair a removed candidate
+//	                 with an added one when their content descriptors agree
+//	                 above git's rename threshold. Works today, on files nobody
+//	                 has stamped, which is the whole point. Open to unnamed and
+//	                 mixed named/unnamed pairs — the optimizer-stripped-names
+//	                 file is exactly the one this tier exists for.
+//	5. position      unnamed leftovers at the SAME array index, nothing else
+//	                 (matchByPosition): the weakest evidence there is, kept as
+//	                 the last resort so an unnamed element edited in place still
+//	                 reports under its own index instead of as a removal plus an
+//	                 addition.
 //
-// Tier 3 is deliberately timid. A false rename is worse than a missed one: a
+// The content tiers are deliberately timid. A false rename is worse than a missed one: a
 // missed rename shows a reviewer a delete and an add, which is at least two true
 // statements, while a false one asserts a relationship between two unrelated
 // objects and hides the fact that something was deleted. So a content match is
@@ -55,12 +72,24 @@ package main
 // they were weighted against meshWeight on the assumption that all five are in
 // play; the floor is what keeps that true once the mesh drops out.
 //
-// Unnamed elements never *rename*. They are keyed by array index (node[3]), so
-// there is no name for one of them to have changed, and the index cascade an
-// insertion causes is issue #42's — not this layer's. Tier 3 leaves them alone
-// altogether; tier 1 still pairs them, because an authored id on a file whose
-// names a pipeline tool stripped is exactly what the convention is for, but the
-// pairing is reported as a modification and never as a rename (isRename).
+// Unnamed elements PAIR, and are never LABELED renamed. Pairing them is what
+// stops an insertion from cascading down the index keys and what lands an edit
+// on the element it actually happened to — an authored id, an identical stated
+// signature, an anchored subtree and, as a last resort, an equal index can all
+// do it. But an unnamed element is keyed by its array index (node[3]), so there
+// is no name for one of them to have changed: when both sides are unnamed the
+// rename label is withheld (isRename, the single gate every tier reports
+// through), because "node[1] renamed to node[2]" is a statement about array
+// slots, not about the model. A name on one side only is a real edit — a name
+// was added or removed — and is reported as the rename it is.
+//
+// Deliberate exclusion, recorded here because it keeps being proposed: matching
+// WORLD transforms instead of local ones. nodeSignature keys on the local TRS
+// plus the parent as an identity-compared key (parentField), and diffNodeProps
+// compares local TRS through pairing.sameEntity — so a parent's move already
+// cascades to no child, in matching or in reporting. Matching world transforms
+// would CREATE the cascade it claims to prevent: every descendant's world
+// transform changes whenever an ancestor moves.
 //
 // Every content descriptor is likewise built out of cross-revision *keys* and
 // never array indices — a node's mesh, its parent, a primitive's material — for
@@ -113,6 +142,12 @@ type entity struct {
 	// of tiers 1 and 2 ever need one, and a mesh descriptor hashes vertex bytes —
 	// a cost the unchanged path must not pay.
 	sig func() signature
+	// structKey, when non-nil, is a cheap structural key for the exact-content
+	// tier's buckets: O(1), no byte reads, and never finer than the signature —
+	// two elements whose signatures are identical must produce equal keys. Nil
+	// means the signature itself is cheap enough to bucket on (nodes, materials);
+	// meshes provide one so bucketing never triggers a vertex digest.
+	structKey func() string
 }
 
 // fieldKind is what a descriptor field is worth as evidence that two elements
@@ -356,11 +391,27 @@ func materialFields(doc *gltf.Document, m *gltf.Material) []sigField {
 	return fields
 }
 
-// meshSignature describes a mesh by its primitives: what each one is made of
-// (a canonical quantized digest of each vertex stream — quantize.go — falling
-// back to the geometry compare's exact descriptors when the data cannot be
-// canonicalized) and which material it uses. This is the one descriptor that
-// reads buffer bytes, which is why signatures are built lazily.
+// Mesh descriptor weights: a primitive is a material reference plus its vertex
+// streams, and the streams are what the mesh *is* — two meshes drawing the same
+// geometry under different materials are far closer to being the same mesh than
+// two different geometries sharing a material.
+const (
+	meshMaterialWeight = 1
+	meshStreamsWeight  = 4
+)
+
+// meshSignature describes a mesh by its primitives, each as two fields: which
+// material it uses, and what its vertex streams hold (a canonical quantized
+// digest per stream — quantize.go — falling back to the geometry compare's
+// exact descriptors when the data cannot be canonicalized). This is the one
+// descriptor that reads buffer bytes, which is why signatures are built lazily.
+//
+// The material is its own field, resolved by matTok to a cross-file identity
+// token, because embedding the material KEY in one primitive-wide string made
+// two name-stripped files "agree" on `material=material[0]` — an index-derived
+// value, which is exactly the claim fieldKind opaque exists to refuse. Split
+// out, an unverifiable material reference costs its own weight and nothing
+// else, and a reference to a content-paired unnamed material is real agreement.
 //
 // The stream descriptors are the quantized form and not the wire's exact hashes
 // on purpose: matching asks "is this the same mesh after a re-export", where
@@ -369,18 +420,113 @@ func materialFields(doc *gltf.Document, m *gltf.Material) []sigField {
 //
 // The primitive *count* is deliberately not a field of its own. It is already
 // implied by the field list's length, and stating it separately would hand every
-// pair of single-primitive meshes half a point of agreement before their contents
-// were even looked at — half being exactly the threshold.
-func meshSignature(s meshSide, m *gltf.Mesh) signature {
-	fields := make([]sigField, 0, len(m.Primitives))
+// pair of single-primitive meshes agreement before their contents were even
+// looked at.
+func meshSignature(s meshSide, m *gltf.Mesh, matTok refToken) signature {
+	fields := make([]sigField, 0, 2*len(m.Primitives))
 	for _, p := range m.Primitives {
-		parts := []string{"material=" + s.materialKey(p.Material)}
+		parts := make([]string, 0, len(p.Attributes)+1)
 		for _, stream := range primitiveStreams(p, p) {
 			parts = append(parts, stream+"="+s.streamDescriptor(p, stream))
 		}
-		fields = append(fields, sigField{strings.Join(parts, " "), 1, stated})
+		fields = append(fields,
+			matTok(p.Material),
+			sigField{"streams=" + strings.Join(parts, " "), meshStreamsWeight, stated},
+		)
 	}
 	return signature{fields: fields, specific: len(m.Primitives) > 0}
+}
+
+// meshStructuralKey is the exact-content tier's cheap bucket key for a mesh: the
+// shape of every stream (count, type, component — and for POSITION the required
+// Min/Max, quantized at POSITION's precision) plus the material tokens. No byte
+// reads: the expensive canonical digests are only computed to verify a bucket
+// that this key already says is 1:1.
+func meshStructuralKey(s meshSide, m *gltf.Mesh, matTok refToken) string {
+	var b strings.Builder
+	for _, p := range m.Primitives {
+		mf := matTok(p.Material)
+		fmt.Fprintf(&b, "%d\x00%s\x00", mf.kind, mf.value)
+		for _, stream := range primitiveStreams(p, p) {
+			idx, ok := primitiveStreamIndex(p, stream)
+			if !ok || idx < 0 || idx >= len(s.doc.Accessors) {
+				fmt.Fprintf(&b, "%s=<absent>\x00", stream)
+				continue
+			}
+			acc := s.doc.Accessors[idx]
+			fmt.Fprintf(&b, "%s=count=%d type=%v component=%v", stream, acc.Count, acc.Type, acc.ComponentType)
+			if stream == gltf.POSITION {
+				b.WriteString(" bounds=")
+				for _, bound := range [][]float64{acc.Min, acc.Max} {
+					for _, v := range bound {
+						if q, ok := quantize(v, 1e8); ok {
+							fmt.Fprintf(&b, "%d,", q)
+						}
+					}
+					b.WriteByte(';')
+				}
+			}
+			b.WriteByte('\x00')
+		}
+		b.WriteByte('\x1f')
+	}
+	return b.String()
+}
+
+// refToken renders a cross-collection reference — a primitive's material, a
+// node's mesh — as a content-descriptor field whose value survives the trip
+// across revisions.
+type refToken func(idx *int) sigField
+
+// materialTokens builds one side's material refToken, resolving each reference
+// through the materials pairing: a reference to a paired material renders as
+// the pair's canonical token (the BASE-side key, whichever side is looking), so
+// two files agree exactly when they reference the same material — however that
+// material was matched, and whatever it is called in either file. Unpaired
+// named materials keep their own key (a real cross-file name); unpaired unnamed
+// ones are opaque, and a byPosition pair counts as unpaired here, because an
+// equal array index is precisely the claim the opaque rule refuses to trust.
+func materialTokens(s meshSide, mats collectionMatch, isBase bool) refToken {
+	return func(idx *int) sigField {
+		f := sigField{value: "material=" + s.materialKey(idx), weight: meshMaterialWeight}
+		switch {
+		case idx == nil:
+			f.kind = unstated
+			return f
+		case *idx < 0 || *idx >= len(s.materialKeys):
+			f.kind = opaque
+			return f
+		}
+		if tok, ok := pairToken(mats, *idx, isBase); ok {
+			f.value = "material=" + tok
+			return f
+		}
+		if mats.entities(isBase)[*idx].name == "" {
+			f.kind = opaque
+		}
+		return f
+	}
+}
+
+// pairToken resolves one side's index through a collection pairing to the
+// pair's canonical cross-file token: the base-side key. ok is false for an
+// unpaired element and for a positional pair — an index-equality pairing must
+// not launder an index into a "stated" value.
+func pairToken(m collectionMatch, idx int, isBase bool) (string, bool) {
+	bi := idx
+	if !isBase {
+		var ok bool
+		bi, ok = m.pairs.baseOf[idx]
+		if !ok {
+			return "", false
+		}
+	} else if _, ok := m.pairs.headOf[idx]; !ok {
+		return "", false
+	}
+	if m.pairs.how[bi].by == byPosition {
+		return "", false
+	}
+	return m.aKeys[bi], true
 }
 
 // ── matching ──────────────────────────────────────────────────────────────────
@@ -390,6 +536,11 @@ const (
 	byUID     = "fhr_uid"
 	byName    = "name"
 	byContent = "content"
+	// byPosition marks the last-resort tier: equal array indices, nothing else.
+	// It never surfaces on the wire — a positional pair is never a rename (both
+	// sides are unnamed by construction) and states no evidence, because an
+	// index is not evidence.
+	byPosition = "position"
 )
 
 // matchEvidence records why two elements were paired, so a rename can say so.
@@ -429,8 +580,18 @@ func (p pairing) sameEntity(base, head int) bool {
 	return ok && h == head
 }
 
-// matchEntities runs the cascade over one collection and returns the pairing.
-func matchEntities(base, head []entity) pairing {
+// matchEntities runs the per-element evidence tiers over one collection — id,
+// name, exact content, scored content — and returns the pairing. Collections
+// with more evidence run their own tiers on the leftovers afterwards
+// (matchByStructure for the node tree) and every collection finishes with
+// matchByPosition, the weakest tier, so it can never pre-empt a stronger one.
+//
+// deepEq, when non-nil, is the exact-content tier's final check for a candidate
+// pair: it must compare the elements' actual content — not hashes of it —
+// because that tier asserts identity from signature equality alone and a
+// signature may carry 64-bit digests. Nil for collections whose signature
+// values are the stated content itself.
+func matchEntities(base, head []entity, deepEq func(bi, hj int) bool) pairing {
 	p := pairing{
 		headOf: make(map[int]int, len(base)),
 		baseOf: make(map[int]int, len(head)),
@@ -454,14 +615,22 @@ func matchEntities(base, head []entity) pairing {
 		p.pair(i, j, matchEvidence{by: byUID, duplicateUID: baseDup[e.uid] || headDup[e.uid]})
 	}
 
-	// Tier 2 — names, via the diff key. An element already claimed by an id match
-	// is not up for grabs: the id is the stronger evidence, so a head element that
-	// merely inherited the old name reads as new, which is what it is.
+	// Tier 2 — names, via the diff key, and only for elements that have one: an
+	// unnamed element's key is its array index, which is a position and not a
+	// name — pairing on it is the #42 insertion cascade. An element already
+	// claimed by an id match is not up for grabs: the id is the stronger
+	// evidence, so a head element that merely inherited the old name reads as
+	// new, which is what it is.
 	headByKey := make(map[string]int, len(head))
 	for j, e := range head {
-		headByKey[e.key] = j
+		if e.name != "" {
+			headByKey[e.key] = j
+		}
 	}
 	for i, e := range base {
+		if e.name == "" {
+			continue
+		}
 		if _, done := p.headOf[i]; done {
 			continue
 		}
@@ -475,6 +644,7 @@ func matchEntities(base, head []entity) pairing {
 		p.pair(i, j, matchEvidence{by: byName})
 	}
 
+	matchByExactContent(p, base, head, deepEq)
 	matchByContent(p, base, head)
 	return p
 }
@@ -518,20 +688,189 @@ func uidIndex(items []entity) (first map[string]int, duplicated map[string]bool)
 // enough, and the safe direction to fail in.
 const renameLimit = 1000
 
-// matchByContent pairs what tiers 1 and 2 left over, by content descriptor.
+// matchByExactContent pairs the leftovers that are unnamed on BOTH sides and
+// whose full stated signatures are identical — the tier that stops an insertion
+// from cascading through a file with no names at all, which is issue #42's
+// headline defect.
 //
-// Only named elements participate: an unnamed element's key is its array index,
-// so pairing two of them would report a "rename" between two synthetic keys and
-// would wander into the index cascade that is issue #42's to fix.
-func matchByContent(p pairing, base, head []entity) {
+// Deliberately narrower than the scored tier in three ways. Unique:unique only:
+// elements are bucketed by content and a bucket holding more than one candidate
+// on either side pairs nothing (unlike git's in-order exact renames) — two
+// identical unnamed elements are interchangeable, and choosing one would be a
+// coin flip that hides which was deleted. No opaque field anywhere in either
+// signature: an index-derived referent key cannot be verified cross-file, so it
+// disqualifies the element from exact matching outright — the signature must be
+// built from stated content alone. And both sides unnamed: for NAMED elements,
+// exact equality of sparse stated content is precisely the false rename the
+// scored tier's floors reject (two "groups at origin" have identical stated
+// content and are pinned as add+remove) — for unnamed elements the alternative
+// evidence is array position, which full-content equality strictly beats.
+//
+// Two-tier for cost: buckets are keyed on a cheap structural key (entity.
+// structKey — no byte reads), and the expensive full signatures are only built
+// to VERIFY a 1:1 bucket, at most once per element. Where a signature carries
+// content digests, deepEq then re-compares the actual content — hash equality
+// is an accelerator, never the proof. Bounded by the same renameLimit product
+// cap as every content-scored pass.
+func matchByExactContent(p pairing, base, head []entity, deepEq func(bi, hj int) bool) {
 	var leftBase, leftHead []int
 	for i, e := range base {
-		if _, done := p.headOf[i]; !done && e.name != "" {
+		if _, done := p.headOf[i]; !done && e.name == "" {
 			leftBase = append(leftBase, i)
 		}
 	}
 	for j, e := range head {
-		if _, done := p.baseOf[j]; !done && e.name != "" {
+		if _, done := p.baseOf[j]; !done && e.name == "" {
+			leftHead = append(leftHead, j)
+		}
+	}
+	if len(leftBase) == 0 || len(leftHead) == 0 {
+		return
+	}
+	if len(leftBase) > renameLimit*renameLimit/len(leftHead) {
+		return
+	}
+
+	type bucket struct {
+		base, head []int
+	}
+	key := func(e entity) string {
+		if e.structKey != nil {
+			return e.structKey()
+		}
+		return structuralKeyOf(e.sig())
+	}
+	buckets := make(map[string]*bucket, len(leftBase)+len(leftHead))
+	at := func(k string) *bucket {
+		b := buckets[k]
+		if b == nil {
+			b = &bucket{}
+			buckets[k] = b
+		}
+		return b
+	}
+	for _, i := range leftBase {
+		b := at(key(base[i]))
+		b.base = append(b.base, i)
+	}
+	for _, j := range leftHead {
+		b := at(key(head[j]))
+		b.head = append(b.head, j)
+	}
+
+	for _, b := range buckets {
+		// Ambiguity never pairs: a bucket is only acted on when it holds exactly
+		// one candidate per side. (Order over the map is irrelevant — every element
+		// sits in exactly one bucket.)
+		if len(b.base) != 1 || len(b.head) != 1 {
+			continue
+		}
+		i, j := b.base[0], b.head[0]
+		sa, sb := base[i].sig(), head[j].sig()
+		if !sa.specific || !sb.specific {
+			continue // contentless elements never pair
+		}
+		if sigHasOpaque(sa) || sigHasOpaque(sb) {
+			continue // unverifiable content never asserts identity
+		}
+		if !sigFieldsEqual(sa, sb) {
+			continue // the cheap key lumped two different elements; the proof says no
+		}
+		if deepEq != nil && !deepEq(i, j) {
+			continue
+		}
+		p.pair(i, j, matchEvidence{by: byContent, similarity: 1})
+	}
+}
+
+// structuralKeyOf derives an exact-tier bucket key from a signature, for
+// collections whose signatures are cheap to build outright.
+func structuralKeyOf(s signature) string {
+	var b strings.Builder
+	for _, f := range s.fields {
+		fmt.Fprintf(&b, "%d\x00%d\x00%s\x00", f.kind, f.weight, f.value)
+	}
+	return b.String()
+}
+
+func sigHasOpaque(s signature) bool {
+	for _, f := range s.fields {
+		if f.kind == opaque {
+			return true
+		}
+	}
+	return false
+}
+
+// sigFieldsEqual reports whether two signatures state identical content: same
+// field list, same values, same kinds. This is the exact tier's proof (modulo
+// deepEq for digest-bearing values), so nothing is inferred — everything is
+// compared.
+func sigFieldsEqual(a, b signature) bool {
+	if len(a.fields) != len(b.fields) {
+		return false
+	}
+	for i := range a.fields {
+		if a.fields[i].value != b.fields[i].value || a.fields[i].kind != b.fields[i].kind {
+			return false
+		}
+	}
+	return true
+}
+
+// matchByPosition is the cascade's last resort, and reproduces the pre-#42
+// behaviour for what nothing stronger could pair: two unnamed leftovers at the
+// same array index — name == "" on BOTH sides, not merely key-equal, so a node
+// literally named "node[3]" can never collide with an index key — are assumed
+// to be the same element. It is what keeps an unnamed element edited in place
+// reporting under its own index, and what keeps a file of interchangeable
+// duplicates (which the exact tier refuses as ambiguous) diffing empty when
+// nothing changed. A positional pair can never be labeled renamed (both sides
+// are unnamed) and its evidence never surfaces: an index is not evidence.
+func matchByPosition(p pairing, base, head []entity) {
+	headByKey := make(map[string]int)
+	for j, e := range head {
+		if _, done := p.baseOf[j]; !done && e.name == "" {
+			headByKey[e.key] = j
+		}
+	}
+	for i, e := range base {
+		if e.name != "" {
+			continue
+		}
+		if _, done := p.headOf[i]; done {
+			continue
+		}
+		j, ok := headByKey[e.key]
+		if !ok {
+			continue
+		}
+		if _, taken := p.baseOf[j]; taken {
+			continue
+		}
+		p.pair(i, j, matchEvidence{by: byPosition})
+	}
+}
+
+// matchByContent pairs what the exact tiers left over, by scored content
+// descriptor.
+//
+// Unnamed elements participate too — including mixed named/unnamed pairs, which
+// is the optimizer-stripped-names case: a deleted named element pairing an
+// added unnamed one IS reported as the rename it is (a name was removed), per
+// isRename's one-sided rule, while a both-unnamed pair is never labeled. The
+// floors and thresholds are untouched, so a sparse unnamed node (a translation
+// alone is 1/5) still cannot pair here — the cascade fix for identical unnamed
+// elements is matchByExactContent's, not this tier's.
+func matchByContent(p pairing, base, head []entity) {
+	var leftBase, leftHead []int
+	for i := range base {
+		if _, done := p.headOf[i]; !done {
+			leftBase = append(leftBase, i)
+		}
+	}
+	for j := range head {
+		if _, done := p.baseOf[j]; !done {
 			leftHead = append(leftHead, j)
 		}
 	}

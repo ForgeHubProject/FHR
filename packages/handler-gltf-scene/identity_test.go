@@ -1701,3 +1701,234 @@ func TestQuantizedDigestIsMemoized(t *testing.T) {
 		t.Error("a fresh meshSide must digest the mutated bytes differently")
 	}
 }
+
+// ── unnamed-element pairing (#42) ─────────────────────────────────────────────
+
+// testPairing is an empty pairing for driving a single tier directly.
+func testPairing() pairing {
+	return pairing{headOf: map[int]int{}, baseOf: map[int]int{}, how: map[int]matchEvidence{}}
+}
+
+// An unchanged file with no names at all must diff empty — including
+// byte-identical duplicates, which the exact tier refuses as ambiguous and the
+// positional fallback still pairs slot for slot.
+func TestUnnamedUnchangedFileHasEmptyDiff(t *testing.T) {
+	same := nodesDoc(t,
+		map[string]any{"translation": []float64{1, 1, 1}},
+		map[string]any{"translation": []float64{1, 1, 1}}, // byte-identical duplicate
+		map[string]any{"translation": []float64{2, 0, 0}},
+	)
+	if d := diffOf(t, same, same); len(d.Changes) != 0 {
+		t.Errorf("expected no changes, got %v", paths(d))
+	}
+}
+
+// No insertion, one edit: the positional fallback pairs node[0] with node[0],
+// exactly as the pre-#42 key match did, so an unnamed node edited in place
+// still reports under its own index instead of as a removal plus an addition.
+func TestUnnamedEditedNodeReportsUnderItsIndex(t *testing.T) {
+	base := nodesDoc(t, map[string]any{"translation": []float64{1, 0, 0}})
+	head := nodesDoc(t, map[string]any{"translation": []float64{1, 0, 5}})
+
+	d := diffOf(t, base, head)
+	if got := kindAt(d, "nodes/node[0]"); got != Modified {
+		t.Errorf("nodes/node[0]: kind = %q, want %q", got, Modified)
+	}
+	mustChange(t, d, "nodes/node[0]/translation")
+	walk(d.Changes, func(c *DiffChange, _ int) {
+		if c.Kind == Renamed {
+			t.Errorf("nothing has a name here: %+v", c)
+		}
+	})
+}
+
+// An insertion plus an edit of a survivor is the honest limit of the cascade
+// fix: the edited survivor's content no longer matches exactly, its sparse
+// stated content (a translation, 1/5) is below the scored threshold, and the
+// insertion shifted its index out from under the positional fallback — so it is
+// reported as the removal and addition it might genuinely be. Conservative by
+// construction: a guessed pairing here could hide a real deletion.
+func TestUnnamedInsertionPlusEditFallsBackToPosition(t *testing.T) {
+	base := nodesDoc(t,
+		map[string]any{"translation": []float64{1, 0, 0}},
+		map[string]any{"translation": []float64{2, 0, 0}},
+	)
+	head := nodesDoc(t,
+		map[string]any{"translation": []float64{9, 9, 9}}, // inserted at the front
+		map[string]any{"translation": []float64{1, 0, 0}}, // untouched survivor
+		map[string]any{"translation": []float64{2, 0, 5}}, // edited survivor
+	)
+
+	d := diffOf(t, base, head)
+	// The untouched survivor paired exactly and vanished from the diff.
+	if c := findChange(d, "nodes/node[1]"); c != nil {
+		t.Errorf("the untouched survivor must pair silently, got %+v", c)
+	}
+	// The rest is reported without a guess. The removed base node's path takes
+	// the #1 suffix because the head-side namespace owns `node[1]` (pathKeys).
+	for path, want := range map[string]ChangeKind{
+		"nodes/node[0]":   Added,
+		"nodes/node[2]":   Added,
+		"nodes/node[1]#1": Removed,
+	} {
+		if got := kindAt(d, path); got != want {
+			t.Errorf("%s: kind = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// Two identical unnamed candidates on one side are interchangeable, and the
+// exact tier must refuse the coin flip: ambiguity never pairs.
+func TestExactContentTierRefusesAmbiguity(t *testing.T) {
+	sig := func() signature {
+		return signature{fields: []sigField{{"translation=[1 1 1]", 1, stated}}, specific: true}
+	}
+	ent := func(key string) entity { return entity{key: key, sig: sig} }
+
+	p := testPairing()
+	matchByExactContent(p, []entity{ent("node[0]"), ent("node[1]")}, []entity{ent("node[0]")}, nil)
+	if len(p.headOf) != 0 {
+		t.Errorf("two identical candidates paired anyway: %v", p.headOf)
+	}
+
+	// Unique against unique is the whole tier: full-confidence content evidence.
+	p = testPairing()
+	matchByExactContent(p, []entity{ent("node[0]")}, []entity{ent("node[3]")}, nil)
+	if got, ok := p.headOf[0]; !ok || got != 0 {
+		t.Fatalf("a unique identical pair must match, got %v (ok=%v)", got, ok)
+	}
+	if ev := p.how[0]; ev.by != byContent || ev.similarity != 1 {
+		t.Errorf("evidence = %+v, want a full-similarity content match", ev)
+	}
+}
+
+// A signature carrying an opaque field — an index-derived referent key that
+// cannot be verified cross-file — disqualifies the element from exact matching
+// outright, even when the opaque strings happen to be equal.
+func TestExactContentTierRefusesOpaqueFields(t *testing.T) {
+	t.Run("unit", func(t *testing.T) {
+		sig := func() signature {
+			return signature{fields: []sigField{
+				{"mesh=mesh[0]", meshWeight, opaque},
+				{"translation=[1 1 1]", 1, stated},
+			}, specific: true}
+		}
+		p := testPairing()
+		matchByExactContent(p, []entity{{key: "node[0]", sig: sig}}, []entity{{key: "node[7]", sig: sig}}, nil)
+		if len(p.headOf) != 0 {
+			t.Errorf("an unverifiable referent must not assert identity: %v", p.headOf)
+		}
+	})
+
+	// End to end: a node drawing an unpaired unnamed mesh never exact-pairs, so
+	// its content twin at a shifted index is reported as the addition it may be.
+	t.Run("through a document", func(t *testing.T) {
+		// Two identical unnamed meshes per side keep the mesh collection itself
+		// unpairable by content (ambiguous), so the node's mesh reference stays an
+		// index — opaque.
+		base := meshListDoc(t, []string{"", ""},
+			map[string]any{"mesh": 0, "translation": []float64{1, 0, 0}},
+		)
+		head := meshListDoc(t, []string{"", ""},
+			map[string]any{"translation": []float64{9, 9, 9}},
+			map[string]any{"mesh": 0, "translation": []float64{1, 0, 0}},
+		)
+
+		d := diffOf(t, base, head)
+		if got := kindAt(d, "nodes/node[1]"); got != Added {
+			t.Errorf("the content twin must stay an addition, got %q", got)
+		}
+		walk(d.Changes, func(c *DiffChange, _ int) {
+			if c.Kind == Renamed {
+				t.Errorf("nothing here is nameable: %+v", c)
+			}
+		})
+	})
+}
+
+// The issue's optimizer scenario, end to end: a pipeline tool strips every name
+// from an otherwise identical file. Materials pair by content, meshes pair on
+// their streams plus the material pair-token, nodes pair on the mesh pair-token
+// plus placement — the cross-collection threading in Diff — and every pair is
+// reported as the one-sided rename it is, with the content evidence stated.
+// Zero removals: nothing was deleted, and the diff must not say otherwise.
+func TestOptimizerStrippedNamesMatchByContent(t *testing.T) {
+	scene := func(named bool) []byte {
+		name := func(s string) map[string]any {
+			if named {
+				return map[string]any{"name": s}
+			}
+			return map[string]any{}
+		}
+		with := func(m map[string]any, kv map[string]any) map[string]any {
+			for k, v := range kv {
+				m[k] = v
+			}
+			return m
+		}
+		return doc(t, map[string]any{
+			"scene":  0,
+			"scenes": []any{map[string]any{"nodes": []int{0, 1}}},
+			"nodes": []any{
+				with(name("Body"), map[string]any{"mesh": 0, "translation": []float64{0, 1, 0}}),
+				with(name("Wheel"), map[string]any{"mesh": 1, "translation": []float64{1.3, 0.45, 0.75}}),
+			},
+			"meshes": []any{
+				with(name("BodyMesh"), map[string]any{"primitives": []any{map[string]any{"attributes": map[string]any{}, "material": 0}}}),
+				with(name("WheelMesh"), map[string]any{"primitives": []any{map[string]any{"attributes": map[string]any{}, "material": 1}}}),
+			},
+			"materials": []any{
+				with(name("Paint"), map[string]any{"pbrMetallicRoughness": map[string]any{"baseColorFactor": []float64{0.8, 0.1, 0.1, 1}}}),
+				with(name("Rubber"), map[string]any{"pbrMetallicRoughness": map[string]any{
+					"baseColorFactor": []float64{0.05, 0.05, 0.05, 1}, "metallicFactor": 0, "roughnessFactor": 0.9,
+				}}),
+			},
+		})
+	}
+
+	d := diffOf(t, scene(true), scene(false))
+	for path, oldName := range map[string]string{
+		"nodes/node[0]":         "Body",
+		"nodes/node[1]":         "Wheel",
+		"meshes/mesh[0]":        "BodyMesh",
+		"meshes/mesh[1]":        "WheelMesh",
+		"materials/material[0]": "Paint",
+		"materials/material[1]": "Rubber",
+	} {
+		c := mustRename(t, d, path, oldName)
+		if got := afterText(c); !strings.Contains(got, "matched by content") {
+			t.Errorf("%s: after = %q, want the content evidence", path, got)
+		}
+	}
+	walk(d.Changes, func(c *DiffChange, _ int) {
+		if c.Kind == Removed || c.Kind == Added {
+			t.Errorf("nothing was deleted or created: %+v", c)
+		}
+	})
+}
+
+// Two meshes whose only common ground is `material[0]` on both sides — an
+// index-derived value pointing at unpaired unnamed materials — have agreed on
+// nothing: the material field is opaque, the streams disagree, and the pair
+// stays a removal plus an addition.
+func TestMeshSignatureUnnamedMaterialIsNotAgreement(t *testing.T) {
+	base := geometryGLB(t, geometrySpec{
+		mesh: "Hull", positions: ramp(6), materials: []string{""}, material: intPtr(0),
+	})
+	head := geometryGLB(t, geometrySpec{
+		mesh: "Shell", positions: sculptAll(ramp(6), 5), materials: []string{""}, material: intPtr(0),
+	})
+
+	d := diffOf(t, base, head)
+	if got := kindAt(d, "meshes/Hull"); got != Removed {
+		t.Errorf("meshes/Hull: kind = %q, want %q", got, Removed)
+	}
+	if got := kindAt(d, "meshes/Shell"); got != Added {
+		t.Errorf("meshes/Shell: kind = %q, want %q", got, Added)
+	}
+	walk(d.Changes, func(c *DiffChange, _ int) {
+		if c.Kind == Renamed {
+			t.Errorf("a shared array index is not evidence: %+v", c)
+		}
+	})
+}
