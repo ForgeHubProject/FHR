@@ -1465,3 +1465,239 @@ func TestSimilarityAndStrictBest(t *testing.T) {
 		t.Error("nothing at or above the threshold must not produce a winner")
 	}
 }
+
+// ── quantized canonical geometry signatures (#42, matching only) ──────────────
+
+// perturb3 returns a copy of v with component c of vertex i nudged by delta,
+// through float32 arithmetic so the change is exactly what an exporter's
+// rounding produces.
+func perturb3(v [][3]float32, i, c int, delta float32) [][3]float32 {
+	out := make([][3]float32, len(v))
+	copy(out, v)
+	out[i][c] += delta
+	return out
+}
+
+// The headline case and its scope fence in one test. A mesh renamed AND
+// re-exported with quantization-level float jitter still pairs — the quantized
+// digest treats the jitter as the noise it is — while the very same jitter on a
+// name-matched mesh still REPORTS its POSITION stream as changed, with the two
+// exact hashes differing: matching is quantized, the wire is not.
+func TestQuantizedSignatureIgnoresReexportJitter(t *testing.T) {
+	pos := ramp(16)
+	// 1e-9 flips real float32 bits on the small components (vertex 0 sits at the
+	// origin, where an ulp is far smaller than 1e-9) but rounds away at POSITION's
+	// 8-decimal quantum.
+	jittered := perturb3(pos, 0, 0, 1e-9)
+
+	renamed := diffOf(t,
+		geometryGLB(t, geometrySpec{mesh: "Hull", positions: pos, indices: seq(16)}),
+		geometryGLB(t, geometrySpec{mesh: "Shell", positions: jittered, indices: seq(16)}),
+	)
+	c := mustRename(t, renamed, "meshes/Shell", "Hull")
+	if got := afterText(c); !strings.Contains(got, "matched by content") || strings.Contains(got, "%") {
+		t.Errorf("after = %q, want a full-confidence content match", got)
+	}
+
+	// The fence: same jitter, same name — the geometry row still reports, and its
+	// descriptors carry differing *exact* hashes, not the quantized digest.
+	control := diffOf(t,
+		geometryGLB(t, geometrySpec{mesh: "Hull", positions: pos, indices: seq(16)}),
+		geometryGLB(t, geometrySpec{mesh: "Hull", positions: jittered, indices: seq(16)}),
+	)
+	row := mustChange(t, control, "meshes/Hull/primitives/0/geometry/POSITION")
+	if row.Before == row.After {
+		t.Fatalf("sub-quantum jitter must still be reported on the wire: %s", valueOf(row))
+	}
+	for _, v := range []any{row.Before, row.After} {
+		s := fmt.Sprint(v)
+		if !strings.Contains(s, " hash=") || strings.Contains(s, "qhash=") {
+			t.Errorf("wire descriptor %q must carry the exact hash, never the quantized digest", s)
+		}
+	}
+}
+
+// A vertex permutation with its index buffer remapped is the same mesh: the
+// canonical order sorts the records, so the shuffle cancels.
+func TestCanonicalOrderingSurvivesVertexReorder(t *testing.T) {
+	pos := ramp(6)
+	indices := []uint32{0, 1, 2, 3, 4, 5}
+	// Reverse the vertex array and remap the indices through the permutation.
+	rev := make([][3]float32, len(pos))
+	remapped := make([]uint32, len(indices))
+	for i, p := range pos {
+		rev[len(pos)-1-i] = p
+	}
+	for j, ix := range indices {
+		remapped[j] = uint32(len(pos) - 1 - int(ix))
+	}
+
+	d := diffOf(t,
+		geometryGLB(t, geometrySpec{mesh: "Hull", positions: pos, indices: indices}),
+		geometryGLB(t, geometrySpec{mesh: "Shell", positions: rev, indices: remapped}),
+	)
+	c := mustRename(t, d, "meshes/Shell", "Hull")
+	if got := afterText(c); strings.Contains(got, "%") {
+		t.Errorf("after = %q, want full similarity for a pure reorder", got)
+	}
+}
+
+// Rotating a triangle keeps its winding, and the triangle list is a set: both
+// rewrites are what an optimiser does to an untouched mesh.
+func TestCanonicalOrderingSurvivesTriangleRotationAndOrder(t *testing.T) {
+	pos := ramp(4)
+	d := diffOf(t,
+		geometryGLB(t, geometrySpec{mesh: "Hull", positions: pos, indices: []uint32{0, 1, 2, 2, 3, 0}}),
+		// The same two triangles: each cyclically rotated, and the list reordered.
+		geometryGLB(t, geometrySpec{mesh: "Shell", positions: pos, indices: []uint32{3, 0, 2, 1, 2, 0}}),
+	)
+	mustRename(t, d, "meshes/Shell", "Hull")
+}
+
+// The reflected triangle list is NOT the same mesh: rotation preserves winding,
+// so a mirrored surface keeps a different digest and stays a removal plus an
+// addition.
+func TestMirroredGeometryDoesNotMatch(t *testing.T) {
+	pos := ramp(3)
+	d := diffOf(t,
+		geometryGLB(t, geometrySpec{mesh: "Hull", positions: pos, indices: []uint32{0, 1, 2}}),
+		geometryGLB(t, geometrySpec{mesh: "Shell", positions: pos, indices: []uint32{0, 2, 1}}),
+	)
+	if got := kindAt(d, "meshes/Hull"); got != Removed {
+		t.Errorf("meshes/Hull: kind = %q, want %q", got, Removed)
+	}
+	if got := kindAt(d, "meshes/Shell"); got != Added {
+		t.Errorf("meshes/Shell: kind = %q, want %q", got, Added)
+	}
+}
+
+// Each semantic has its own tolerance — trimesh's constants — so noise is
+// forgiven at the precision that semantic is authored at, and a real edit one
+// order of magnitude above it still separates the meshes.
+func TestQuantizationPrecisionPerSemantic(t *testing.T) {
+	pos := ramp(8)
+	tests := []struct {
+		name       string
+		head       geometrySpec
+		wantPaired bool
+	}{
+		{"POSITION jitter at 1e-9 pairs", geometrySpec{positions: perturb3(pos, 0, 0, 1e-9)}, true},
+		{"POSITION at 1e-7 does not", geometrySpec{positions: perturb3(pos, 0, 0, 1e-7)}, false},
+		{"NORMAL jitter at 1e-3 pairs", geometrySpec{positions: pos, normals: perturb3(ramp(8), 0, 0, 1e-3)}, true},
+		{"NORMAL at 1e-1 does not", geometrySpec{positions: pos, normals: perturb3(ramp(8), 0, 0, 1e-1)}, false},
+		{"TEXCOORD jitter at 1e-5 pairs", geometrySpec{positions: pos, uvs: [][2]float32{{1e-5, 0}, {0, 0}, {0, 1}, {1, 0}, {1, 1}, {0.5, 0}, {0, 0.5}, {0.5, 0.5}}}, true},
+		{"TEXCOORD at 1e-3 does not", geometrySpec{positions: pos, uvs: [][2]float32{{1e-3, 0}, {0, 0}, {0, 1}, {1, 0}, {1, 1}, {0.5, 0}, {0, 0.5}, {0.5, 0.5}}}, false},
+	}
+	baseUVs := [][2]float32{{0, 0}, {0, 0}, {0, 1}, {1, 0}, {1, 1}, {0.5, 0}, {0, 0.5}, {0.5, 0.5}}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			base := geometrySpec{mesh: "Hull", positions: pos}
+			head := tc.head
+			head.mesh = "Shell"
+			if head.normals != nil {
+				base.normals = ramp(8)
+			}
+			if head.uvs != nil {
+				base.uvs = baseUVs
+			}
+			d := diffOf(t, geometryGLB(t, base), geometryGLB(t, head))
+			if tc.wantPaired {
+				mustRename(t, d, "meshes/Shell", "Hull")
+			} else if got := kindAt(d, "meshes/Hull"); got != Removed {
+				t.Errorf("meshes/Hull: kind = %q, want %q (an edit above the quantum is a different mesh)", got, Removed)
+			}
+		})
+	}
+}
+
+// Duplicate vertex records collapse to one canonical rank, so shuffling which
+// array slot holds which duplicate — with the indices following — cancels.
+func TestDuplicateVertexPermutationCancels(t *testing.T) {
+	a, b, c := [3]float32{0, 0, 0}, [3]float32{1, 0, 0}, [3]float32{0, 1, 0}
+	d := diffOf(t,
+		geometryGLB(t, geometrySpec{mesh: "Hull", positions: [][3]float32{a, b, a, c}, indices: []uint32{0, 1, 3, 2, 3, 1}}),
+		// The duplicate of `a` swaps slots; the triangles are the same by rank.
+		geometryGLB(t, geometrySpec{mesh: "Shell", positions: [][3]float32{a, a, b, c}, indices: []uint32{0, 2, 3, 1, 3, 2}}),
+	)
+	cch := mustRename(t, d, "meshes/Shell", "Hull")
+	if got := afterText(cch); strings.Contains(got, "%") {
+		t.Errorf("after = %q, want full similarity", got)
+	}
+}
+
+// Data that cannot be decoded keeps the exact descriptor — the same
+// hash-or-<unreadable> string the wire uses — rather than a guessed canonical
+// digest. Mirrors primitiveCentroid's refuse-don't-guess rule.
+func TestSparseOrUnreadableAccessorFallsBackToExactDescriptor(t *testing.T) {
+	t.Run("external buffer", func(t *testing.T) {
+		doc, err := parseDoc(externalBufferDoc(t, "scene.bin", 12))
+		if err != nil {
+			t.Fatal(err)
+		}
+		side := newMeshSide(doc)
+		got := side.streamDescriptor(doc.Meshes[0].Primitives[0], "POSITION")
+		if !strings.Contains(got, "hash=<unreadable>") || strings.Contains(got, "qhash") {
+			t.Errorf("descriptor = %q, want the exact unreadable fallback", got)
+		}
+	})
+
+	t.Run("sparse accessor", func(t *testing.T) {
+		blob := doc(t, map[string]any{
+			"buffers": []any{map[string]any{"byteLength": 48, "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}},
+			"bufferViews": []any{
+				map[string]any{"buffer": 0, "byteOffset": 0, "byteLength": 24},
+				map[string]any{"buffer": 0, "byteOffset": 24, "byteLength": 24},
+			},
+			"accessors": []any{map[string]any{
+				"bufferView": 0, "componentType": 5126, "count": 2, "type": "VEC3",
+				"sparse": map[string]any{
+					"count":   1,
+					"indices": map[string]any{"bufferView": 1, "componentType": 5123},
+					"values":  map[string]any{"bufferView": 1},
+				},
+			}},
+			"meshes": []any{map[string]any{"name": "Hull", "primitives": []any{
+				map[string]any{"attributes": map[string]any{"POSITION": 0}},
+			}}},
+		})
+		docP, err := parseDoc(blob)
+		if err != nil {
+			t.Fatal(err)
+		}
+		side := newMeshSide(docP)
+		got := side.streamDescriptor(docP.Meshes[0].Primitives[0], "POSITION")
+		if !strings.Contains(got, "hash=<unreadable>") || strings.Contains(got, "qhash") {
+			t.Errorf("descriptor = %q, want the exact unreadable fallback", got)
+		}
+	})
+}
+
+// The canonical digest is computed once per primitive per diff: the second
+// lookup must come from the meshSide cache, not from the bytes.
+func TestQuantizedDigestIsMemoized(t *testing.T) {
+	blob := geometryGLB(t, geometrySpec{positions: ramp(8), indices: seq(8)})
+	docP, err := parseDoc(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	side := newMeshSide(docP)
+	p := docP.Meshes[0].Primitives[0]
+
+	first := side.streamDescriptor(p, "POSITION")
+	// Rewrite the first POSITION component to 1.0 — far beyond any quantum — and
+	// look again through the same side: a memo hit returns the old digest.
+	posAcc := docP.Accessors[p.Attributes["POSITION"]]
+	span, _, ok := accessorSpan(docP, posAcc)
+	if !ok {
+		t.Fatal("fixture POSITION must be readable")
+	}
+	span[0], span[1], span[2], span[3] = 0x00, 0x00, 0x80, 0x3f // float32(1.0), little-endian
+	if got := side.streamDescriptor(p, "POSITION"); got != first {
+		t.Errorf("second lookup = %q, want the memoized %q", got, first)
+	}
+	// A fresh side sees the mutation, which proves the memo (and not an
+	// insensitive digest) is what held the value steady.
+	if got := newMeshSide(docP).streamDescriptor(p, "POSITION"); got == first {
+		t.Error("a fresh meshSide must digest the mutated bytes differently")
+	}
+}
