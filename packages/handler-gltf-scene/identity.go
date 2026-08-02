@@ -1144,9 +1144,21 @@ func reparentAfter(newParent string, ev matchEvidence) string {
 const diceThreshold = 0.5
 
 // byStructure marks a pair made by the node tree: an anchored identical subtree
-// (similarity 1) or a bottom-up container match (similarity = the dice score,
-// matchEvidence.dice set).
+// (similarity 1), a bottom-up container match (similarity = the dice score,
+// matchEvidence.dice set), or an identical leftover under a paired parent
+// (similarity 1).
 const byStructure = "structure"
+
+// structureWorkBudget bounds matchByStructure phase 2's total work, in
+// amortized-constant steps: one descendant collected, or one candidate's
+// interval count. A step here is integer bookkeeping — two orders of magnitude
+// cheaper than one similarity() evaluation — so the multiplier over
+// renameLimit² keeps the same wall-clock envelope as the content tier's cap
+// while admitting the ordinary big case (a re-organized 20k-node scene charges
+// ~20M steps). Over budget the pass aborts unapplied: the safe direction. A
+// var, not a const, so the abort path is testable without a pathological
+// fixture.
+var structureWorkBudget = 32 * renameLimit * renameLimit
 
 // nodeTree is one side's hierarchy, prepared for structural matching: children
 // lists inverted from nodeIndex.parent, a content hash per subtree, and the
@@ -1294,15 +1306,42 @@ func buildNodeTree(ix *nodeIndex, isMatched func(int) bool) *nodeTree {
 // each descendant's counterpart; a pair must clear diceThreshold, share at
 // least TWO matched descendant pairs (one shared child is the child-count-as-
 // evidence trap the signature floors exist for — "renamed parent of a single
-// child, no uid" stays an honest miss), and be the strict mutual best in both
-// directions. These pairs may be labeled renamed when isRename says so; the
-// both-unnamed invariant holds because isRename is the only label gate.
+// child, no uid" stays an honest miss), must not put two DIFFERENT stated
+// meshes on one node (meshWeight's rule — a swapped mesh is a removal plus an
+// addition, never a rename — which a descendant-only score would otherwise
+// override; like the two-descendant floor, a clashing candidate still enters
+// the trackers so a near-tie blocks), and must be the strict mutual best in
+// both directions. Two content-disjoint empty containers CAN still pair on two
+// shared children alone — the thinnest evidence any tier accepts, recorded
+// here as a deliberate judgment: it is GumTree's published algorithm, the
+// evidence note says exactly what was measured, and the two-descendant floor
+// is what keeps a lone child from carrying it. These pairs may be labeled
+// renamed when isRename says so; the both-unnamed invariant holds because
+// isRename is the only label gate.
+//
+// Phase 3, identical leftovers under a paired parent: when a parent pair was
+// made by real evidence (id, name, content, an anchor — never position, which
+// does not exist yet when this runs), its still-unmatched children pair 1:1
+// where a whole-subtree hash is unique among the leftover children on each
+// side, verified by the same walk anchors use. The parent's identity is what
+// phase 1 could not have: it disambiguates twin subtrees that are identical
+// file-wide (the exact-content tier can pair a twin's root through its parent
+// key while the children fall past every content tier to the positional one,
+// which pairs them ACROSS the twins — a Frankenstein narrative of self-
+// contradictory reparent rows). Ambiguity still never pairs: a hash repeated
+// among one parent's leftover children stays unmatched. Names are inside the
+// hash, so a phase-3 pair never produces a rename label.
 //
 // COST, the #59 commit-7 lesson — bound time, not just memory: the whole tier
-// is skipped when leftBase × leftHead exceeds renameLimit², and phase 2 counts
-// its dice evaluations against the same budget, aborting (and leaving the
-// remaining leftovers as the additions and removals they are — the safe failure
-// direction) rather than letting a pathological file hang a browser tab.
+// is skipped when leftBase × leftHead exceeds renameLimit², and phase 2 charges
+// its real work — descendants collected per container plus one O(log) interval
+// count per candidate — against structureWorkBudget, aborting unapplied (and
+// leaving the remaining leftovers as the additions and removals they are — the
+// safe failure direction) rather than letting a pathological file hang a
+// browser tab. The budget must bound the WHOLE pass: an earlier draft counted
+// only candidate evaluations, which the entry gate already capped, so the
+// abort was dead code while each evaluation rescanned every matched descendant
+// — quadratic-class work the budget never saw.
 func matchByStructure(p pairing, aIx, bIx *nodeIndex) {
 	var leftBase, leftHead []int
 	for i := range aIx.nodes {
@@ -1366,11 +1405,23 @@ func matchByStructure(p pairing, aIx, bIx *nodeIndex) {
 	}
 
 	// ── phase 2: bottom-up containers ──
+	// The pairing as a dense slice: the descendant scans below are phase 2's hot
+	// path, and a Go map lookup per element there was the measured blowup (~7e9
+	// lookups on a 1000-container 8k-node scene).
+	headOfArr := make([]int, len(aIx.nodes))
+	for i := range headOfArr {
+		headOfArr[i] = -1
+	}
+	for i, j := range p.headOf {
+		headOfArr[i] = j
+	}
 	// Matched base nodes sorted by tin, so a subtree's matched descendants are a
 	// binary-searched range instead of a per-candidate walk.
 	matchedByTin := make([]int, 0, len(p.headOf))
-	for i := range p.headOf {
-		matchedByTin = append(matchedByTin, i)
+	for i, j := range headOfArr {
+		if j >= 0 {
+			matchedByTin = append(matchedByTin, i)
+		}
 	}
 	slices.SortFunc(matchedByTin, func(x, y int) int { return aT.tin[x] - aT.tin[y] })
 	matchedDescendants := func(b int) []int {
@@ -1414,52 +1465,74 @@ func matchByStructure(p pairing, aIx, bIx *nodeIndex) {
 	}
 
 	type candidate struct {
-		b, c   int
-		dice   float64
-		shared int
+		b, c      int
+		dice      float64
+		shared    int
+		meshClash bool
 	}
 	var cands []candidate
 	baseBest := make(map[int]*bestTracker)
 	headBest := make(map[int]*bestTracker)
-	evals := 0
+	// seenStamp[c] == b marks head candidate c as already evaluated for the
+	// current base container b — a reusable stamp array instead of a per-b map.
+	seenStamp := make([]int, len(bIx.nodes))
+	for k := range seenStamp {
+		seenStamp[k] = -1
+	}
+	work := 0
+	var hdTins []int
 	for _, b := range aT.post {
-		if _, done := p.headOf[b]; done {
-			continue
-		}
-		if aT.desc[b] == 0 {
+		if headOfArr[b] >= 0 || aT.desc[b] == 0 {
 			continue
 		}
 		descs := matchedDescendants(b)
 		if len(descs) == 0 {
 			continue
 		}
-		seen := make(map[int]bool)
+		// Charge the collection before spending it. Over budget: the whole
+		// bottom-up pass aborts unapplied (phase 3 included). Phase 1's anchors
+		// stand — they are verified pairs, the safe thing to keep.
+		work += len(descs)
+		if work > structureWorkBudget {
+			return
+		}
+		// The counterparts' head tins, sorted once per container: each
+		// candidate's shared count is then two binary searches over this slice
+		// instead of a rescan of every matched descendant — the rescan was
+		// quadratic-class (per-candidate × per-descendant) and the measured
+		// browser-tab hang.
+		hdTins = hdTins[:0]
 		for _, d := range descs {
-			c := nearest(p.headOf[d])
-			if c < 0 || seen[c] {
+			hdTins = append(hdTins, bT.tin[headOfArr[d]])
+		}
+		slices.Sort(hdTins)
+		bMesh := aIx.meshField(aIx.nodes[b].Mesh)
+		for _, d := range descs {
+			c := nearest(headOfArr[d])
+			if c < 0 || seenStamp[c] == b {
 				continue
 			}
-			seen[c] = true
-			evals++
-			if evals > renameLimit*renameLimit {
-				// Over budget: the whole bottom-up pass aborts unapplied. Phase 1's
-				// anchors stand — they are verified pairs, the safe thing to keep.
+			seenStamp[c] = b
+			work++
+			if work > structureWorkBudget {
 				return
 			}
-			shared := 0
-			for _, dd := range descs {
-				hd := p.headOf[dd]
-				if bT.tin[c] < bT.tin[hd] && bT.tout[hd] < bT.tout[c] {
-					shared++
-				}
-			}
+			// A head tin strictly inside c's Euler interval is a counterpart
+			// inside c's subtree: intervals nest or are disjoint, so the lower
+			// bound alone decides containment.
+			lo, _ := slices.BinarySearch(hdTins, bT.tin[c]+1)
+			hi, _ := slices.BinarySearch(hdTins, bT.tout[c])
+			shared := hi - lo
 			dice := 2 * float64(shared) / float64(aT.desc[b]+bT.desc[c])
 			if dice < diceThreshold {
 				continue
 			}
 			// Every threshold-clearing candidate enters the trackers — even one
-			// that will fail the two-descendant floor — so a near-tie always blocks.
-			cands = append(cands, candidate{b, c, dice, shared})
+			// that will fail the two-descendant floor or the mesh-clash rule —
+			// so a near-tie always blocks.
+			cMesh := bIx.meshField(bIx.nodes[c].Mesh)
+			clash := bMesh.kind == stated && cMesh.kind == stated && bMesh.value != cMesh.value
+			cands = append(cands, candidate{b, c, dice, shared, clash})
 			if baseBest[b] == nil {
 				baseBest[b] = &bestTracker{best: -1}
 			}
@@ -1472,6 +1545,14 @@ func matchByStructure(p pairing, aIx, bIx *nodeIndex) {
 	}
 	for _, cd := range cands {
 		if cd.shared < 2 {
+			continue
+		}
+		// Two different stated meshes on one candidate pair is the content
+		// tier's hard NO (meshWeight: a swapped mesh is a removal plus an
+		// addition, never a rename), and sharing descendants must not override
+		// it: a table and a lamp that swapped custody of two chairs are not one
+		// renamed object.
+		if cd.meshClash {
 			continue
 		}
 		if bb, _, ok := baseBest[cd.b].strict(); !ok || bb != cd.c {
@@ -1487,6 +1568,62 @@ func matchByStructure(p pairing, aIx, bIx *nodeIndex) {
 			continue
 		}
 		p.pair(cd.b, cd.c, matchEvidence{by: byStructure, similarity: cd.dice, dice: true})
+	}
+
+	// ── phase 3: identical leftovers under a paired parent ──
+	// A parent pair made on real evidence disambiguates what nothing file-wide
+	// could: which of two identical twin subtrees survived. Its leftover
+	// children pair 1:1 by whole-subtree hash — unique per side among THESE
+	// siblings, ambiguity never pairs — verified by the anchor walk, which
+	// pairs the whole subtree or nothing. Eligibility mirrors phase 1: no
+	// opaque content anywhere in the subtree, at least one specific node.
+	// Every pair so far was made by id, name, content or structure (position
+	// runs after this tier), so the parent's identity is never itself an
+	// index-equality guess.
+	for _, b := range aT.post {
+		c, ok := p.headOf[b]
+		if !ok {
+			continue
+		}
+		var aKids, bKids []int
+		aByHash := make(map[uint64]int)
+		bByHash := make(map[uint64]int)
+		for _, ch := range aT.children[b] {
+			if _, done := p.headOf[ch]; !done && !aT.poison[ch] && aT.specific[ch] {
+				aKids = append(aKids, ch)
+				aByHash[aT.hash[ch]]++
+			}
+		}
+		if len(aKids) == 0 {
+			continue
+		}
+		for _, ch := range bT.children[c] {
+			if _, done := p.baseOf[ch]; !done && !bT.poison[ch] && bT.specific[ch] {
+				bKids = append(bKids, ch)
+				bByHash[bT.hash[ch]]++
+			}
+		}
+		if len(bKids) == 0 {
+			continue
+		}
+		for _, ach := range aKids {
+			h := aT.hash[ach]
+			if aByHash[h] != 1 || bByHash[h] != 1 {
+				continue
+			}
+			for _, bch := range bKids {
+				if bT.hash[bch] != h {
+					continue
+				}
+				var pairs [][2]int
+				if collectSubtreePairs(p, aT, bT, ach, bch, &pairs) {
+					for _, pr := range pairs {
+						p.pair(pr[0], pr[1], matchEvidence{by: byStructure, similarity: 1})
+					}
+				}
+				break
+			}
+		}
 	}
 }
 

@@ -15,9 +15,12 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/qmuntal/gltf"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -1578,6 +1581,143 @@ func TestMirroredGeometryDoesNotMatch(t *testing.T) {
 	}
 }
 
+// A quantum that overflows int64 is refused like a NaN: Go's out-of-range
+// float→int conversion is implementation-dependent (amd64 saturates to
+// minInt64), so without the guard every |coordinate| beyond ~9.2e10 collapsed
+// to ONE quantum and genuinely different out-of-range geometries
+// canonicalized equal.
+func TestQuantizeRefusesOverflowingQuanta(t *testing.T) {
+	for _, v := range []float64{1e12, 2e12, -1e12, -2e12, 3.4e38, -3.4e38} {
+		if q, ok := quantize(v, 1e8); ok {
+			t.Errorf("quantize(%g, 1e8) = %d, ok — want refusal for an overflowing quantum", v, q)
+		}
+	}
+	if q, ok := quantize(12345.6789, 1e8); !ok || q != 1234567890000 {
+		t.Errorf("quantize(12345.6789, 1e8) = %d, %v — want 1234567890000, true", q, ok)
+	}
+	if q, ok := quantize(-0.0, 1e8); !ok || q != 0 {
+		t.Errorf("quantize(-0, 1e8) = %d, %v — want 0, true", q, ok)
+	}
+}
+
+// Two genuinely different out-of-range geometries fall back to the exact
+// descriptors and stay a removal plus an addition — while byte-identical
+// out-of-range geometry still pairs through the very same fallback. The
+// overflow refusal loses nothing but the guess.
+func TestOutOfRangeGeometryNeverPairsAcrossARename(t *testing.T) {
+	far := func(c float32) [][3]float32 {
+		return [][3]float32{{c, 0, 0}, {c + 1e6, 0, 0}, {c, 1e6, 0}}
+	}
+	d := diffOf(t,
+		geometryGLB(t, geometrySpec{mesh: "MeshOld", positions: far(1e12), indices: seq(3)}),
+		geometryGLB(t, geometrySpec{mesh: "MeshNew", positions: far(2e12), indices: seq(3)}),
+	)
+	walk(d.Changes, func(c *DiffChange, _ int) {
+		if c.Kind == Renamed {
+			t.Errorf("two different out-of-range geometries are not one mesh: %+v", c)
+		}
+	})
+	if got := kindAt(d, "meshes/MeshOld"); got != Removed {
+		t.Errorf("meshes/MeshOld: kind = %q, want %q", got, Removed)
+	}
+	if got := kindAt(d, "meshes/MeshNew"); got != Added {
+		t.Errorf("meshes/MeshNew: kind = %q, want %q", got, Added)
+	}
+
+	// The control: identical out-of-range bytes still pair — the exact-hash
+	// fallback carries the rename without any canonical digest.
+	control := diffOf(t,
+		geometryGLB(t, geometrySpec{mesh: "MeshOld", positions: far(1e12), indices: seq(3)}),
+		geometryGLB(t, geometrySpec{mesh: "MeshNew", positions: far(1e12), indices: seq(3)}),
+	)
+	mustRename(t, control, "meshes/MeshNew", "MeshOld")
+}
+
+// skinnedGLB builds a single-mesh GLB whose primitive carries POSITION,
+// JOINTS_0 (ubyte VEC4) and WEIGHTS_0 (float VEC4) — the shape of every
+// skinned character asset — with the vertex array permuted by perm and the
+// index buffer remapped through it.
+func skinnedGLB(t *testing.T, name string, perm []int) []byte {
+	t.Helper()
+	pos := ramp(6)
+	n := len(pos)
+	joints := make([][4]byte, n)
+	weights := make([][4]float32, n)
+	for i := range n {
+		joints[i] = [4]byte{byte(i % 4), byte((i + 1) % 4), 0, 0}
+		weights[i] = [4]float32{0.75, 0.25, 0, 0}
+	}
+	indices := []uint32{0, 1, 2, 3, 4, 5}
+
+	permPos := make([][3]float32, n)
+	permJoints := make([][4]byte, n)
+	permWeights := make([][4]float32, n)
+	for i, at := range perm {
+		permPos[at], permJoints[at], permWeights[at] = pos[i], joints[i], weights[i]
+	}
+	remapped := make([]uint32, len(indices))
+	for k, ix := range indices {
+		remapped[k] = uint32(perm[ix])
+	}
+
+	b := &binWriter{doc: &gltf.Document{Asset: gltf.Asset{Version: "2.0"}}}
+	attrs := gltf.PrimitiveAttributes{}
+	attrs[gltf.POSITION] = b.vec3(t, permPos, true)
+	jointBytes := make([]byte, 0, 4*n)
+	for _, j := range permJoints {
+		jointBytes = append(jointBytes, j[0], j[1], j[2], j[3])
+	}
+	jview := b.view(jointBytes, 0)
+	attrs[gltf.JOINTS_0] = b.accessor(&gltf.Accessor{
+		BufferView: &jview, ComponentType: gltf.ComponentUbyte,
+		Type: gltf.AccessorVec4, Count: n,
+	})
+	weightBytes := make([]byte, 0, 16*n)
+	for _, w := range permWeights {
+		for _, c := range w {
+			bits := math.Float32bits(c)
+			weightBytes = append(weightBytes, byte(bits), byte(bits>>8), byte(bits>>16), byte(bits>>24))
+		}
+	}
+	wview := b.view(weightBytes, 0)
+	attrs[gltf.WEIGHTS_0] = b.accessor(&gltf.Accessor{
+		BufferView: &wview, ComponentType: gltf.ComponentFloat,
+		Type: gltf.AccessorVec4, Count: n,
+	})
+	idx := b.scalarU32(remapped)
+	b.doc.Meshes = []*gltf.Mesh{{Name: name, Primitives: []*gltf.Primitive{
+		{Attributes: attrs, Indices: &idx},
+	}}}
+	mesh := 0
+	b.doc.Nodes = []*gltf.Node{{Name: "Body", Mesh: &mesh}}
+	b.doc.Scenes = []*gltf.Scene{{Name: "Scene", Nodes: []int{0}}}
+	scene := 0
+	b.doc.Scene = &scene
+	b.doc.Buffers = []*gltf.Buffer{{ByteLength: len(b.bin), Data: b.bin}}
+	blob, err := encodeBlob(b.doc, true)
+	if err != nil {
+		t.Fatalf("encoding fixture: %v", err)
+	}
+	return blob
+}
+
+// A skinned mesh canonicalizes like any other: JOINTS_0 (ubyte) passes through
+// exactly, unquantized, instead of disqualifying the whole primitive — the
+// header's "integer streams are never quantized" read as pass-through, not as
+// refusal. Renamed AND vertex-reordered, it still pairs at full confidence.
+func TestSkinnedMeshSurvivesVertexReorderAcrossARename(t *testing.T) {
+	identityPerm := []int{0, 1, 2, 3, 4, 5}
+	shuffled := []int{5, 3, 1, 4, 0, 2}
+	d := diffOf(t,
+		skinnedGLB(t, "MeshOld", identityPerm),
+		skinnedGLB(t, "MeshNew", shuffled),
+	)
+	c := mustRename(t, d, "meshes/MeshNew", "MeshOld")
+	if got := afterText(c); !strings.Contains(got, "matched by content") || strings.Contains(got, "%") {
+		t.Errorf("after = %q, want a full-confidence content match", got)
+	}
+}
+
 // Each semantic has its own tolerance — trimesh's constants — so noise is
 // forgiven at the precision that semantic is authored at, and a real edit one
 // order of magnitude above it still separates the meshes.
@@ -2266,6 +2406,289 @@ func TestStructuralTierNeverStealsContentPairs(t *testing.T) {
 	}
 	if ev := m.how[0]; ev.by != byContent {
 		t.Errorf("evidence = %+v; content paired it first and structure must not steal it", ev)
+	}
+}
+
+// nodeIndexOf parses a document spec and indexes its nodes, for driving the
+// matching tiers directly.
+func nodeIndexOf(t *testing.T, spec map[string]any) *nodeIndex {
+	t.Helper()
+	parsed, err := parseDoc(doc(t, spec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return indexNodes(parsed)
+}
+
+// A dice TIE refuses to pair: two base containers each sharing the same two
+// children with one head container score identically, and neither is the
+// strict mutual best. Pairing either would be a coin flip that hides which
+// container was deleted — the same rule every content tier enforces, pinned
+// here for the structural tier's phase 2.
+func TestStructuralTierRefusesDiceTies(t *testing.T) {
+	aIx := nodeIndexOf(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{0, 3}}},
+		"nodes": []any{
+			map[string]any{"children": []int{1, 2}},
+			map[string]any{"name": "Ka", "translation": []float64{1, 0, 0}},
+			map[string]any{"name": "Kb", "translation": []float64{2, 0, 0}},
+			map[string]any{"children": []int{4, 5}},
+			map[string]any{"name": "Kc", "translation": []float64{3, 0, 0}},
+			map[string]any{"name": "Kd", "translation": []float64{4, 0, 0}},
+		},
+	})
+	kids := []any{
+		map[string]any{"name": "Ka", "translation": []float64{1, 0, 0}},
+		map[string]any{"name": "Kb", "translation": []float64{2, 0, 0}},
+		map[string]any{"name": "Kc", "translation": []float64{3, 0, 0}},
+		map[string]any{"name": "Kd", "translation": []float64{4, 0, 0}},
+	}
+	bIx := nodeIndexOf(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{4}}},
+		"nodes":  append(append([]any{}, kids...), map[string]any{"children": []int{0, 1, 2, 3}}),
+	})
+	m := matchEntities(nodeEntities(aIx), nodeEntities(bIx), nil)
+	matchByStructure(m, aIx, bIx)
+	if bi, ok := m.baseOf[4]; ok {
+		t.Errorf("the head container paired with base %d on a dice tie; ambiguity never pairs", bi)
+	}
+
+	// The control: drop the second base container and the same score is the
+	// unambiguous strict mutual best — the refusal above is about the tie, not
+	// the score.
+	aIx = nodeIndexOf(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{0}}},
+		"nodes": []any{
+			map[string]any{"children": []int{1, 2}},
+			map[string]any{"name": "Ka", "translation": []float64{1, 0, 0}},
+			map[string]any{"name": "Kb", "translation": []float64{2, 0, 0}},
+		},
+	})
+	m = matchEntities(nodeEntities(aIx), nodeEntities(bIx), nil)
+	matchByStructure(m, aIx, bIx)
+	if bi, ok := m.baseOf[4]; !ok || bi != 0 {
+		t.Errorf("the unambiguous container pair = %d (ok=%v), want base 0", bi, ok)
+	}
+}
+
+// A container keeping too small a share of its descendants stays a removal
+// plus an addition: dice 0.4 (two of eight children kept) is below the 0.5
+// threshold even with no competing candidate on either side.
+func TestStructuralTierEnforcesDiceThreshold(t *testing.T) {
+	base := func(kids int) *nodeIndex {
+		nodes := []any{map[string]any{"children": seqInts(1, kids)}}
+		for i := range kids {
+			nodes = append(nodes, map[string]any{
+				"name": fmt.Sprintf("K%d", i+1), "translation": []float64{float64(i + 1), 0, 0},
+			})
+		}
+		return nodeIndexOf(t, map[string]any{
+			"scene":  0,
+			"scenes": []any{map[string]any{"nodes": []int{0}}},
+			"nodes":  nodes,
+		})
+	}
+	head := func(kept int) *nodeIndex {
+		nodes := []any{}
+		for i := range kept {
+			nodes = append(nodes, map[string]any{
+				"name": fmt.Sprintf("K%d", i+1), "translation": []float64{float64(i + 1), 0, 0},
+			})
+		}
+		nodes = append(nodes, map[string]any{"children": seqInts(0, kept)})
+		return nodeIndexOf(t, map[string]any{
+			"scene":  0,
+			"scenes": []any{map[string]any{"nodes": []int{kept}}},
+			"nodes":  nodes,
+		})
+	}
+
+	aIx, bIx := base(8), head(2) // dice = 2·2/(8+2) = 0.4
+	m := matchEntities(nodeEntities(aIx), nodeEntities(bIx), nil)
+	matchByStructure(m, aIx, bIx)
+	if bi, ok := m.baseOf[2]; ok {
+		t.Errorf("the head container paired with base %d at dice 0.4; the threshold is 0.5", bi)
+	}
+
+	// The control: six of eight kept is dice 0.86 and pairs, with the dice
+	// evidence stated.
+	aIx, bIx = base(8), head(6)
+	m = matchEntities(nodeEntities(aIx), nodeEntities(bIx), nil)
+	matchByStructure(m, aIx, bIx)
+	if bi, ok := m.baseOf[6]; !ok || bi != 0 {
+		t.Fatalf("the container pair above threshold = %d (ok=%v), want base 0", bi, ok)
+	}
+	if ev := m.how[0]; ev.by != byStructure || !ev.dice {
+		t.Errorf("evidence = %+v, want a dice byStructure pair", ev)
+	}
+}
+
+// seqInts returns [from, from+n) — children lists for the container fixtures.
+func seqInts(from, n int) []int {
+	out := make([]int, n)
+	for i := range out {
+		out[i] = from + i
+	}
+	return out
+}
+
+// Two different stated meshes are the content tier's hard NO (a swapped mesh
+// is a removal plus an addition, never a rename), and sharing descendants must
+// not override it: a table and a lamp that swapped custody of two chairs are
+// not one renamed object, whatever their dice score says.
+func TestStructuralTierRefusesSwappedMesh(t *testing.T) {
+	meshes := []any{
+		map[string]any{"name": "ChairMesh", "primitives": []any{map[string]any{"attributes": map[string]any{}}}},
+		map[string]any{"name": "TableMesh", "primitives": []any{map[string]any{"attributes": map[string]any{}}}},
+		map[string]any{"name": "LampMesh", "primitives": []any{map[string]any{"attributes": map[string]any{}}}},
+	}
+	base := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{2}}},
+		"meshes": meshes,
+		"nodes": []any{
+			map[string]any{"name": "Chair1", "mesh": 0, "translation": []float64{1, 0, 0}},
+			map[string]any{"name": "Chair2", "mesh": 0, "translation": []float64{2, 0, 0}},
+			map[string]any{"name": "TableOld", "mesh": 1, "children": []int{0, 1}},
+		},
+	})
+	head := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{2}}},
+		"meshes": meshes,
+		"nodes": []any{
+			map[string]any{"name": "Chair1", "mesh": 0, "translation": []float64{1, 0, 0}},
+			map[string]any{"name": "Chair2", "mesh": 0, "translation": []float64{2, 0, 0}},
+			map[string]any{"name": "LampNew", "mesh": 2, "translation": []float64{5, 5, 5}, "children": []int{0, 1}},
+		},
+	})
+	d := diffOf(t, base, head)
+	walk(d.Changes, func(c *DiffChange, _ int) {
+		if c.Kind == Renamed {
+			t.Errorf("a table did not become a lamp: %+v", c)
+		}
+	})
+	if got := kindAt(d, "nodes/TableOld"); got != Removed {
+		t.Errorf("nodes/TableOld: kind = %q, want %q", got, Removed)
+	}
+	if got := kindAt(d, "nodes/LampNew"); got != Added {
+		t.Errorf("nodes/LampNew: kind = %q, want %q", got, Added)
+	}
+	// The chairs' change of custody is still told, honestly, as the re-parents
+	// it is.
+	if got := kindAt(d, "nodes/Chair1"); got != Reparented {
+		t.Errorf("nodes/Chair1: kind = %q, want %q", got, Reparented)
+	}
+}
+
+// Identical twin unnamed subtrees, one deleted: the paired parent
+// disambiguates which twin survived, so the diff tells ONE story — the other
+// twin removed whole — instead of pairing the surviving twin's root through
+// its parent key while the positional tier pairs its children ACROSS the
+// twins, yielding self-contradictory reparent rows whose Before and After
+// print as the same string.
+func TestTwinSubtreeDeletionTellsOneStory(t *testing.T) {
+	mesh := []any{map[string]any{"name": "M", "primitives": []any{map[string]any{"attributes": map[string]any{}}}}}
+	twin := func(at int) []any {
+		return []any{
+			map[string]any{"mesh": 0, "translation": []float64{1, 0, 0}},
+			map[string]any{"mesh": 0, "translation": []float64{2, 0, 0}},
+			map[string]any{"translation": []float64{1, 1, 1}, "children": []int{at, at + 1}},
+		}
+	}
+	base := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{6, 7}}},
+		"meshes": mesh,
+		"nodes": append(append(twin(0), twin(3)...),
+			map[string]any{"name": "A", "translation": []float64{0, 5, 0}, "children": []int{2}},
+			map[string]any{"name": "B", "translation": []float64{0, 9, 0}, "children": []int{5}},
+		),
+	})
+	head := doc(t, map[string]any{
+		"scene":  0,
+		"scenes": []any{map[string]any{"nodes": []int{3, 4}}},
+		"meshes": mesh,
+		"nodes": append(twin(0),
+			map[string]any{"name": "A", "translation": []float64{0, 5, 0}},
+			map[string]any{"name": "B", "translation": []float64{0, 9, 0}, "children": []int{2}},
+		),
+	})
+	d := diffOf(t, base, head)
+	removed := 0
+	walk(d.Changes, func(c *DiffChange, _ int) {
+		if c.Kind == Reparented {
+			t.Errorf("nothing moved; the narrative must not fragment across the twins: %+v", c)
+		}
+		if c.Kind == Added {
+			t.Errorf("nothing was added: %+v", c)
+		}
+		if c.Kind == Removed && c.Before == "node" {
+			removed++
+		}
+	})
+	// Exactly the deleted twin: its root (under A) and its two mesh children.
+	if removed != 3 {
+		t.Errorf("removed %d nodes, want the deleted twin's 3", removed)
+	}
+	if got := kindAt(d, "nodes/node[2]#1"); got != Removed {
+		t.Errorf("nodes/node[2]#1 (the deleted twin's root): kind = %q, want %q", got, Removed)
+	}
+}
+
+// Over structureWorkBudget the bottom-up pass aborts UNAPPLIED — the abort
+// must be reachable and must fail toward removals and additions, never toward
+// a partial application. (The budget is a var precisely so this path is
+// testable without a pathological fixture.)
+func TestStructuralWorkBudgetAbortsUnapplied(t *testing.T) {
+	// A container losing one of three children: different content on the two
+	// sides (children counts 3 vs 2), so only phase 2 — dice 2·2/(3+2) = 0.8 —
+	// can pair it.
+	build := func() (*nodeIndex, *nodeIndex, pairing) {
+		aIx := nodeIndexOf(t, map[string]any{
+			"scene":  0,
+			"scenes": []any{map[string]any{"nodes": []int{0}}},
+			"nodes": []any{
+				map[string]any{"children": []int{1, 2, 3}},
+				map[string]any{"name": "Ka", "translation": []float64{1, 0, 0}},
+				map[string]any{"name": "Kb", "translation": []float64{2, 0, 0}},
+				map[string]any{"name": "Kc", "translation": []float64{3, 0, 0}},
+			},
+		})
+		bIx := nodeIndexOf(t, map[string]any{
+			"scene":  0,
+			"scenes": []any{map[string]any{"nodes": []int{2}}},
+			"nodes": []any{
+				map[string]any{"name": "Ka", "translation": []float64{1, 0, 0}},
+				map[string]any{"name": "Kb", "translation": []float64{2, 0, 0}},
+				map[string]any{"children": []int{0, 1}},
+			},
+		})
+		m := matchEntities(nodeEntities(aIx), nodeEntities(bIx), nil)
+		if _, ok := m.baseOf[2]; ok {
+			t.Fatal("the containers must reach matchByStructure unpaired for this test to mean anything")
+		}
+		return aIx, bIx, m
+	}
+
+	aIx, bIx, m := build()
+	matchByStructure(m, aIx, bIx)
+	if bi, ok := m.baseOf[2]; !ok || bi != 0 {
+		t.Fatalf("under budget phase 2 pairs the containers (got %d, ok=%v)", bi, ok)
+	}
+	if ev := m.how[0]; ev.by != byStructure || !ev.dice {
+		t.Fatalf("evidence = %+v, want a dice byStructure pair", ev)
+	}
+
+	defer func(old int) { structureWorkBudget = old }(structureWorkBudget)
+	structureWorkBudget = 1
+	aIx, bIx, m = build()
+	matchByStructure(m, aIx, bIx)
+	if bi, ok := m.baseOf[2]; ok {
+		t.Errorf("over budget the pass must abort unapplied; paired base %d", bi)
 	}
 }
 
