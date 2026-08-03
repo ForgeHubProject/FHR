@@ -12,21 +12,44 @@ package main
 // node — reads as one element removed and an unrelated one added, which is the
 // single most misleading thing a diff can say.
 //
-// Two layers, strongest evidence first:
+// The cascade, strongest evidence first:
 //
 //	1. authored id   extras.fhr_uid, the FHR convention (SPEC.md §7). An opaque
 //	                 string written once and never regenerated. Present → it wins
 //	                 outright: same id with a different name is a rename, never a
 //	                 delete plus an add. Durable but only as good as its adoption.
-//	2. name          the diff key, which is uniqueKeys' disambiguated name. This
-//	                 is also the glTF 2.1 explainer's own fallback rule — a
-//	                 file-unique name *is* a unique id — so a document that writes
-//	                 identity-bearing names and no extras still matches exactly.
-//	3. content       leftovers only: pair a removed candidate with an added one
-//	                 when their content descriptors agree. Works today, on files
-//	                 nobody has stamped, which is the whole point.
+//	2. name          the diff key, which is uniqueKeys' disambiguated name — for
+//	                 elements that HAVE a name. A synthetic `node[3]` key is a
+//	                 position, not a name; matching on it is what made an
+//	                 insertion re-index and falsely "modify" every unnamed
+//	                 element after it (issue #42's cascade), so unnamed elements
+//	                 skip this tier entirely. This is also the glTF 2.1
+//	                 explainer's own fallback rule — a file-unique name *is* a
+//	                 unique id — so a document that writes identity-bearing names
+//	                 and no extras still matches exactly.
+//	3. exact content both-unnamed leftovers only (matchByExactContent): pair two
+//	                 elements whose full stated signatures are identical, and
+//	                 only when the pairing is unique on both sides — ambiguity
+//	                 never pairs, and an opaque field disqualifies outright.
+//	4. content       scored leftovers (matchByContent): pair a removed candidate
+//	                 with an added one when their content descriptors agree
+//	                 above git's rename threshold. Works today, on files nobody
+//	                 has stamped, which is the whole point. Open to unnamed and
+//	                 mixed named/unnamed pairs — the optimizer-stripped-names
+//	                 file is exactly the one this tier exists for.
+//	5. structure     nodes only (matchByStructure): identical subtrees anchor
+//	                 top-down and containers of already-matched elements pair
+//	                 bottom-up. Context is weaker per-element evidence than
+//	                 content, so it runs after every content tier — and it is
+//	                 the tier that survives an insertion re-indexing a file
+//	                 with no names and no unique content per element.
+//	6. position      unnamed leftovers at the SAME array index, nothing else
+//	                 (matchByPosition): the weakest evidence there is, kept as
+//	                 the last resort so an unnamed element edited in place still
+//	                 reports under its own index instead of as a removal plus an
+//	                 addition.
 //
-// Tier 3 is deliberately timid. A false rename is worse than a missed one: a
+// The content tiers are deliberately timid. A false rename is worse than a missed one: a
 // missed rename shows a reviewer a delete and an add, which is at least two true
 // statements, while a false one asserts a relationship between two unrelated
 // objects and hides the fact that something was deleted. So a content match is
@@ -55,12 +78,24 @@ package main
 // they were weighted against meshWeight on the assumption that all five are in
 // play; the floor is what keeps that true once the mesh drops out.
 //
-// Unnamed elements never *rename*. They are keyed by array index (node[3]), so
-// there is no name for one of them to have changed, and the index cascade an
-// insertion causes is issue #42's — not this layer's. Tier 3 leaves them alone
-// altogether; tier 1 still pairs them, because an authored id on a file whose
-// names a pipeline tool stripped is exactly what the convention is for, but the
-// pairing is reported as a modification and never as a rename (isRename).
+// Unnamed elements PAIR, and are never LABELED renamed. Pairing them is what
+// stops an insertion from cascading down the index keys and what lands an edit
+// on the element it actually happened to — an authored id, an identical stated
+// signature, an anchored subtree and, as a last resort, an equal index can all
+// do it. But an unnamed element is keyed by its array index (node[3]), so there
+// is no name for one of them to have changed: when both sides are unnamed the
+// rename label is withheld (isRename, the single gate every tier reports
+// through), because "node[1] renamed to node[2]" is a statement about array
+// slots, not about the model. A name on one side only is a real edit — a name
+// was added or removed — and is reported as the rename it is.
+//
+// Deliberate exclusion, recorded here because it keeps being proposed: matching
+// WORLD transforms instead of local ones. nodeSignature keys on the local TRS
+// plus the parent as an identity-compared key (parentField), and diffNodeProps
+// compares local TRS through pairing.sameEntity — so a parent's move already
+// cascades to no child, in matching or in reporting. Matching world transforms
+// would CREATE the cascade it claims to prevent: every descendant's world
+// transform changes whenever an ancestor moves.
 //
 // Every content descriptor is likewise built out of cross-revision *keys* and
 // never array indices — a node's mesh, its parent, a primitive's material — for
@@ -71,7 +106,10 @@ package main
 // for it (fieldKind opaque) rather than pretending the number travels.
 
 import (
+	"encoding/binary"
 	"fmt"
+	"hash/fnv"
+	"slices"
 	"strings"
 
 	"github.com/qmuntal/gltf"
@@ -113,6 +151,12 @@ type entity struct {
 	// of tiers 1 and 2 ever need one, and a mesh descriptor hashes vertex bytes —
 	// a cost the unchanged path must not pay.
 	sig func() signature
+	// structKey, when non-nil, is a cheap structural key for the exact-content
+	// tier's buckets: O(1), no byte reads, and never finer than the signature —
+	// two elements whose signatures are identical must produce equal keys. Nil
+	// means the signature itself is cheap enough to bucket on (nodes, materials);
+	// meshes provide one so bucketing never triggers a vertex digest.
+	structKey func() string
 }
 
 // fieldKind is what a descriptor field is worth as evidence that two elements
@@ -356,25 +400,142 @@ func materialFields(doc *gltf.Document, m *gltf.Material) []sigField {
 	return fields
 }
 
-// meshSignature describes a mesh by its primitives: what each one is made of
-// (the same stream descriptors the geometry compare reports, digest included) and
-// which material it uses. This is the one descriptor that reads buffer bytes,
-// which is why signatures are built lazily.
+// Mesh descriptor weights: a primitive is a material reference plus its vertex
+// streams, and the streams are what the mesh *is* — two meshes drawing the same
+// geometry under different materials are far closer to being the same mesh than
+// two different geometries sharing a material.
+const (
+	meshMaterialWeight = 1
+	meshStreamsWeight  = 4
+)
+
+// meshSignature describes a mesh by its primitives, each as two fields: which
+// material it uses, and what its vertex streams hold (a canonical quantized
+// digest per stream — quantize.go — falling back to the geometry compare's
+// exact descriptors when the data cannot be canonicalized). This is the one
+// descriptor that reads buffer bytes, which is why signatures are built lazily.
+//
+// The material is its own field, resolved by matTok to a cross-file identity
+// token, because embedding the material KEY in one primitive-wide string made
+// two name-stripped files "agree" on `material=material[0]` — an index-derived
+// value, which is exactly the claim fieldKind opaque exists to refuse. Split
+// out, an unverifiable material reference costs its own weight and nothing
+// else, and a reference to a content-paired unnamed material is real agreement.
+//
+// The stream descriptors are the quantized form and not the wire's exact hashes
+// on purpose: matching asks "is this the same mesh after a re-export", where
+// vertex order and float jitter at the exporter's precision are noise. The wire
+// rows keep the exact hashes — the scope fence is quantize.go's header.
 //
 // The primitive *count* is deliberately not a field of its own. It is already
 // implied by the field list's length, and stating it separately would hand every
-// pair of single-primitive meshes half a point of agreement before their contents
-// were even looked at — half being exactly the threshold.
-func meshSignature(s meshSide, m *gltf.Mesh) signature {
-	fields := make([]sigField, 0, len(m.Primitives))
+// pair of single-primitive meshes agreement before their contents were even
+// looked at.
+func meshSignature(s meshSide, m *gltf.Mesh, matTok refToken) signature {
+	fields := make([]sigField, 0, 2*len(m.Primitives))
 	for _, p := range m.Primitives {
-		parts := []string{"material=" + s.materialKey(p.Material)}
+		parts := make([]string, 0, len(p.Attributes)+1)
 		for _, stream := range primitiveStreams(p, p) {
-			parts = append(parts, stream+"="+readStream(s.doc, p, stream).describe(s.doc))
+			parts = append(parts, stream+"="+s.streamDescriptor(p, stream))
 		}
-		fields = append(fields, sigField{strings.Join(parts, " "), 1, stated})
+		fields = append(fields,
+			matTok(p.Material),
+			sigField{"streams=" + strings.Join(parts, " "), meshStreamsWeight, stated},
+		)
 	}
 	return signature{fields: fields, specific: len(m.Primitives) > 0}
+}
+
+// meshStructuralKey is the exact-content tier's cheap bucket key for a mesh: the
+// shape of every stream (count, type, component — and for POSITION the required
+// Min/Max, quantized at POSITION's precision) plus the material tokens. No byte
+// reads: the expensive canonical digests are only computed to verify a bucket
+// that this key already says is 1:1.
+func meshStructuralKey(s meshSide, m *gltf.Mesh, matTok refToken) string {
+	var b strings.Builder
+	for _, p := range m.Primitives {
+		mf := matTok(p.Material)
+		fmt.Fprintf(&b, "%d\x00%s\x00", mf.kind, mf.value)
+		for _, stream := range primitiveStreams(p, p) {
+			idx, ok := primitiveStreamIndex(p, stream)
+			if !ok || idx < 0 || idx >= len(s.doc.Accessors) {
+				fmt.Fprintf(&b, "%s=<absent>\x00", stream)
+				continue
+			}
+			acc := s.doc.Accessors[idx]
+			fmt.Fprintf(&b, "%s=count=%d type=%v component=%v", stream, acc.Count, acc.Type, acc.ComponentType)
+			if stream == gltf.POSITION {
+				b.WriteString(" bounds=")
+				for _, bound := range [][]float64{acc.Min, acc.Max} {
+					for _, v := range bound {
+						if q, ok := quantize(v, 1e8); ok {
+							fmt.Fprintf(&b, "%d,", q)
+						}
+					}
+					b.WriteByte(';')
+				}
+			}
+			b.WriteByte('\x00')
+		}
+		b.WriteByte('\x1f')
+	}
+	return b.String()
+}
+
+// refToken renders a cross-collection reference — a primitive's material, a
+// node's mesh — as a content-descriptor field whose value survives the trip
+// across revisions.
+type refToken func(idx *int) sigField
+
+// materialTokens builds one side's material refToken, resolving each reference
+// through the materials pairing: a reference to a paired material renders as
+// the pair's canonical token (the BASE-side key, whichever side is looking), so
+// two files agree exactly when they reference the same material — however that
+// material was matched, and whatever it is called in either file. Unpaired
+// named materials keep their own key (a real cross-file name); unpaired unnamed
+// ones are opaque, and a byPosition pair counts as unpaired here, because an
+// equal array index is precisely the claim the opaque rule refuses to trust.
+func materialTokens(s meshSide, mats collectionMatch, isBase bool) refToken {
+	return func(idx *int) sigField {
+		f := sigField{value: "material=" + s.materialKey(idx), weight: meshMaterialWeight}
+		switch {
+		case idx == nil:
+			f.kind = unstated
+			return f
+		case *idx < 0 || *idx >= len(s.materialKeys):
+			f.kind = opaque
+			return f
+		}
+		if tok, ok := pairToken(mats, *idx, isBase); ok {
+			f.value = "material=" + tok
+			return f
+		}
+		if mats.entities(isBase)[*idx].name == "" {
+			f.kind = opaque
+		}
+		return f
+	}
+}
+
+// pairToken resolves one side's index through a collection pairing to the
+// pair's canonical cross-file token: the base-side key. ok is false for an
+// unpaired element and for a positional pair — an index-equality pairing must
+// not launder an index into a "stated" value.
+func pairToken(m collectionMatch, idx int, isBase bool) (string, bool) {
+	bi := idx
+	if !isBase {
+		var ok bool
+		bi, ok = m.pairs.baseOf[idx]
+		if !ok {
+			return "", false
+		}
+	} else if _, ok := m.pairs.headOf[idx]; !ok {
+		return "", false
+	}
+	if m.pairs.how[bi].by == byPosition {
+		return "", false
+	}
+	return m.aKeys[bi], true
 }
 
 // ── matching ──────────────────────────────────────────────────────────────────
@@ -384,6 +545,11 @@ const (
 	byUID     = "fhr_uid"
 	byName    = "name"
 	byContent = "content"
+	// byPosition marks the last-resort tier: equal array indices, nothing else.
+	// It never surfaces on the wire — a positional pair is never a rename (both
+	// sides are unnamed by construction) and states no evidence, because an
+	// index is not evidence.
+	byPosition = "position"
 )
 
 // matchEvidence records why two elements were paired, so a rename can say so.
@@ -395,6 +561,10 @@ type matchEvidence struct {
 	// duplicateUID marks an id that is not unique on one of the sides. The first
 	// occurrence was used; the rest fell through to the weaker tiers.
 	duplicateUID bool
+	// dice marks a byStructure pair made by the bottom-up container pass, whose
+	// similarity is a Dice coefficient over descendants rather than a content
+	// score — the evidence note renders it as such.
+	dice bool
 }
 
 // pairing is one collection's cross-revision matching: which base element is
@@ -423,8 +593,18 @@ func (p pairing) sameEntity(base, head int) bool {
 	return ok && h == head
 }
 
-// matchEntities runs the cascade over one collection and returns the pairing.
-func matchEntities(base, head []entity) pairing {
+// matchEntities runs the per-element evidence tiers over one collection — id,
+// name, exact content, scored content — and returns the pairing. Collections
+// with more evidence run their own tiers on the leftovers afterwards
+// (matchByStructure for the node tree) and every collection finishes with
+// matchByPosition, the weakest tier, so it can never pre-empt a stronger one.
+//
+// deepEq, when non-nil, is the exact-content tier's final check for a candidate
+// pair: it must compare the elements' actual content — not hashes of it —
+// because that tier asserts identity from signature equality alone and a
+// signature may carry 64-bit digests. Nil for collections whose signature
+// values are the stated content itself.
+func matchEntities(base, head []entity, deepEq func(bi, hj int) bool) pairing {
 	p := pairing{
 		headOf: make(map[int]int, len(base)),
 		baseOf: make(map[int]int, len(head)),
@@ -448,14 +628,22 @@ func matchEntities(base, head []entity) pairing {
 		p.pair(i, j, matchEvidence{by: byUID, duplicateUID: baseDup[e.uid] || headDup[e.uid]})
 	}
 
-	// Tier 2 — names, via the diff key. An element already claimed by an id match
-	// is not up for grabs: the id is the stronger evidence, so a head element that
-	// merely inherited the old name reads as new, which is what it is.
+	// Tier 2 — names, via the diff key, and only for elements that have one: an
+	// unnamed element's key is its array index, which is a position and not a
+	// name — pairing on it is the #42 insertion cascade. An element already
+	// claimed by an id match is not up for grabs: the id is the stronger
+	// evidence, so a head element that merely inherited the old name reads as
+	// new, which is what it is.
 	headByKey := make(map[string]int, len(head))
 	for j, e := range head {
-		headByKey[e.key] = j
+		if e.name != "" {
+			headByKey[e.key] = j
+		}
 	}
 	for i, e := range base {
+		if e.name == "" {
+			continue
+		}
 		if _, done := p.headOf[i]; done {
 			continue
 		}
@@ -469,6 +657,7 @@ func matchEntities(base, head []entity) pairing {
 		p.pair(i, j, matchEvidence{by: byName})
 	}
 
+	matchByExactContent(p, base, head, deepEq)
 	matchByContent(p, base, head)
 	return p
 }
@@ -512,20 +701,189 @@ func uidIndex(items []entity) (first map[string]int, duplicated map[string]bool)
 // enough, and the safe direction to fail in.
 const renameLimit = 1000
 
-// matchByContent pairs what tiers 1 and 2 left over, by content descriptor.
+// matchByExactContent pairs the leftovers that are unnamed on BOTH sides and
+// whose full stated signatures are identical — the tier that stops an insertion
+// from cascading through a file with no names at all, which is issue #42's
+// headline defect.
 //
-// Only named elements participate: an unnamed element's key is its array index,
-// so pairing two of them would report a "rename" between two synthetic keys and
-// would wander into the index cascade that is issue #42's to fix.
-func matchByContent(p pairing, base, head []entity) {
+// Deliberately narrower than the scored tier in three ways. Unique:unique only:
+// elements are bucketed by content and a bucket holding more than one candidate
+// on either side pairs nothing (unlike git's in-order exact renames) — two
+// identical unnamed elements are interchangeable, and choosing one would be a
+// coin flip that hides which was deleted. No opaque field anywhere in either
+// signature: an index-derived referent key cannot be verified cross-file, so it
+// disqualifies the element from exact matching outright — the signature must be
+// built from stated content alone. And both sides unnamed: for NAMED elements,
+// exact equality of sparse stated content is precisely the false rename the
+// scored tier's floors reject (two "groups at origin" have identical stated
+// content and are pinned as add+remove) — for unnamed elements the alternative
+// evidence is array position, which full-content equality strictly beats.
+//
+// Two-tier for cost: buckets are keyed on a cheap structural key (entity.
+// structKey — no byte reads), and the expensive full signatures are only built
+// to VERIFY a 1:1 bucket, at most once per element. Where a signature carries
+// content digests, deepEq then re-compares the actual content — hash equality
+// is an accelerator, never the proof. Bounded by the same renameLimit product
+// cap as every content-scored pass.
+func matchByExactContent(p pairing, base, head []entity, deepEq func(bi, hj int) bool) {
 	var leftBase, leftHead []int
 	for i, e := range base {
-		if _, done := p.headOf[i]; !done && e.name != "" {
+		if _, done := p.headOf[i]; !done && e.name == "" {
 			leftBase = append(leftBase, i)
 		}
 	}
 	for j, e := range head {
-		if _, done := p.baseOf[j]; !done && e.name != "" {
+		if _, done := p.baseOf[j]; !done && e.name == "" {
+			leftHead = append(leftHead, j)
+		}
+	}
+	if len(leftBase) == 0 || len(leftHead) == 0 {
+		return
+	}
+	if len(leftBase) > renameLimit*renameLimit/len(leftHead) {
+		return
+	}
+
+	type bucket struct {
+		base, head []int
+	}
+	key := func(e entity) string {
+		if e.structKey != nil {
+			return e.structKey()
+		}
+		return structuralKeyOf(e.sig())
+	}
+	buckets := make(map[string]*bucket, len(leftBase)+len(leftHead))
+	at := func(k string) *bucket {
+		b := buckets[k]
+		if b == nil {
+			b = &bucket{}
+			buckets[k] = b
+		}
+		return b
+	}
+	for _, i := range leftBase {
+		b := at(key(base[i]))
+		b.base = append(b.base, i)
+	}
+	for _, j := range leftHead {
+		b := at(key(head[j]))
+		b.head = append(b.head, j)
+	}
+
+	for _, b := range buckets {
+		// Ambiguity never pairs: a bucket is only acted on when it holds exactly
+		// one candidate per side. (Order over the map is irrelevant — every element
+		// sits in exactly one bucket.)
+		if len(b.base) != 1 || len(b.head) != 1 {
+			continue
+		}
+		i, j := b.base[0], b.head[0]
+		sa, sb := base[i].sig(), head[j].sig()
+		if !sa.specific || !sb.specific {
+			continue // contentless elements never pair
+		}
+		if sigHasOpaque(sa) || sigHasOpaque(sb) {
+			continue // unverifiable content never asserts identity
+		}
+		if !sigFieldsEqual(sa, sb) {
+			continue // the cheap key lumped two different elements; the proof says no
+		}
+		if deepEq != nil && !deepEq(i, j) {
+			continue
+		}
+		p.pair(i, j, matchEvidence{by: byContent, similarity: 1})
+	}
+}
+
+// structuralKeyOf derives an exact-tier bucket key from a signature, for
+// collections whose signatures are cheap to build outright.
+func structuralKeyOf(s signature) string {
+	var b strings.Builder
+	for _, f := range s.fields {
+		fmt.Fprintf(&b, "%d\x00%d\x00%s\x00", f.kind, f.weight, f.value)
+	}
+	return b.String()
+}
+
+func sigHasOpaque(s signature) bool {
+	for _, f := range s.fields {
+		if f.kind == opaque {
+			return true
+		}
+	}
+	return false
+}
+
+// sigFieldsEqual reports whether two signatures state identical content: same
+// field list, same values, same kinds. This is the exact tier's proof (modulo
+// deepEq for digest-bearing values), so nothing is inferred — everything is
+// compared.
+func sigFieldsEqual(a, b signature) bool {
+	if len(a.fields) != len(b.fields) {
+		return false
+	}
+	for i := range a.fields {
+		if a.fields[i].value != b.fields[i].value || a.fields[i].kind != b.fields[i].kind {
+			return false
+		}
+	}
+	return true
+}
+
+// matchByPosition is the cascade's last resort, and reproduces the pre-#42
+// behaviour for what nothing stronger could pair: two unnamed leftovers at the
+// same array index — name == "" on BOTH sides, not merely key-equal, so a node
+// literally named "node[3]" can never collide with an index key — are assumed
+// to be the same element. It is what keeps an unnamed element edited in place
+// reporting under its own index, and what keeps a file of interchangeable
+// duplicates (which the exact tier refuses as ambiguous) diffing empty when
+// nothing changed. A positional pair can never be labeled renamed (both sides
+// are unnamed) and its evidence never surfaces: an index is not evidence.
+func matchByPosition(p pairing, base, head []entity) {
+	headByKey := make(map[string]int)
+	for j, e := range head {
+		if _, done := p.baseOf[j]; !done && e.name == "" {
+			headByKey[e.key] = j
+		}
+	}
+	for i, e := range base {
+		if e.name != "" {
+			continue
+		}
+		if _, done := p.headOf[i]; done {
+			continue
+		}
+		j, ok := headByKey[e.key]
+		if !ok {
+			continue
+		}
+		if _, taken := p.baseOf[j]; taken {
+			continue
+		}
+		p.pair(i, j, matchEvidence{by: byPosition})
+	}
+}
+
+// matchByContent pairs what the exact tiers left over, by scored content
+// descriptor.
+//
+// Unnamed elements participate too — including mixed named/unnamed pairs, which
+// is the optimizer-stripped-names case: a deleted named element pairing an
+// added unnamed one IS reported as the rename it is (a name was removed), per
+// isRename's one-sided rule, while a both-unnamed pair is never labeled. The
+// floors and thresholds are untouched, so a sparse unnamed node (a translation
+// alone is 1/5) still cannot pair here — the cascade fix for identical unnamed
+// elements is matchByExactContent's, not this tier's.
+func matchByContent(p pairing, base, head []entity) {
+	var leftBase, leftHead []int
+	for i := range base {
+		if _, done := p.headOf[i]; !done {
+			leftBase = append(leftBase, i)
+		}
+	}
+	for j := range head {
+		if _, done := p.baseOf[j]; !done {
 			leftHead = append(leftHead, j)
 		}
 	}
@@ -712,31 +1070,607 @@ func bareName(e entity) string {
 	return e.key
 }
 
-// renameAfter renders a rename's `after` value: the new name, plus the evidence
-// that tied it to the old one in the parenthetical form the rest of this handler
-// uses for a measured value ("40 mm (moved 12 mm)").
-//
-// The label stays the bare new name and `before` the bare old one, so a consumer
-// reads names off those two fields and never has to parse this string.
-func renameAfter(newKey string, ev matchEvidence) string {
-	var note string
+// evidenceNote renders the evidence behind a non-trivial pairing, for the
+// parenthetical form the rest of this handler uses for a measured value
+// ("40 mm (moved 12 mm)"). "" for the trivial tiers: a name match needs no
+// explaining, and a positional pair has no evidence to state — an index is not
+// evidence.
+func evidenceNote(ev matchEvidence) string {
 	switch ev.by {
 	case byUID:
-		note = "matched by " + uidExtrasKey
+		note := "matched by " + uidExtrasKey
 		if ev.duplicateUID {
 			// The id was claimed by more than one element on one of the sides, so
 			// this pairing is the first-occurrence rule's guess, not a fact.
 			note += ", duplicated — first occurrence used"
 		}
+		return note
 	case byContent:
-		note = "matched by content"
+		note := "matched by content"
 		if ev.similarity < 1 {
 			// Approximate by construction: the score is a fraction of descriptor
 			// fields, not a measurement of the geometry.
 			note += fmt.Sprintf(", ~%d%% similar", int(ev.similarity*100+0.5))
 		}
+		return note
+	case byStructure:
+		note := "matched by structure"
+		if ev.dice {
+			// A bottom-up container match: what was measured is how many of the
+			// two subtrees' descendants paired, so that is what is said.
+			note += fmt.Sprintf(", ~%d%% of descendants shared", int(ev.similarity*100+0.5))
+		}
+		return note
 	default:
+		return ""
+	}
+}
+
+// renameAfter renders a rename's `after` value: the new name, plus the evidence
+// that tied it to the old one.
+//
+// The label stays the bare new name and `before` the bare old one, so a consumer
+// reads names off those two fields and never has to parse this string.
+func renameAfter(newKey string, ev matchEvidence) string {
+	note := evidenceNote(ev)
+	if note == "" {
 		return newKey
 	}
 	return newKey + " (" + note + ")"
+}
+
+// reparentAfter renders a reparented change's `after` value: the new parent's
+// key, plus the evidence when the pair was made by a non-trivial tier — the
+// same convention renameAfter uses, so 'reparented' reads in the same voice as
+// 'renamed'. The bare new parent key stays readable off the change's `parent`
+// child row, which consumers should prefer over parsing this string.
+func reparentAfter(newParent string, ev matchEvidence) string {
+	note := evidenceNote(ev)
+	if note == "" {
+		return newParent
+	}
+	return newParent + " (" + note + ")"
+}
+
+// ── structural matching: the node tree (#42) ──────────────────────────────────
+
+// diceThreshold is the least share of descendants two containers must have in
+// common — as a Dice coefficient, 2·shared / (|desc(a)| + |desc(b)|) — before
+// the bottom-up pass may pair them. 0.5 follows GumTree (Falleri et al., ASE
+// 2014), whose top-down/bottom-up split this tier borrows. The issue asks for a
+// "tunable" knob; the wire protocol has no configuration channel, so like
+// renameThreshold beside it this is a named compile-time constant, which is as
+// tunable as the contract allows today.
+const diceThreshold = 0.5
+
+// byStructure marks a pair made by the node tree: an anchored identical subtree
+// (similarity 1), a bottom-up container match (similarity = the dice score,
+// matchEvidence.dice set), or an identical leftover under a paired parent
+// (similarity 1).
+const byStructure = "structure"
+
+// structureWorkBudget bounds matchByStructure phase 2's total work, in
+// amortized-constant steps: one descendant collected, or one candidate's
+// interval count. A step here is integer bookkeeping — two orders of magnitude
+// cheaper than one similarity() evaluation — so the multiplier over
+// renameLimit² keeps the same wall-clock envelope as the content tier's cap
+// while admitting the ordinary big case (a re-organized 20k-node scene charges
+// ~20M steps). Over budget the pass aborts unapplied: the safe direction. A
+// var, not a const, so the abort path is testable without a pathological
+// fixture.
+var structureWorkBudget = 32 * renameLimit * renameLimit
+
+// nodeTree is one side's hierarchy, prepared for structural matching: children
+// lists inverted from nodeIndex.parent, a content hash per subtree, and the
+// bookkeeping the two passes need.
+type nodeTree struct {
+	children  [][]int
+	roots     []int
+	post      []int // node indices in postorder
+	tin, tout []int // Euler intervals: d inside c ⇔ tin[c] < tin[d] && tout[d] < tout[c]
+	hash      []uint64
+	height    []int // leaf = 1
+	poison    []bool
+	specific  []bool // subtree contains at least one specific node
+	desc      []int  // descendant count, self excluded
+	unmatched []int  // unmatched nodes in the subtree, self included
+	content   []string
+}
+
+// buildNodeTree walks one side once. The subtree hash covers the node's NAME,
+// its stated non-parent signature fields (local TRS as already formatted, the
+// mesh pair-token when stated), and the SORTED multiset of child subtree
+// hashes. The parent field is excluded by definition — a moved subtree's root
+// differs on it — and the child count is implied by the multiset. Names are
+// deliberately IN the hash: a name mismatch must veto an anchor, or the pinned
+// "groups at origin" conservatism cases (content-identical subtrees, different
+// names) would anchor and hide a deletion; name-stripped files hash "" on both
+// sides, so the tier's real target anchors on pure content. An opaque field —
+// an unverifiable index-derived reference — poisons the node and every
+// ancestor: content that cannot be verified cross-file never anchors.
+func buildNodeTree(ix *nodeIndex, isMatched func(int) bool) *nodeTree {
+	n := len(ix.nodes)
+	t := &nodeTree{
+		children:  make([][]int, n),
+		post:      make([]int, 0, n),
+		tin:       make([]int, n),
+		tout:      make([]int, n),
+		hash:      make([]uint64, n),
+		height:    make([]int, n),
+		poison:    make([]bool, n),
+		specific:  make([]bool, n),
+		desc:      make([]int, n),
+		unmatched: make([]int, n),
+		content:   make([]string, n),
+	}
+	for i, p := range ix.parent {
+		if p == rootIndex {
+			t.roots = append(t.roots, i)
+		} else {
+			t.children[p] = append(t.children[p], i)
+		}
+	}
+	timer := 0
+	var walk func(i int)
+	walk = func(i int) {
+		timer++
+		t.tin[i] = timer
+		sig := nodeSignature(ix, i)
+		var b strings.Builder
+		b.WriteString(ix.nodes[i].Name)
+		poison := false
+		for _, f := range sig.fields {
+			if strings.HasPrefix(f.value, "parent=") || strings.HasPrefix(f.value, "children=") {
+				continue
+			}
+			switch f.kind {
+			case stated:
+				b.WriteByte(0)
+				b.WriteString(f.value)
+			case opaque:
+				poison = true
+			}
+		}
+		t.content[i] = b.String()
+		t.specific[i] = sig.specific
+		t.height[i] = 1
+		if !isMatched(i) {
+			t.unmatched[i] = 1
+		}
+		childHashes := make([]uint64, 0, len(t.children[i]))
+		for _, c := range t.children[i] {
+			walk(c)
+			childHashes = append(childHashes, t.hash[c])
+			t.height[i] = max(t.height[i], t.height[c]+1)
+			t.desc[i] += t.desc[c] + 1
+			t.specific[i] = t.specific[i] || t.specific[c]
+			poison = poison || t.poison[c]
+			t.unmatched[i] += t.unmatched[c]
+		}
+		t.poison[i] = poison
+		slices.Sort(childHashes)
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(t.content[i]))
+		var buf [8]byte
+		for _, ch := range childHashes {
+			binary.LittleEndian.PutUint64(buf[:], ch)
+			_, _ = h.Write(buf[:])
+		}
+		t.hash[i] = h.Sum64()
+		timer++
+		t.tout[i] = timer
+		t.post = append(t.post, i)
+	}
+	for _, r := range t.roots {
+		walk(r)
+	}
+	// Nodes unreachable from any root (cycles in a malformed file) still need
+	// slots; they can never anchor, but they must not crash the walkers.
+	for i := range n {
+		if t.tin[i] == 0 {
+			timer++
+			t.tin[i] = timer
+			timer++
+			t.tout[i] = timer
+			t.height[i] = 1
+			t.post = append(t.post, i)
+			sig := nodeSignature(ix, i)
+			t.specific[i] = sig.specific
+			if !isMatched(i) {
+				t.unmatched[i] = 1
+			}
+		}
+	}
+	return t
+}
+
+// matchByStructure pairs still-unmatched NODES by their place in the tree —
+// the one collection that has one. It slots after the per-element content
+// tiers (content is stronger evidence about an element than its surroundings)
+// and before the positional fallback (position is the weakest evidence there
+// is), operates strictly on leftovers, and never overrides an existing pair.
+//
+// Phase 1, top-down anchoring (GumTree's greedy subtree isomorphism, with
+// minHeight = 2): unmatched-side subtrees are bucketed by subtree hash and a
+// bucket holding exactly one candidate per side — ambiguity never pairs — whose
+// subtrees are at least two levels tall, entirely unmatched, unpoisoned and
+// contain at least one specific node is VERIFIED by walking both subtrees and
+// comparing stated content (the hash accelerates, the walk proves), then paired
+// root-and-descendants. Equal-hash sibling groups pair in array order: they are
+// interchangeable by construction. Since names are inside the hash, an anchored
+// pair's names are equal or both empty, so an anchor never produces a rename
+// label — a moved unnamed subtree surfaces as its root's re-parent instead.
+//
+// Phase 2, bottom-up container matching: an unmatched base node with matched
+// descendants is a candidate against the nearest unmatched head ancestor of
+// each descendant's counterpart; a pair must clear diceThreshold, share at
+// least TWO matched descendant pairs (one shared child is the child-count-as-
+// evidence trap the signature floors exist for — "renamed parent of a single
+// child, no uid" stays an honest miss), must not put two DIFFERENT stated
+// meshes on one node (meshWeight's rule — a swapped mesh is a removal plus an
+// addition, never a rename — which a descendant-only score would otherwise
+// override; like the two-descendant floor, a clashing candidate still enters
+// the trackers so a near-tie blocks), and must be the strict mutual best in
+// both directions. Two content-disjoint empty containers CAN still pair on two
+// shared children alone — the thinnest evidence any tier accepts, recorded
+// here as a deliberate judgment: it is GumTree's published algorithm, the
+// evidence note says exactly what was measured, and the two-descendant floor
+// is what keeps a lone child from carrying it. These pairs may be labeled
+// renamed when isRename says so; the both-unnamed invariant holds because
+// isRename is the only label gate.
+//
+// Phase 3, identical leftovers under a paired parent: when a parent pair was
+// made by real evidence (id, name, content, an anchor — never position, which
+// does not exist yet when this runs), its still-unmatched children pair 1:1
+// where a whole-subtree hash is unique among the leftover children on each
+// side, verified by the same walk anchors use. The parent's identity is what
+// phase 1 could not have: it disambiguates twin subtrees that are identical
+// file-wide (the exact-content tier can pair a twin's root through its parent
+// key while the children fall past every content tier to the positional one,
+// which pairs them ACROSS the twins — a Frankenstein narrative of self-
+// contradictory reparent rows). Ambiguity still never pairs: a hash repeated
+// among one parent's leftover children stays unmatched. Names are inside the
+// hash, so a phase-3 pair never produces a rename label.
+//
+// COST, the #59 commit-7 lesson — bound time, not just memory: the whole tier
+// is skipped when leftBase × leftHead exceeds renameLimit², and phase 2 charges
+// its real work — descendants collected per container plus one O(log) interval
+// count per candidate — against structureWorkBudget, aborting unapplied (and
+// leaving the remaining leftovers as the additions and removals they are — the
+// safe failure direction) rather than letting a pathological file hang a
+// browser tab. The budget must bound the WHOLE pass: an earlier draft counted
+// only candidate evaluations, which the entry gate already capped, so the
+// abort was dead code while each evaluation rescanned every matched descendant
+// — quadratic-class work the budget never saw.
+func matchByStructure(p pairing, aIx, bIx *nodeIndex) {
+	var leftBase, leftHead []int
+	for i := range aIx.nodes {
+		if _, done := p.headOf[i]; !done {
+			leftBase = append(leftBase, i)
+		}
+	}
+	for j := range bIx.nodes {
+		if _, done := p.baseOf[j]; !done {
+			leftHead = append(leftHead, j)
+		}
+	}
+	if len(leftBase) == 0 || len(leftHead) == 0 {
+		return
+	}
+	if len(leftBase) > renameLimit*renameLimit/len(leftHead) {
+		return
+	}
+
+	aT := buildNodeTree(aIx, func(i int) bool { _, ok := p.headOf[i]; return ok })
+	bT := buildNodeTree(bIx, func(j int) bool { _, ok := p.baseOf[j]; return ok })
+
+	// ── phase 1: anchors ──
+	type anchor struct{ a, b, height int }
+	aBuckets := make(map[uint64][]int)
+	bBuckets := make(map[uint64][]int)
+	eligible := func(t *nodeTree, i int) bool {
+		return t.height[i] >= 2 && !t.poison[i] && t.specific[i] && t.unmatched[i] == t.desc[i]+1
+	}
+	for _, i := range leftBase {
+		if eligible(aT, i) {
+			aBuckets[aT.hash[i]] = append(aBuckets[aT.hash[i]], i)
+		}
+	}
+	for _, j := range leftHead {
+		if eligible(bT, j) {
+			bBuckets[bT.hash[j]] = append(bBuckets[bT.hash[j]], j)
+		}
+	}
+	var anchors []anchor
+	for h, as := range aBuckets {
+		bs := bBuckets[h]
+		if len(as) == 1 && len(bs) == 1 {
+			anchors = append(anchors, anchor{as[0], bs[0], aT.height[as[0]]})
+		}
+	}
+	// Taller subtrees claim first, deterministically (map order is random).
+	slices.SortFunc(anchors, func(x, y anchor) int {
+		if x.height != y.height {
+			return y.height - x.height
+		}
+		return x.a - y.a
+	})
+	for _, an := range anchors {
+		var pairs [][2]int
+		if collectSubtreePairs(p, aT, bT, an.a, an.b, &pairs) {
+			for _, pr := range pairs {
+				p.pair(pr[0], pr[1], matchEvidence{by: byStructure, similarity: 1})
+			}
+		}
+	}
+
+	// ── phase 2: bottom-up containers ──
+	// The pairing as a dense slice: the descendant scans below are phase 2's hot
+	// path, and a Go map lookup per element there was the measured blowup (~7e9
+	// lookups on a 1000-container 8k-node scene).
+	headOfArr := make([]int, len(aIx.nodes))
+	for i := range headOfArr {
+		headOfArr[i] = -1
+	}
+	for i, j := range p.headOf {
+		headOfArr[i] = j
+	}
+	// Matched base nodes sorted by tin, so a subtree's matched descendants are a
+	// binary-searched range instead of a per-candidate walk.
+	matchedByTin := make([]int, 0, len(p.headOf))
+	for i, j := range headOfArr {
+		if j >= 0 {
+			matchedByTin = append(matchedByTin, i)
+		}
+	}
+	slices.SortFunc(matchedByTin, func(x, y int) int { return aT.tin[x] - aT.tin[y] })
+	matchedDescendants := func(b int) []int {
+		lo, _ := slices.BinarySearchFunc(matchedByTin, aT.tin[b], func(i, tin int) int { return aT.tin[i] - tin })
+		out := matchedByTin[lo:]
+		hi := len(out)
+		for k, i := range out {
+			if aT.tin[i] > aT.tout[b] {
+				hi = k
+				break
+			}
+		}
+		return out[:hi]
+	}
+	// nearestUnmatched[j] is head node j's closest ancestor that is still
+	// unmatched, or -1. Memoized: phase 2 evaluates against the pre-phase-2
+	// matched set and applies its pairs only at the end.
+	nearestUnmatched := make([]int, len(bIx.nodes))
+	for j := range nearestUnmatched {
+		nearestUnmatched[j] = -2
+	}
+	var nearest func(j int) int
+	nearest = func(j int) int {
+		if j < 0 || j >= len(nearestUnmatched) {
+			return -1
+		}
+		if nearestUnmatched[j] != -2 {
+			return nearestUnmatched[j]
+		}
+		nearestUnmatched[j] = -1 // break cycles in malformed files
+		up := bIx.parent[j]
+		if up == rootIndex {
+			return -1
+		}
+		if _, done := p.baseOf[up]; !done {
+			nearestUnmatched[j] = up
+		} else {
+			nearestUnmatched[j] = nearest(up)
+		}
+		return nearestUnmatched[j]
+	}
+
+	type candidate struct {
+		b, c      int
+		dice      float64
+		shared    int
+		meshClash bool
+	}
+	var cands []candidate
+	baseBest := make(map[int]*bestTracker)
+	headBest := make(map[int]*bestTracker)
+	// seenStamp[c] == b marks head candidate c as already evaluated for the
+	// current base container b — a reusable stamp array instead of a per-b map.
+	seenStamp := make([]int, len(bIx.nodes))
+	for k := range seenStamp {
+		seenStamp[k] = -1
+	}
+	work := 0
+	var hdTins []int
+	for _, b := range aT.post {
+		if headOfArr[b] >= 0 || aT.desc[b] == 0 {
+			continue
+		}
+		descs := matchedDescendants(b)
+		if len(descs) == 0 {
+			continue
+		}
+		// Charge the collection before spending it. Over budget: the whole
+		// bottom-up pass aborts unapplied (phase 3 included). Phase 1's anchors
+		// stand — they are verified pairs, the safe thing to keep.
+		work += len(descs)
+		if work > structureWorkBudget {
+			return
+		}
+		// The counterparts' head tins, sorted once per container: each
+		// candidate's shared count is then two binary searches over this slice
+		// instead of a rescan of every matched descendant — the rescan was
+		// quadratic-class (per-candidate × per-descendant) and the measured
+		// browser-tab hang.
+		hdTins = hdTins[:0]
+		for _, d := range descs {
+			hdTins = append(hdTins, bT.tin[headOfArr[d]])
+		}
+		slices.Sort(hdTins)
+		bMesh := aIx.meshField(aIx.nodes[b].Mesh)
+		for _, d := range descs {
+			c := nearest(headOfArr[d])
+			if c < 0 || seenStamp[c] == b {
+				continue
+			}
+			seenStamp[c] = b
+			work++
+			if work > structureWorkBudget {
+				return
+			}
+			// A head tin strictly inside c's Euler interval is a counterpart
+			// inside c's subtree: intervals nest or are disjoint, so the lower
+			// bound alone decides containment.
+			lo, _ := slices.BinarySearch(hdTins, bT.tin[c]+1)
+			hi, _ := slices.BinarySearch(hdTins, bT.tout[c])
+			shared := hi - lo
+			dice := 2 * float64(shared) / float64(aT.desc[b]+bT.desc[c])
+			if dice < diceThreshold {
+				continue
+			}
+			// Every threshold-clearing candidate enters the trackers — even one
+			// that will fail the two-descendant floor or the mesh-clash rule —
+			// so a near-tie always blocks.
+			cMesh := bIx.meshField(bIx.nodes[c].Mesh)
+			clash := bMesh.kind == stated && cMesh.kind == stated && bMesh.value != cMesh.value
+			cands = append(cands, candidate{b, c, dice, shared, clash})
+			if baseBest[b] == nil {
+				baseBest[b] = &bestTracker{best: -1}
+			}
+			if headBest[c] == nil {
+				headBest[c] = &bestTracker{best: -1}
+			}
+			baseBest[b].add(c, dice)
+			headBest[c].add(b, dice)
+		}
+	}
+	for _, cd := range cands {
+		if cd.shared < 2 {
+			continue
+		}
+		// Two different stated meshes on one candidate pair is the content
+		// tier's hard NO (meshWeight: a swapped mesh is a removal plus an
+		// addition, never a rename), and sharing descendants must not override
+		// it: a table and a lamp that swapped custody of two chairs are not one
+		// renamed object.
+		if cd.meshClash {
+			continue
+		}
+		if bb, _, ok := baseBest[cd.b].strict(); !ok || bb != cd.c {
+			continue
+		}
+		if hb, _, ok := headBest[cd.c].strict(); !ok || hb != cd.b {
+			continue
+		}
+		if _, done := p.headOf[cd.b]; done {
+			continue
+		}
+		if _, done := p.baseOf[cd.c]; done {
+			continue
+		}
+		p.pair(cd.b, cd.c, matchEvidence{by: byStructure, similarity: cd.dice, dice: true})
+	}
+
+	// ── phase 3: identical leftovers under a paired parent ──
+	// A parent pair made on real evidence disambiguates what nothing file-wide
+	// could: which of two identical twin subtrees survived. Its leftover
+	// children pair 1:1 by whole-subtree hash — unique per side among THESE
+	// siblings, ambiguity never pairs — verified by the anchor walk, which
+	// pairs the whole subtree or nothing. Eligibility mirrors phase 1: no
+	// opaque content anywhere in the subtree, at least one specific node.
+	// Every pair so far was made by id, name, content or structure (position
+	// runs after this tier), so the parent's identity is never itself an
+	// index-equality guess.
+	for _, b := range aT.post {
+		c, ok := p.headOf[b]
+		if !ok {
+			continue
+		}
+		var aKids, bKids []int
+		aByHash := make(map[uint64]int)
+		bByHash := make(map[uint64]int)
+		for _, ch := range aT.children[b] {
+			if _, done := p.headOf[ch]; !done && !aT.poison[ch] && aT.specific[ch] {
+				aKids = append(aKids, ch)
+				aByHash[aT.hash[ch]]++
+			}
+		}
+		if len(aKids) == 0 {
+			continue
+		}
+		for _, ch := range bT.children[c] {
+			if _, done := p.baseOf[ch]; !done && !bT.poison[ch] && bT.specific[ch] {
+				bKids = append(bKids, ch)
+				bByHash[bT.hash[ch]]++
+			}
+		}
+		if len(bKids) == 0 {
+			continue
+		}
+		for _, ach := range aKids {
+			h := aT.hash[ach]
+			if aByHash[h] != 1 || bByHash[h] != 1 {
+				continue
+			}
+			for _, bch := range bKids {
+				if bT.hash[bch] != h {
+					continue
+				}
+				var pairs [][2]int
+				if collectSubtreePairs(p, aT, bT, ach, bch, &pairs) {
+					for _, pr := range pairs {
+						p.pair(pr[0], pr[1], matchEvidence{by: byStructure, similarity: 1})
+					}
+				}
+				break
+			}
+		}
+	}
+}
+
+// collectSubtreePairs verifies that two subtrees hold identical stated content
+// — names, non-parent fields, and shape — and collects the node pairs, root
+// included. The hash got the two candidates into one bucket; this walk is the
+// proof. Children are matched in sorted-hash order, equal hashes in array
+// order: equal-hash siblings are interchangeable by construction.
+func collectSubtreePairs(p pairing, aT, bT *nodeTree, a, b int, out *[][2]int) bool {
+	if _, done := p.headOf[a]; done {
+		return false
+	}
+	if _, done := p.baseOf[b]; done {
+		return false
+	}
+	if aT.content[a] != bT.content[b] {
+		return false
+	}
+	ac, bc := aT.children[a], bT.children[b]
+	if len(ac) != len(bc) {
+		return false
+	}
+	as := sortedByHash(aT, ac)
+	bs := sortedByHash(bT, bc)
+	for k := range as {
+		if aT.hash[as[k]] != bT.hash[bs[k]] {
+			return false
+		}
+		if !collectSubtreePairs(p, aT, bT, as[k], bs[k], out) {
+			return false
+		}
+	}
+	*out = append(*out, [2]int{a, b})
+	return true
+}
+
+func sortedByHash(t *nodeTree, nodes []int) []int {
+	out := slices.Clone(nodes)
+	slices.SortStableFunc(out, func(x, y int) int {
+		switch {
+		case t.hash[x] < t.hash[y]:
+			return -1
+		case t.hash[x] > t.hash[y]:
+			return 1
+		default:
+			return 0
+		}
+	})
+	return out
 }
