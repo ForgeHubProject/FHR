@@ -147,6 +147,32 @@ describe("diffSummary", () => {
     expect(diffSummary(diff).byKind["renamed"]).toBe(1);
     expect(countKinds(diff.changes).kinds).toEqual(["added", "renamed"]);
   });
+
+  // "reparented" (#42) is the next kind to ship, and the same carry-through
+  // property holds: this is the typed-wire compile check that the union member
+  // landed, and the ordering check that unknown kinds sort after the known
+  // three.
+  it("counts a typed reparented change without knowing what a reparent is", () => {
+    const diff: StructuredDiff = {
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [
+        {
+          path: "nodes/Mirror_L",
+          label: "Mirror_L",
+          kind: "reparented",
+          before: "Body",
+          after: "Door_L (matched by structure)",
+          children: [
+            { path: "nodes/Mirror_L/parent", label: "parent", kind: "modified", before: "Body", after: "Door_L" },
+          ],
+        },
+        { path: "nodes/Lamp", label: "Lamp", kind: "added" },
+      ],
+    };
+    expect(diffSummary(diff).byKind["reparented"]).toBe(1);
+    expect(countKinds(diff.changes).kinds).toEqual(["added", "reparented"]);
+  });
 });
 
 describe("formatValue", () => {

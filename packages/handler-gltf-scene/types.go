@@ -18,6 +18,13 @@ const (
 	// of this kind is required to carry it through rather than drop it — see the
 	// SDK's countKinds, which counts unknown kinds by design.
 	Renamed ChangeKind = "renamed"
+	// Reparented is one node that kept its identity and moved to a different
+	// parent (#42). Additive, same rules as Renamed. It wraps the existing
+	// `<node>/parent` child row rather than replacing it, so consumers that
+	// predate the kind still see the move; when a pair is also a rename the
+	// node-level kind stays Renamed and the parent row hangs under it —
+	// #59's rule that a rename plus a move is ONE change.
+	Reparented ChangeKind = "reparented"
 )
 
 // DiffChange is one semantic unit of change within a StructuredDiff.
