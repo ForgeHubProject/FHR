@@ -72,6 +72,15 @@ export function headline(stop: ReviewStop): string {
   // rides along in `after` and stays in the panel: it is what a reviewer checks
   // *after* being told, not the thing the callout exists to say.
   if (stop.row.kind === "renamed") return `renamed ${renameFrom(stop)} → ${stop.row.label}`;
+  // A reparent's news is where the node went. Read the new parent off the
+  // `parent` DETAILS row, whose `after` is the bare parent key — never off the
+  // node-level `after`, which carries the pairing evidence note (#42).
+  if (stop.row.kind === "reparented") {
+    const parentDetail = stop.details.find((d) => d.label === "parent");
+    return typeof parentDetail?.after === "string" && parentDetail.after !== ""
+      ? `reparented under ${parentDetail.after}`
+      : "reparented";
+  }
 
   for (const label of HEADLINE_ORDER) {
     const detail = stop.details.find((d) => d.label === label);

@@ -714,6 +714,43 @@ describe("meshes and materials, painted through the geometry that carries them",
     );
   });
 
+  it("tints a reparented node and registers it for selection (#42)", async () => {
+    // No overlay code knows the kind: the tint comes from KIND_COLOR[kind] —
+    // which deliberately reuses modified's hue — and the node registers under
+    // its change path like any surviving node.
+    const head = await side({ nodes: [{ name: "Mirror_L", mesh: 0 }] });
+    const base = await side({ nodes: [{ name: "Mirror_L", mesh: 0 }] });
+    const overlay = buildOverlay({
+      head,
+      base,
+      changes: [change("Mirror_L", "reparented", ["parent"])],
+    });
+
+    expect(overlay.stats.tinted).toBeGreaterThan(0);
+    expect(overlay.stats.removedGhosts).toBe(0);
+    expect(overlay.boxByChangePath.has("nodes/Mirror_L")).toBe(true);
+    const painted = meshesIn(head.gltf.scene)[0]!;
+    expect(distanceTo(painted, KIND_COLOR["reparented"]!)).toBeLessThan(
+      distanceTo(painted, KIND_COLOR["removed"]!),
+    );
+    // A pure reparent has no transform change, so no motion grammar is drawn.
+    expect(overlay.stats.moveGhosts).toBe(0);
+    expect(overlay.stats.motionVectors).toBe(0);
+  });
+
+  it("draws the motion grammar when a reparent also moved in space (#42)", async () => {
+    const head = await side({ nodes: [{ name: "Mirror_L", mesh: 0, translation: [4, 0, 0] }] });
+    const base = await side({ nodes: [{ name: "Mirror_L", mesh: 0, translation: [0, 0, 0] }] });
+    const overlay = buildOverlay({
+      head,
+      base,
+      changes: [change("Mirror_L", "reparented", ["parent", "translation"])],
+    });
+
+    expect(overlay.stats.moveGhosts).toBe(1);
+    expect(overlay.stats.motionVectors).toBe(1);
+  });
+
   it("says so when a rename's previous name matched several base nodes (#47)", async () => {
     // `before` is the bare old name, which is all a rename can carry — an array
     // index would name whatever sits at that number now. When the previous version

@@ -205,6 +205,54 @@ describe("headline (the one viewport callout's text)", () => {
     expect(headline(stops[0]!)).toBe("renamed Cube.003 → Fender");
   });
 
+  it("reads a reparent off the parent detail row, never the evidence-bearing after (#42)", () => {
+    const reparentDiff: StructuredDiff = {
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [
+        {
+          path: "nodes",
+          label: "nodes",
+          kind: "modified",
+          children: [
+            {
+              path: "nodes/Mirror_L",
+              label: "Mirror_L",
+              kind: "reparented",
+              before: "Body",
+              // The node-level after carries the pairing evidence; parsing the
+              // parent's name back out of it would be the string-scraping this
+              // renderer refuses everywhere else.
+              after: "Door_L (matched by structure)",
+              children: [
+                {
+                  path: "nodes/Mirror_L/parent",
+                  label: "parent",
+                  kind: "modified",
+                  before: "Body",
+                  after: "Door_L",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const stops = entityStops(reparentDiff);
+    expect(stops).toHaveLength(1);
+    expect(headline(stops[0]!)).toBe("reparented under Door_L");
+  });
+
+  it("still says reparented when the parent detail row is missing", () => {
+    const bare: StructuredDiff = {
+      version: "1.0",
+      format: "gltf-scene",
+      changes: [{ path: "nodes/Mirror_L", label: "Mirror_L", kind: "reparented", before: "Body", after: "Door_L" }],
+    };
+    const stops = entityStops(bare);
+    expect(headline(stops[0]!)).toBe("reparented");
+  });
+
   it("prefers the transform when several things changed at once", () => {
     const stops = entityStops({
       version: "1.0",

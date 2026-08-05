@@ -297,18 +297,17 @@ func TestDiffMalformedHierarchyDoesNotBreakDiff(t *testing.T) {
 	}
 }
 
-// ── defect 3: unnamed elements cascade on insertion (fix lands in #42) ─────────
+// ── defect 3: unnamed elements no longer cascade on insertion (#42) ────────────
 
-// TestDiffUnnamedInsertionCascadeIsAKnownLimitation pins the *current* behaviour
-// of unnamed elements so the failure mode is documented and the fix is
-// observable when it lands. Unnamed nodes are keyed by array index (node[0],
-// node[1], …), so inserting one node upstream re-indexes every node after it and
-// the diff reports a wall of false modifications plus a spurious add — even
-// though exactly one node was added and nothing else moved.
-//
-// The real fix is content-signature matching: issue #42 (epic slice 1). When it
-// lands, this test should be rewritten to assert the single expected add.
-func TestDiffUnnamedInsertionCascadeIsAKnownLimitation(t *testing.T) {
+// TestDiffUnnamedInsertionPairsByContent is the flipped pin of what used to be
+// TestDiffUnnamedInsertionCascadeIsAKnownLimitation. Unnamed nodes are keyed by
+// array index (node[0], node[1], …), so inserting one node upstream re-indexes
+// every node after it; matching on those keys reported a wall of false
+// modifications plus a spurious add at the wrong index. The exact-content tier
+// (identity.go, matchByExactContent) now pairs the survivors by their stated
+// content, so the diff is the one thing that happened: a single added node,
+// reported where it was inserted.
+func TestDiffUnnamedInsertionPairsByContent(t *testing.T) {
 	base := nodesDoc(t,
 		map[string]any{"translation": []float64{1, 0, 0}},
 		map[string]any{"translation": []float64{2, 0, 0}},
@@ -321,18 +320,20 @@ func TestDiffUnnamedInsertionCascadeIsAKnownLimitation(t *testing.T) {
 
 	d := diffOf(t, base, head)
 
-	// What a reviewer should see: one added node. What they actually see today:
-	if c := mustChange(t, d, "nodes/node[0]"); c.Kind != Modified {
-		t.Errorf("node[0]: kind = %q, want %q (index cascade)", c.Kind, Modified)
+	if c := mustChange(t, d, "nodes/node[0]"); c.Kind != Added {
+		t.Errorf("node[0]: kind = %q, want %q", c.Kind, Added)
 	}
-	if c := mustChange(t, d, "nodes/node[1]"); c.Kind != Modified {
-		t.Errorf("node[1]: kind = %q, want %q (index cascade)", c.Kind, Modified)
+	// And NOTHING else in the nodes collection: the two survivors paired with
+	// their identical selves and vanished from the diff.
+	nodes := mustChange(t, d, "nodes")
+	if len(nodes.Children) != 1 {
+		t.Errorf("the insertion is the only change; nodes reported %d: %v", len(nodes.Children), paths(d))
 	}
-	if c := mustChange(t, d, "nodes/node[2]"); c.Kind != Added {
-		t.Errorf("node[2]: kind = %q, want %q (index cascade)", c.Kind, Added)
-	}
-	t.Log("known limitation: unnamed elements are keyed by array index, so an " +
-		"insertion re-indexes and cascades; content-signature matching is issue #42")
+	walk(d.Changes, func(c *DiffChange, _ int) {
+		if c.Kind == Removed || c.Kind == Renamed {
+			t.Errorf("an insertion removed and renamed nothing: %+v", c)
+		}
+	})
 }
 
 // ── defects 4 & 5: fully-qualified, unambiguous paths ─────────────────────────
