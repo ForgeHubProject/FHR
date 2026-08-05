@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { changeTreeCss, hexCss, KIND_COLOR, KIND_CSS, NEUTRAL } from "./palette.js";
+import { changeTreeCss, hexCss, KIND_COLOR, KIND_CSS, KIND_TINT_CSS, NEUTRAL } from "./palette.js";
 import { KIND_COLOR as SCENE_KIND_COLOR, NEUTRAL as SCENE_NEUTRAL } from "./scene-graph.js";
 
 describe("palette", () => {
@@ -17,11 +17,27 @@ describe("palette", () => {
     // A rename's whole news is that the object was *not* deleted; painting it in
     // or near removed's colour would say the opposite of what the change means.
     expect(KIND_COLOR["renamed"]).not.toBe(KIND_COLOR["removed"]);
-    expect(new Set(Object.values(KIND_COLOR)).size).toBe(Object.keys(KIND_COLOR).length);
+    // Every kind that claims its own hue actually has one. `reparented` is the
+    // deliberate exception below: it shares modified's.
+    const own = (["added", "modified", "removed", "renamed"] as const).map((k) => KIND_COLOR[k]);
+    expect(new Set(own).size).toBe(own.length);
+  });
+
+  it("paints reparented as modified — the object survives, something changed (#42)", () => {
+    // Reusing KIND_COLOR[kind] is what makes the overlay paint a reparented node
+    // like a modified one with zero overlay code change; the kind itself is never
+    // conveyed by hue alone (the tree chip carries the text, the callout says
+    // "reparented under X"). Renamed's green would wrongly claim name news, and
+    // the unused Wong hues are already rejected in palette.ts.
+    expect(KIND_COLOR["reparented"]).toBe(KIND_COLOR["modified"]);
+    expect(KIND_CSS["reparented"]).toBe(KIND_CSS["modified"]);
+    expect(KIND_TINT_CSS["reparented"]).toBe(KIND_TINT_CSS["modified"]);
+    // And emphatically not the deletion hue.
+    expect(KIND_COLOR["reparented"]).not.toBe(KIND_COLOR["removed"]);
   });
 
   it("keeps the numeric and CSS forms of each colour in agreement", () => {
-    for (const kind of ["added", "modified", "removed", "renamed"] as const) {
+    for (const kind of ["added", "modified", "removed", "renamed", "reparented"] as const) {
       expect(KIND_CSS[kind]!.toLowerCase()).toBe(hexCss(KIND_COLOR[kind]!));
     }
   });
@@ -72,7 +88,7 @@ describe("changeTreeCss (the lite change tree's palette override)", () => {
   const css = changeTreeCss();
 
   it("restates every change kind's colour for marks and count chips", () => {
-    for (const kind of ["added", "modified", "removed", "renamed"] as const) {
+    for (const kind of ["added", "modified", "removed", "renamed", "reparented"] as const) {
       expect(css).toContain(`.fhr-diff__mark--${kind}{color:${KIND_CSS[kind]}}`);
       expect(css).toContain(`.fhr-diff__count--${kind}`);
     }

@@ -29,6 +29,7 @@ type geometrySpec struct {
 	mesh        string       // mesh name, defaults to "Hull"
 	positions   [][3]float32 // POSITION data (required)
 	normals     [][3]float32 // nil omits the NORMAL semantic entirely
+	uvs         [][2]float32 // nil omits the TEXCOORD_0 semantic entirely
 	indices     []uint32     // nil omits the index buffer
 	materials   []string     // materials present in the document, in order
 	material    *int         // the material the primitive references
@@ -71,6 +72,9 @@ func geometryGLB(t *testing.T, s geometrySpec) []byte {
 		if s.normals != nil {
 			attrs[gltf.NORMAL] = b.vec3(t, s.normals, false)
 		}
+	}
+	if s.uvs != nil {
+		attrs[gltf.TEXCOORD_0] = b.vec2(s.uvs)
 	}
 	var indices *int
 	if s.indices != nil {
@@ -160,6 +164,21 @@ func (w *binWriter) interleavedVec3(t *testing.T, a, b [][3]float32, bounds bool
 		Type: gltf.AccessorVec3, Count: len(b),
 	}
 	return w.accessor(first), w.accessor(second)
+}
+
+func (w *binWriter) vec2(v [][2]float32) int {
+	data := make([]byte, 0, len(v)*8)
+	for _, p := range v {
+		for _, c := range p {
+			bits := math.Float32bits(c)
+			data = append(data, byte(bits), byte(bits>>8), byte(bits>>16), byte(bits>>24))
+		}
+	}
+	view := w.view(data, 0)
+	return w.accessor(&gltf.Accessor{
+		BufferView: &view, ComponentType: gltf.ComponentFloat,
+		Type: gltf.AccessorVec2, Count: len(v),
+	})
 }
 
 func (w *binWriter) scalarU32(v []uint32) int {

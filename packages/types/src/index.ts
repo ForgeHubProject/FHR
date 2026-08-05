@@ -1,14 +1,19 @@
 // ─── Wire format (mirrors forge/internal/handler/handler.go) ─────────────────
 
 /**
- * "renamed" is additive: `fhrVersion` stays 1, and consumers are required to
- * carry a kind they do not recognise rather than drop it (see the SDK's
- * `countKinds`), so a renderer built before this kind existed still counts and
- * shows it. A renamed change's label and path use the entity's *new* name, with
- * `before`/`after` carrying old → new; anything else that changed at the same
- * time hangs off it as a child.
+ * "renamed" and "reparented" are additive: `fhrVersion` stays 1, and consumers
+ * are required to carry a kind they do not recognise rather than drop it (see
+ * the SDK's `countKinds`), so a renderer built before these kinds existed still
+ * counts and shows them. A renamed change's label and path use the entity's
+ * *new* name, with `before`/`after` carrying old → new; anything else that
+ * changed at the same time hangs off it as a child. A reparented change (#42)
+ * is one node that kept its identity and moved to a different parent:
+ * `before`/`after` carry the old/new parent KEY (`after` plus the pairing
+ * evidence), and the pre-existing `<node>/parent` child row is kept underneath
+ * as carry-through for older consumers. A pair that is both renamed and
+ * reparented reports as `renamed` with the parent row under it — one change.
  */
-export type ChangeKind = "added" | "removed" | "modified" | "renamed";
+export type ChangeKind = "added" | "removed" | "modified" | "renamed" | "reparented";
 
 export type DiffChange = {
   path: string;
