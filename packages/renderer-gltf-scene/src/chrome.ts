@@ -65,11 +65,26 @@ export type ChromeOptions = {
   heatmap?: boolean;
   onMode: (mode: PresentationMode) => void;
   onSplit: (orientation: SplitOrientation) => void;
+  /**
+   * Put the camera back on the whole model (#24). Always offered: it is the way
+   * out of every orbit that ended up inside the geometry, and unlike the
+   * presentation toggles there is no state in which it has nothing to do.
+   */
+  onFrameAll: () => void;
   onHeatmap?: (on: boolean) => void;
   onQueueSelect: (path: string) => void;
   onStep: (delta: number) => void;
   onNode: (name: string) => void;
 };
+
+/**
+ * The reset-view control. "Frame all" rather than "Reset": nothing about the
+ * reviewer's place in the review is reset — the mode, the regions and the
+ * worklist position all survive it — and what does happen is the camera pulling
+ * back to the whole model, which is the phrase every DCC tool uses for it.
+ */
+export const FRAME_LABEL = "Frame all";
+export const FRAME_TITLE = "Frame the whole model and clear the selection";
 
 export type Chrome = {
   root: HTMLElement;
@@ -123,9 +138,9 @@ function css(theme: "light" | "dark"): string {
 .fhr3d__mode + .fhr3d__mode { border-left:1px solid ${line}; }
 .fhr3d__mode:hover { background:${hover}; }
 .fhr3d__mode[aria-pressed="true"] { background:${pick}; font-weight:600; }
-.fhr3d__splitbtn, .fhr3d__heatbtn { font:inherit; padding:3px 9px; border:1px solid ${line};
+.fhr3d__splitbtn, .fhr3d__heatbtn, .fhr3d__framebtn { font:inherit; padding:3px 9px; border:1px solid ${line};
   border-radius:6px; background:transparent; color:${ink}; cursor:pointer; }
-.fhr3d__splitbtn:hover, .fhr3d__heatbtn:hover { background:${hover}; }
+.fhr3d__splitbtn:hover, .fhr3d__heatbtn:hover, .fhr3d__framebtn:hover { background:${hover}; }
 .fhr3d__splitbtn[hidden], .fhr3d__heatbtn[hidden] { display:none; }
 .fhr3d__heatbtn[aria-pressed="true"] { background:${pick}; font-weight:600; }
 .fhr3d__viewport { position:relative; flex:1 1 auto; min-height:0; overflow:hidden; }
@@ -282,6 +297,16 @@ export function createChrome(container: HTMLElement, options: ChromeOptions): Ch
     opts.appendChild(el);
     heatmapButton = el;
   }
+
+  // Last in the bar, and never hidden. It is a *camera* control rather than a
+  // presentation one, so it sits past the toggles instead of among them — and it
+  // stays in one place across every mode, because the state a reviewer reaches
+  // for it from ("I orbited into the inside of the model") is the state in which
+  // hunting for a control that moved is worst.
+  const frameButton = button("fhr3d__framebtn", FRAME_LABEL, () => options.onFrameAll());
+  frameButton.setAttribute("data-frame", "1");
+  frameButton.setAttribute("title", FRAME_TITLE);
+  opts.appendChild(frameButton);
 
   bar.append(info, opts);
   const viewport = doc.createElement("div");
