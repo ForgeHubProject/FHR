@@ -26,6 +26,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { SceneNode } from "./scene-graph.js";
 import type { Overlay } from "./model-overlay.js";
 import { createFlyTo, DEFAULT_FLY_MS } from "./flyto.js";
+import { createAxisGizmo } from "./axis-gizmo.js";
 import { disposeTree } from "./dispose.js";
 import { createIsolator } from "./isolate.js";
 import { createCallout, projectToScreen } from "./callout.js";
@@ -53,6 +54,13 @@ export type SceneHandle = {
   flyToChange?(path: string): boolean;
   /** Frame every change at once — what the view does on load. */
   flyToChanges?(): void;
+  /**
+   * Frame the whole model: the chrome's reset-view control (#24). Camera only —
+   * clearing the selection is the caller's, because the queue, the tree and the
+   * host all have to hear about that and only the mount can tell them (see
+   * `routeSelection` in index-3d.ts).
+   */
+  frameAll?(): void;
   /**
    * Select a change by path: fly to it, isolate it, and call it out (#45). null
    * clears the selection. `fly: false` selects without moving the camera — what a
@@ -142,6 +150,12 @@ function createViewport(container: HTMLElement, theme: Theme): Viewport {
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
 
+  // Built here rather than in either view, because "which way is the model
+  // facing" is a question about the camera rig and both views have one — the
+  // outline fallback most of all, where a grey box has no front of its own to
+  // recognise. It writes nothing on a frame the camera didn't turn.
+  const gizmo = createAxisGizmo(container, theme);
+
   const frameCallbacks: ((nowMs: number) => void)[] = [];
   const disposeCallbacks: (() => void)[] = [];
   const size = { width, height };
@@ -154,6 +168,10 @@ function createViewport(container: HTMLElement, theme: Theme): Viewport {
     raf = requestAnimationFrame(tick);
     for (const cb of frameCallbacks) cb(nowMs);
     controls.update();
+    // After the controls, so the axes agree with the frame about to be drawn
+    // rather than with the one before it — a gizmo one frame behind reads as lag
+    // in the orbit itself.
+    gizmo.update(camera.quaternion);
     if (draw) draw();
     else renderer.render(scene, camera);
   };
@@ -199,6 +217,7 @@ function createViewport(container: HTMLElement, theme: Theme): Viewport {
       observer?.disconnect();
       globalThis.removeEventListener?.("resize", resize);
       for (const cb of disposeCallbacks) cb();
+      gizmo.dispose();
       controls.dispose();
       disposeTree(grid);
       renderer.dispose();
@@ -733,6 +752,14 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
     },
     flyToChanges(): void {
       flyTo.to(overlay.changeBox);
+    },
+    frameAll(): void {
+      // The same tween every other camera move uses: "back to everything" has to
+      // read as the camera pulling out, or the reviewer loses track of which way
+      // the model was facing — which is the disorientation this control exists to
+      // fix, not to cause. An empty scene box gets the unit box the mount opened
+      // on, so the button still does something on a file with no geometry.
+      flyTo.to(overlay.sceneBox.isEmpty() ? unitBox() : overlay.sceneBox);
     },
     selectChange(path: string | null, selectOptions: { fly?: boolean } = {}): boolean {
       return applySelection(path, selectOptions.fly !== false);

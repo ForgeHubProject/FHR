@@ -14,6 +14,7 @@ import type { MountProps, RendererEvent, StructuredDiff } from "@fhr/types";
 import { createFakeDocument, asElement, type FakeElement } from "./fake-dom.js";
 import { createLiveView, type Scene3D, type SceneHooks, type SceneMounter } from "./live-view.js";
 import { buildQueue } from "./queue.js";
+import { AUTO_VIEWPORT_VH, MIN_VIEWPORT_HEIGHT } from "./viewport-fill.js";
 
 // The 3D view's queue is built lazily, and "lazily" is only observable as a call
 // count. The spy delegates to the real implementation, so every other test in
@@ -324,6 +325,34 @@ describe("createLiveView — the 3D half", () => {
     await settle();
     await settle();
     expect(mounts[0]!.disposals).toBe(1);
+  });
+});
+
+// #24: the scene "is a thin strip under the list". What a fake DOM can prove
+// about that is which sizing rule each of the two viewports is given — the
+// heights themselves are the browser's arithmetic, and viewport-fill.ts holds
+// the decision behind them.
+describe("createLiveView — how much room the scene gets", () => {
+  it("fills the container in view mode, where the scene is the whole picture", () => {
+    // The fake container reports a height, which is the case a host that lays
+    // one out gives us: take it, and don't ask for a share of the window on top.
+    const { container } = setup({ mode: "view", diff: undefined });
+    const host = container.childNodes[0]!;
+    expect(host.style.cssText).toContain("height:100%");
+    expect(host.style.cssText).toContain(`min-height:${MIN_VIEWPORT_HEIGHT}px`);
+  });
+
+  it("gives the 3D panel a share of the window rather than a fixed height", async () => {
+    // In diff mode the viewport shares the container with the change tree above
+    // it, so it never claims the container's height — and the 560px it used to
+    // claim instead was the same number on every display there is.
+    const { container, hosts } = setup();
+    button(container).fire("click");
+    await settle();
+    const host = hosts[0] as unknown as FakeElement;
+    expect(host.style.cssText).toContain(`height:${AUTO_VIEWPORT_VH}vh`);
+    expect(host.style.cssText).toContain(`min-height:${MIN_VIEWPORT_HEIGHT}px`);
+    expect(host.style.cssText).not.toMatch(/(^|;)height:\d+px/);
   });
 });
 
