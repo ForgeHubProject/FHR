@@ -251,6 +251,18 @@ export async function mount3d(
       chrome?.setMode(mode);
       scene?.setMode?.(mode);
     },
+    onFrameAll: () => {
+      // The selection goes first, and it has to go: a change is *isolated* while
+      // it is selected, so framing "everything" with one still on would fly the
+      // camera out to a box holding one visible part and a great deal of nothing.
+      // It clears down the same route a click on empty space takes — queue, tree,
+      // scene, and one `select` event for the host — so the reset leaves all four
+      // agreeing rather than leaving the change tree pointing at a change the
+      // viewport has stopped showing.
+      routeSelection({ chrome, keys, handle: scene, rowOf }, null);
+      hooks.onPick?.(null);
+      scene?.frameAll?.();
+    },
     onHeatmap: (on) => scene?.setHeatmap?.(on),
     onSplit: (orientation) => {
       split = orientation;
