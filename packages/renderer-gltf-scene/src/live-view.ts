@@ -31,6 +31,7 @@ import type { MountProps } from "@fhr/types";
 import { changeTreeCss } from "./palette.js";
 import { entityStops, formatGltfChange, headline, headlines } from "./review.js";
 import { buildQueue, type QueueEntry } from "./queue.js";
+import { viewportFillCss } from "./viewport-fill.js";
 
 /** Where a selection came from — what the fan-out must skip. */
 export type SelectSource = "viewer" | "scene" | "host";
@@ -172,7 +173,7 @@ export function createLiveView(
 
   // ── "view" mode: a single snapshot, so the scene *is* the view ───────────────
   if (props.mode === "view") {
-    const host = openViewport(container, doc, "420px");
+    const host = openViewport(container, doc);
     void attachScene(host);
     return view;
   }
@@ -224,10 +225,14 @@ export function createLiveView(
     }
     sceneLoading = true;
     button.textContent = "Loading…";
-    // Taller than the bare viewport used to be: the 3D view now carries its own
-    // three-region chrome, and at 420px the regions fold away on a host page that
-    // is otherwise wide enough for them.
-    host.style.cssText = "width:100%;height:560px;margin-top:8px;border-radius:8px;overflow:hidden";
+    // A share of the window, never the container's own height (`viewportFillCss(0)`
+    // is that decision, spelled out in viewport-fill.ts). This panel shares the
+    // container with the change tree above it, so `height:100%` here would be the
+    // container's height a *second* time and the pair would overflow whatever box
+    // the host drew around them. The fixed 560px it replaces had the same problem
+    // from the other end: too short to work in on a large display, too tall to fit
+    // a laptop's window, and unable to tell the two apart.
+    host.style.cssText = viewportFillCss(0) + ";margin-top:8px;border-radius:8px;overflow:hidden";
     void attachScene(host).then((ok) => {
       button.textContent = ok ? "Hide 3D" : "View in 3D";
     });
@@ -276,11 +281,29 @@ export function createLiveView(
   }
 }
 
-/** A viewport filling the container: "view" mode's whole picture. */
-function openViewport(container: HTMLElement, doc: Document, height: string): HTMLElement {
+/**
+ * A viewport filling the container: "view" mode's whole picture, so it may take
+ * the container's whole height — nothing else of this renderer's is in there.
+ *
+ * The two-line dance is the measurement viewport-fill.ts needs. An empty div
+ * asking for `height:100%` *is* the question "does this container have a height
+ * of its own": the percentage resolves against the container when it does, and
+ * silently computes to `auto` — an empty box, `clientHeight` 0 — when it doesn't.
+ * Measured before anything is inside the host, so the answer is about the
+ * container and not about whatever the scene has drawn so far, and paid once per
+ * mount: one forced layout, at the moment the host is already laying this out.
+ *
+ * A container that is still `display:none` when the renderer mounts — ForgeHub
+ * hides its host until the diff arrives — measures 0 and gets the window share.
+ * That is the safe way round: a share of the window is a picture in a container
+ * of any height, while a percentage that turns out to have nothing to resolve
+ * against is no picture at all.
+ */
+function openViewport(container: HTMLElement, doc: Document): HTMLElement {
   const host = doc.createElement("div");
-  host.style.cssText = `width:100%;height:${height};border-radius:8px;overflow:hidden`;
+  host.style.cssText = "width:100%;height:100%";
   container.appendChild(host);
+  host.style.cssText = viewportFillCss(host.clientHeight || 0) + ";border-radius:8px;overflow:hidden";
   return host;
 }
 

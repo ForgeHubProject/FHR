@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from "vitest";
 import { createFakeDocument, asElement, type FakeElement } from "./fake-dom.js";
-import { createChrome, type ChromeOptions } from "./chrome.js";
+import { createChrome, FRAME_LABEL, FRAME_TITLE, type ChromeOptions } from "./chrome.js";
 import { TREE_MIN_WIDTH, QUEUE_MIN_WIDTH } from "./chrome-layout.js";
 import { MODE_ORDER, type PresentationMode } from "./presentation.js";
 import type { SceneNode } from "./scene-graph.js";
@@ -50,12 +50,13 @@ type Calls = {
   selected: string[];
   steps: number[];
   nodes: string[];
+  frames: number;
 };
 
 function setup(overrides: Partial<ChromeOptions> = {}) {
   const doc = createFakeDocument();
   const container = doc.createElement("div");
-  const calls: Calls = { modes: [], splits: [], selected: [], steps: [], nodes: [] };
+  const calls: Calls = { modes: [], splits: [], selected: [], steps: [], nodes: [], frames: 0 };
   const chrome = createChrome(asElement(container), {
     modes: [...MODE_ORDER],
     mode: "structural",
@@ -68,6 +69,9 @@ function setup(overrides: Partial<ChromeOptions> = {}) {
     onQueueSelect: (p) => calls.selected.push(p),
     onStep: (d) => calls.steps.push(d),
     onNode: (n) => calls.nodes.push(n),
+    onFrameAll: () => {
+      calls.frames += 1;
+    },
     ...overrides,
   });
   chrome.applyWidth(TREE_MIN_WIDTH + 200);
@@ -277,6 +281,46 @@ describe("the deviation toggle", () => {
     // A change the heatmap never measured shows nothing rather than a zero.
     chrome.selectChange("nodes/Mirror_L");
     expect(container.byAttr("data-field", "max deviation")).toHaveLength(0);
+  });
+});
+
+describe("the frame-all control", () => {
+  const frameButton = (container: FakeElement): FakeElement => container.byAttr("data-frame", "1")[0]!;
+
+  it("reports a click rather than moving any camera itself", () => {
+    // Same rule as the queue's rows: the chrome is DOM, the camera is the
+    // scene's, and the mount is the only thing that can reach both.
+    const { container, calls } = setup();
+    frameButton(container).fire("click");
+    frameButton(container).fire("click");
+    expect(calls.frames).toBe(2);
+  });
+
+  it("is there in every mode, and in a view with no changes at all", () => {
+    // Unlike the split and deviation toggles, there is no state in which
+    // "put the camera back on the model" has nothing to do — and the state a
+    // reviewer reaches for it from is the one where a control that moved or
+    // vanished is worst.
+    const { container, chrome } = setup();
+    for (const mode of MODE_ORDER) {
+      chrome.setMode(mode);
+      expect(frameButton(container).getAttribute("hidden")).toBeNull();
+    }
+    expect(frameButton(setup({ queue: [], modes: ["structural"] }).container)).toBeDefined();
+  });
+
+  it("says what it does, for a control whose label is two words", () => {
+    const { container } = setup();
+    expect(frameButton(container).textContent).toBe(FRAME_LABEL);
+    expect(frameButton(container).getAttribute("title")).toBe(FRAME_TITLE);
+  });
+
+  it("stops reporting once the chrome is disposed", () => {
+    const { container, chrome, calls } = setup();
+    const button = frameButton(container);
+    chrome.dispose();
+    button.fire("click");
+    expect(calls.frames).toBe(0);
   });
 });
 

@@ -36,18 +36,70 @@ jobs:
       - name: Test
         run: npm run test
 
-  go:
-    name: Handler (native + wasm)
+  discover-handlers:
+    name: Discover handler packages
     runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.find.outputs.packages }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Emits a JSON array of handler package directories, e.g.
+      #   ["packages/handler-gltf-scene","packages/handler-obj"]
+      # which the go job below expands into its matrix via fromJSON. Dropping a
+      # new packages/handler-<fmt>/go.mod into the tree is enough to get it a
+      # full CI lane — no edit to this workflow required.
+      #
+      # Deliberately plain POSIX sh with shell globbing: no jq, no find, no
+      # ordering surprises (glob expansion is already sorted).
+      - name: Find packages/handler-*/go.mod
+        id: find
+        shell: sh
+        run: |
+          set -eu
+          list=''
+          for mod in packages/handler-*/go.mod; do
+            # An unmatched glob stays literal in sh, so confirm it is a real file.
+            [ -f "$mod" ] || continue
+            dir=${mod%/go.mod}
+            if [ -z "$list" ]; then
+              list="\"$dir\""
+            else
+              list="$list,\"$dir\""
+            fi
+          done
+          # A strategy matrix cannot be empty — fail loudly rather than let the
+          # whole Go lane silently vanish from the required checks.
+          if [ -z "$list" ]; then
+            echo "No packages/handler-*/go.mod found." >&2
+            exit 1
+          fi
+          echo "Discovered handler packages: [$list]"
+          echo "packages=[$list]" >> "$GITHUB_OUTPUT"
+
+  go:
+    name: Handler ${{ matrix.package }} (native + wasm)
+    needs: discover-handlers
+    runs-on: ubuntu-latest
+    strategy:
+      # Every handler reports independently: one broken format must not hide
+      # the state of the others.
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.discover-handlers.outputs.packages) }}
     defaults:
       run:
-        working-directory: packages/handler-gltf-scene
+        working-directory: ${{ matrix.package }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: packages/handler-gltf-scene/go.mod
+          # Same rule as before — the toolchain comes from the go.mod of the
+          # module under test, which is now the matrix entry's own module.
+          # Action inputs are resolved from the workspace root, not from the
+          # `defaults.run.working-directory` above, so this stays a repo path.
+          go-version-file: ${{ matrix.package }}/go.mod
 
       # Needed to execute the wasm test binary (see the wasm test step below).
       - uses: actions/setup-node@v4
@@ -67,10 +119,15 @@ jobs:
         env:
           GOOS: js
           GOARCH: wasm
-        run: go build -mod=mod -o /tmp/handler-gltf-scene.wasm .
+          PACKAGE: ${{ matrix.package }}
+        run: go build -mod=mod -o "/tmp/$(basename "$PACKAGE").wasm" .
 
       # Parity: the same suite that guards the subprocess build runs against the
       # wasm build, under node, so the two entry points cannot drift.
+      #
+      # A handler that ships no *_test.go yet is fine here: `go test ./...`
+      # reports "[no test files]" and exits 0 without ever needing the exec
+      # shim, so no extra flags or guards are wanted.
       - name: Test (wasm — Tier B)
         env:
           GOOS: js

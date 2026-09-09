@@ -344,7 +344,7 @@ type ConflictInfo = {
 };
 
 type SemanticConflict = {
-  path: string;   // e.g. "nodes[2].translation"
+  path: string;   // e.g. "nodes/Cube.001/translation" — see "Change paths" below
   ours: unknown;
   theirs: unknown;
 };
@@ -364,7 +364,7 @@ interface ArtifactHandler {
 ```ts
 type DiffChange = {
   path: string;
-  kind: "added" | "removed" | "modified" | "renamed";
+  kind: "added" | "removed" | "modified" | "renamed" | "reparented";
   label?: string;
   before?: unknown;
   after?: unknown;
@@ -385,6 +385,24 @@ type StructuredDiff = {
 **`path` identifies one change.** No two changes in a diff share a path, and a consumer may key on it. Renames make that worth stating, because they break the assumption that a name identifies an element across a pair of revisions: the previous version's `Wheel` can be deleted while an unrelated element is renamed *to* `Wheel`, which is two changes about two different objects that a name-keyed consumer would merge — losing the deletion. A handler whose two sides collide on a key disambiguates the **base-side** one (`nodes/Wheel#1`, the same `#` disambiguator duplicate names take) and leaves `label` as the element's key in its own file, so a label still resolves against the revision its change is about.
 
 `ChangeKind` is an **open** union in practice: it may gain members without a `version` or `fhrVersion` bump, and consumers must carry a kind they do not recognise rather than drop it (count it in summaries, render it with a neutral marker). The `@fhr/renderer-sdk` change tree does exactly this, which is why `renamed` needed no SDK change to appear in a summary bar.
+
+### Change paths — the `/`-separated scheme
+
+Every `DiffChange.path` and `SemanticConflict.path` is one string naming the thing that changed, fully qualified from the document root down to the changed property. The reference handler (`packages/handler-gltf-scene`) writes them as segments joined by `/`:
+
+```
+nodes/Mirror_L/translation
+materials/Paint/baseColorTexture
+animations/Spin/channels/0/output
+```
+
+A segment is a **human-meaningful key**, not an offset into a parse tree: a collection name (`nodes`), then an element's key in the *head* document — its name (`Mirror_L`), the `#`-disambiguated form when two elements share one (`Wheel#1`), or a synthetic index key when the element has no name at all (`node[3]`) — then a property, or a positional index where the format itself is positional (`channels/0`, `primitives/0`).
+
+**Escaping is minimal by design.** Within a segment exactly two characters are percent-escaped — `%` → `%25` and `/` → `%2F` — and nothing else. `.` in particular is left alone, and that is the point: glTF names are free-form UTF-8 in which a dot is ubiquitous (Blender emits `Cube.001`), so the `.` separator this handler started with made the commonest name in the wild unparseable (#41). A name that genuinely contains a slash survives as `nodes/rig%2Fhand`, and `%` is escaped only because it is the escape character. The path is the machine key; `label` always carries the raw, unescaped name, so no UI ever displays an escaped form.
+
+**A path is an opaque, stable identifier — not a parseable tree.** It has exactly two jobs: it identifies one change within one diff (above), and it is the selection key in both directions across the renderer boundary — `RendererEvent.select` outbound, `MountProps.selectedChangePath` inbound ([SPEC-RENDERING §2](./SPEC-RENDERING.md)). Hierarchy on the wire is carried by `children`, never by the path string, so a **generic** consumer groups and keys on paths and must not split them: `@fhr/renderer-sdk`'s change tree treats a path as an opaque string and takes its shape from `children` alone. A renderer MAY read structure out of a path when it ships *with* the handler that wrote it — backend and frontend are versioned together per release (§11), which makes the scheme an internal detail of that one pair rather than a cross-handler contract. `renderer-gltf-scene`'s `change-path.ts` does exactly that, to turn a picked 3D node back into the same selection key the handler emitted.
+
+**Flat dotted paths stay conformant.** A simple structured-data handler (json, yaml, toml) that emits `servers.0.port` conforms and needs no migration: its key space is flat, its keys cannot contain the separator, and nothing walks the string. The requirements on any scheme are only the ones above — unique within a diff, stable across runs over the same pair of blobs, and the same key the paired renderer selects on. Handlers for **hierarchical formats, or for any format whose names are free-form**, SHOULD use the `/`-scheme: it is the one that survives a name containing the separator, and it is what a reviewer reads in a change list.
 
 ### Stable entity identity — the `fhr_uid` convention
 
