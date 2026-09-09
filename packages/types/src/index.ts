@@ -1,6 +1,19 @@
 // ─── Wire format (mirrors forge/internal/handler/handler.go) ─────────────────
 
-export type ChangeKind = "added" | "removed" | "modified";
+/**
+ * "renamed" and "reparented" are additive: `fhrVersion` stays 1, and consumers
+ * are required to carry a kind they do not recognise rather than drop it (see
+ * the SDK's `countKinds`), so a renderer built before these kinds existed still
+ * counts and shows them. A renamed change's label and path use the entity's
+ * *new* name, with `before`/`after` carrying old → new; anything else that
+ * changed at the same time hangs off it as a child. A reparented change (#42)
+ * is one node that kept its identity and moved to a different parent:
+ * `before`/`after` carry the old/new parent KEY (`after` plus the pairing
+ * evidence), and the pre-existing `<node>/parent` child row is kept underneath
+ * as carry-through for older consumers. A pair that is both renamed and
+ * reparented reports as `renamed` with the parent row under it — one change.
+ */
+export type ChangeKind = "added" | "removed" | "modified" | "renamed" | "reparented";
 
 export type DiffChange = {
   path: string;
@@ -190,6 +203,29 @@ export type MountProps = {
   /** Raw blob references, served same-origin by the consumer. */
   blobs?: RendererBlobs;
   theme?: "light" | "dark";
+  /**
+   * The change the host wants selected, as a `DiffChange.path`. The inbound half
+   * of the selection round trip whose outbound half is `RendererEvent.select`:
+   * a host that highlights a row in its own UI pushes the same key back in here,
+   * and the renderer highlights it (and, for a 3D renderer, frames it).
+   * Undefined means "the host isn't driving selection"; null means "nothing".
+   */
+  selectedChangePath?: string | null;
+  /**
+   * What the handler that produced `diff` declares about itself — the same
+   * `capabilities` object it exposes on `ArtifactHandler`, surfaced to the
+   * renderer so a presentation can be chosen honestly.
+   *
+   * The one that matters today is `semanticCompare`. A renderer with several
+   * presentations (SPEC-RENDERING §2e) opens on a structural one when semantic
+   * comparison is meaningful for this format, and on a see-for-yourself one
+   * (side-by-side) when it is not — instead of showing a structural diff that
+   * says "everything changed" because the topology was regenerated.
+   *
+   * Optional, and a renderer MUST have a sensible default without it: a host
+   * that doesn't plumb the handler's declaration through is not an error.
+   */
+  capabilities?: HandlerCapabilities;
   /** Host callback for renderer-emitted events (selection, resolution, error). */
   onEvent?: (e: RendererEvent) => void;
 };

@@ -1,0 +1,21 @@
+{
+  "name": "@fhr/renderer-csv",
+  "version": "1.0.0",
+  "description": "FHR renderer bundle for CSV diffs",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node build.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fhr/renderer-sdk": "*",
+    "@fhr/types": "*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.4.0",
+    "vitest": "^2.1.0"
+  }
+}

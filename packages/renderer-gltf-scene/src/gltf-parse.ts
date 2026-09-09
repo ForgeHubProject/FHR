@@ -20,7 +20,7 @@ export type Entity = {
   transform: Transform | null;
 };
 
-type GltfNode = {
+export type GltfNode = {
   name?: string;
   children?: number[];
   mesh?: number;
@@ -29,13 +29,38 @@ type GltfNode = {
   scale?: [number, number, number];
 };
 type GltfScene = { nodes?: number[]; name?: string };
-type GltfDocument = {
+/**
+ * One drawable of a mesh. `material` indexes the document's material array; a
+ * primitive with no material uses glTF's default and belongs to no material key.
+ */
+export type GltfPrimitive = { material?: number };
+export type GltfMesh = { name?: string; primitives?: GltfPrimitive[] };
+export type GltfMaterial = { name?: string };
+/** A glTF buffer. No `uri` means "the GLB's own BIN chunk"; a `data:` uri is embedded. */
+export type GltfBuffer = { uri?: string; byteLength?: number };
+/** A glTF image. `bufferView` means embedded bytes; a non-`data:` `uri` is a sibling file. */
+export type GltfImage = { uri?: string; bufferView?: number; mimeType?: string; name?: string };
+export type GltfDocument = {
   asset?: { version: string };
   scene?: number;
   scenes?: GltfScene[];
   nodes?: GltfNode[];
+  meshes?: GltfMesh[];
+  materials?: GltfMaterial[];
+  buffers?: GltfBuffer[];
+  images?: GltfImage[];
+  /** Extensions the file cannot be read without. */
+  extensionsRequired?: string[];
+  /** Extensions the file uses but can be read (degraded) without. */
+  extensionsUsed?: string[];
 };
 
+/**
+ * Build a path segment for an entity id. This is *only* for composing the
+ * outline view's tree paths — never for matching a name against another layer's
+ * name. Matching through slugified names is what #44 retired: see node-index.ts,
+ * which reconciles diff labels to glTF node indices against this same JSON.
+ */
 function slugify(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "node";
 }
@@ -74,6 +99,27 @@ export function decodeGltf(bytes: Uint8Array): GltfDocument {
   return JSON.parse(new TextDecoder().decode(bytes)) as GltfDocument;
 }
 
+/**
+ * The name of the synthetic root entity `parseGltf` adds, or null when it adds
+ * none.
+ *
+ * A glTF *scene* is not a node: it has no index, no transform and no entry in
+ * `nodes`. When the default scene has more than one root node — what Blender and
+ * most exporters produce, so the overwhelmingly common case — the outline needs
+ * something to hang those roots off, and the scene itself becomes that row.
+ *
+ * Anything that has to answer for that row therefore cannot go through a node
+ * index and needs this rule instead: node-index.ts records it so the overlay can
+ * frame the row (model-overlay.ts `boxOfNode`) rather than leave the tree's most
+ * prominent row inert. Two copies of the rule would drift, so there is one.
+ */
+export function sceneRootName(doc: GltfDocument): string | null {
+  const defaultScene = (doc.scenes ?? [])[doc.scene ?? 0];
+  if (!defaultScene) return null;
+  if ((defaultScene.nodes ?? []).length <= 1) return null;
+  return defaultScene.name ?? "scene";
+}
+
 /** Walk a glTF document's default scene into a flat entity list. */
 export function parseGltf(doc: GltfDocument): Entity[] {
   const nodes = doc.nodes ?? [];
@@ -95,8 +141,8 @@ export function parseGltf(doc: GltfDocument): Entity[] {
   };
 
   let syntheticRootId: string | null = null;
-  if (rootIndices.length > 1) {
-    const sceneName = defaultScene.name ?? "scene";
+  const sceneName = sceneRootName(doc);
+  if (sceneName !== null) {
     const rootPath = uniquePath(slugify(sceneName));
     syntheticRootId = rootPath;
     entities.push({ id: rootPath, entityId: rootPath, parentEntityId: null, kind: "assembly", name: sceneName, path: rootPath, transform: null });
