@@ -8,10 +8,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -25,6 +28,149 @@ type Handler struct{}
 func (h *Handler) Match(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	return ext == ".gltf" || ext == ".glb"
+}
+
+// ── semantic paths ────────────────────────────────────────────────────────────
+//
+// Every DiffChange.Path and SemanticConflict.Path is a "/"-separated list of
+// segments, fully qualified from the document root down to the changed
+// property:
+//
+//	nodes/Mirror_L/translation
+//	materials/Paint/baseColorTexture
+//	animations/Spin/channels/0/output
+//
+// glTF names are free-form UTF-8: "." is extremely common (Blender emits
+// Cube.001) and "/" is legal too, so a raw name cannot be concatenated into a
+// path unescaped. Segments are therefore percent-escaped for the two characters
+// that would otherwise make a path unparseable — "%" → "%25" and "/" → "%2F" —
+// which leaves the overwhelmingly common "." untouched and keeps paths readable.
+// Path is the machine key; Label always carries the raw, unescaped name, so no
+// UI ever displays an escaped form.
+//
+// An element that exists on both sides is addressed by its name in the *head*
+// document, which is only visible once identity survives a rename (identity.go):
+// a renamed element's path and label are its new name, before/after carry
+// old → new, and anything else that changed at the same time hangs off it as a
+// child. A consumer selecting by path is therefore always addressing the file in
+// front of it and never the one it replaced.
+const pathSep = "/"
+
+// escapeSegment percent-escapes the path separator (and the escape character
+// itself) so a segment can be joined into a path unambiguously.
+func escapeSegment(s string) string {
+	if !strings.ContainsAny(s, "%/") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for _, r := range s {
+		switch r {
+		case '%':
+			b.WriteString("%25")
+		case '/':
+			b.WriteString("%2F")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// unescapeSegment reverses escapeSegment.
+func unescapeSegment(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			switch s[i+1 : i+3] {
+			case "25":
+				b.WriteByte('%')
+				i += 2
+				continue
+			case "2F", "2f":
+				b.WriteByte('/')
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// joinPath builds a semantic path from raw (unescaped) segments.
+func joinPath(segments ...string) string {
+	escaped := make([]string, len(segments))
+	for i, s := range segments {
+		escaped[i] = escapeSegment(s)
+	}
+	return strings.Join(escaped, pathSep)
+}
+
+// childPath qualifies a property name against its parent's already-escaped path.
+func childPath(parent, segment string) string {
+	if parent == "" {
+		return escapeSegment(segment)
+	}
+	return parent + pathSep + escapeSegment(segment)
+}
+
+// splitPath splits a semantic path back into raw (unescaped) segments.
+func splitPath(p string) []string {
+	parts := strings.Split(p, pathSep)
+	for i, s := range parts {
+		parts[i] = unescapeSegment(s)
+	}
+	return parts
+}
+
+// ── element keys ──────────────────────────────────────────────────────────────
+
+// uniqueKeys assigns every element of a collection its own diff key, so that
+// every element participates in the diff. glTF names are not unique: a document
+// with two nodes named "Wheel" used to collapse them into one map entry and the
+// second was silently dropped from both the diff and the merge. Duplicates now
+// get an ordinal suffix — Wheel, Wheel#1, Wheel#2 — with the first occurrence
+// keeping the bare name so paths for the common (unique-name) case are
+// unchanged. The suffix loop also guarantees uniqueness against a name that
+// literally contains "#1".
+func uniqueKeys[T any](items []T, name func(T, int) string) []string {
+	keys := make([]string, len(items))
+	taken := make(map[string]bool, len(items))
+	for i, it := range items {
+		base := name(it, i)
+		k := base
+		for dup := 1; taken[k]; dup++ {
+			k = fmt.Sprintf("%s#%d", base, dup)
+		}
+		taken[k] = true
+		keys[i] = k
+	}
+	return keys
+}
+
+// mergeKeyOrder returns the union of two key orders: everything on the base
+// side in order, then keys that only exist on the head side.
+func mergeKeyOrder(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, k := range a {
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	for _, k := range b {
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // Merge performs a 3-way semantic merge of glTF/GLB blobs.
@@ -91,24 +237,10 @@ func (h *Handler) Merge(base, ours, theirs Blob) (Blob, *ConflictInfo, error) {
 
 func mergeNodeList(base, ours, theirs []*gltf.Node, conflicts *[]SemanticConflict) []*gltf.Node {
 	baseMap, _ := nodeMap(base)
-	oursMap, _ := nodeMap(ours)
+	oursMap, oursOrder := nodeMap(ours)
 	theirsMap, theirsOrder := nodeMap(theirs)
 
-	seen := make(map[string]bool)
-	var names []string
-	for i, n := range ours {
-		k := nodeName(n, i)
-		names = append(names, k)
-		seen[k] = true
-	}
-	for i, n := range theirs {
-		k := nodeName(n, i)
-		if !seen[k] {
-			names = append(names, k)
-			seen[k] = true
-		}
-	}
-	_ = theirsOrder
+	names := mergeKeyOrder(oursOrder, theirsOrder)
 
 	var result []*gltf.Node
 	for _, name := range names {
@@ -123,7 +255,7 @@ func mergeNodeList(base, ours, theirs []*gltf.Node, conflicts *[]SemanticConflic
 		case inOurs && !inTheirs:
 			if bn != nil {
 				*conflicts = append(*conflicts, SemanticConflict{
-					Path: "nodes/" + name, Ours: "kept", Theirs: "removed",
+					Path: joinPath("nodes", name), Ours: "kept", Theirs: "removed",
 				})
 			}
 			result = append(result, on)
@@ -131,7 +263,7 @@ func mergeNodeList(base, ours, theirs []*gltf.Node, conflicts *[]SemanticConflic
 		case !inOurs && inTheirs:
 			if bn != nil {
 				*conflicts = append(*conflicts, SemanticConflict{
-					Path: "nodes/" + name, Ours: "removed", Theirs: "kept",
+					Path: joinPath("nodes", name), Ours: "removed", Theirs: "kept",
 				})
 			} else {
 				result = append(result, tn)
@@ -161,7 +293,7 @@ func merge3Node(bn, on, tn *gltf.Node, name string, conflicts *[]SemanticConflic
 			out.Translation = ourTr
 		} else {
 			*conflicts = append(*conflicts, SemanticConflict{
-				Path:   "nodes/" + name + "/translation",
+				Path:   joinPath("nodes", name, "translation"),
 				Ours:   fmtVec3(blenderTranslation(ourTr)),
 				Theirs: fmtVec3(blenderTranslation(theirTr)),
 			})
@@ -176,7 +308,7 @@ func merge3Node(bn, on, tn *gltf.Node, name string, conflicts *[]SemanticConflic
 			out.Rotation = ourRot
 		} else {
 			*conflicts = append(*conflicts, SemanticConflict{
-				Path:   "nodes/" + name + "/rotation",
+				Path:   joinPath("nodes", name, "rotation"),
 				Ours:   fmtRot(ourRot),
 				Theirs: fmtRot(theirRot),
 			})
@@ -191,7 +323,7 @@ func merge3Node(bn, on, tn *gltf.Node, name string, conflicts *[]SemanticConflic
 			out.Scale = ourSc
 		} else {
 			*conflicts = append(*conflicts, SemanticConflict{
-				Path:   "nodes/" + name + "/scale",
+				Path:   joinPath("nodes", name, "scale"),
 				Ours:   fmtVec3(blenderScale(ourSc)),
 				Theirs: fmtVec3(blenderScale(theirSc)),
 			})
@@ -211,7 +343,7 @@ func merge3Node(bn, on, tn *gltf.Node, name string, conflicts *[]SemanticConflic
 		out.Mesh = tn.Mesh
 	} else if ourMesh != baseMesh && theirMesh != baseMesh && ourMesh != theirMesh {
 		*conflicts = append(*conflicts, SemanticConflict{
-			Path: "nodes/" + name + "/mesh",
+			Path: joinPath("nodes", name, "mesh"),
 			Ours: ourMesh, Theirs: theirMesh,
 		})
 	}
@@ -240,23 +372,10 @@ func cloneNode(n *gltf.Node) *gltf.Node {
 
 func mergeMaterialList(base, ours, theirs []*gltf.Material, conflicts *[]SemanticConflict) []*gltf.Material {
 	baseMap, _ := materialMap(base)
-	oursMap, _ := materialMap(ours)
-	theirsMap, _ := materialMap(theirs)
+	oursMap, oursOrder := materialMap(ours)
+	theirsMap, theirsOrder := materialMap(theirs)
 
-	seen := make(map[string]bool)
-	var names []string
-	for i, m := range ours {
-		k := materialName(m, i)
-		names = append(names, k)
-		seen[k] = true
-	}
-	for i, m := range theirs {
-		k := materialName(m, i)
-		if !seen[k] {
-			names = append(names, k)
-			seen[k] = true
-		}
-	}
+	names := mergeKeyOrder(oursOrder, theirsOrder)
 
 	var result []*gltf.Material
 	for _, name := range names {
@@ -270,14 +389,14 @@ func mergeMaterialList(base, ours, theirs []*gltf.Material, conflicts *[]Semanti
 		case inOurs && !inTheirs:
 			if bm != nil {
 				*conflicts = append(*conflicts, SemanticConflict{
-					Path: "materials/" + name, Ours: "kept", Theirs: "removed",
+					Path: joinPath("materials", name), Ours: "kept", Theirs: "removed",
 				})
 			}
 			result = append(result, om)
 		case !inOurs && inTheirs:
 			if bm != nil {
 				*conflicts = append(*conflicts, SemanticConflict{
-					Path: "materials/" + name, Ours: "removed", Theirs: "kept",
+					Path: joinPath("materials", name), Ours: "removed", Theirs: "kept",
 				})
 			} else {
 				result = append(result, tm)
@@ -305,7 +424,7 @@ func merge3Material(bm, om, tm *gltf.Material, name string, conflicts *[]Semanti
 		setBaseColor(out, theirBC)
 	} else if ourBC != baseBC && theirBC != baseBC && ourBC != theirBC {
 		*conflicts = append(*conflicts, SemanticConflict{
-			Path: "materials/" + name + "/baseColorFactor",
+			Path: joinPath("materials", name, "baseColorFactor"),
 			Ours: fmtVec4(ourBC), Theirs: fmtVec4(theirBC),
 		})
 	}
@@ -316,7 +435,7 @@ func merge3Material(bm, om, tm *gltf.Material, name string, conflicts *[]Semanti
 		setMetallic(out, theirMet)
 	} else if !nearEq(ourMet, baseMet) && !nearEq(theirMet, baseMet) && !nearEq(ourMet, theirMet) {
 		*conflicts = append(*conflicts, SemanticConflict{
-			Path: "materials/" + name + "/metallicFactor",
+			Path: joinPath("materials", name, "metallicFactor"),
 			Ours: fmtF(ourMet), Theirs: fmtF(theirMet),
 		})
 	}
@@ -327,7 +446,7 @@ func merge3Material(bm, om, tm *gltf.Material, name string, conflicts *[]Semanti
 		setRoughness(out, theirRough)
 	} else if !nearEq(ourRough, baseRough) && !nearEq(theirRough, baseRough) && !nearEq(ourRough, theirRough) {
 		*conflicts = append(*conflicts, SemanticConflict{
-			Path: "materials/" + name + "/roughnessFactor",
+			Path: joinPath("materials", name, "roughnessFactor"),
 			Ours: fmtF(ourRough), Theirs: fmtF(theirRough),
 		})
 	}
@@ -340,8 +459,8 @@ func merge3Material(bm, om, tm *gltf.Material, name string, conflicts *[]Semanti
 		out.AlphaMode = tm.AlphaMode
 	} else if om.AlphaMode != baseAlpha && tm.AlphaMode != baseAlpha && om.AlphaMode != tm.AlphaMode {
 		*conflicts = append(*conflicts, SemanticConflict{
-			Path: "materials/" + name + "/alphaMode",
-			Ours: string(om.AlphaMode), Theirs: string(tm.AlphaMode),
+			Path: joinPath("materials", name, "alphaMode"),
+			Ours: om.AlphaMode.String(), Theirs: tm.AlphaMode.String(),
 		})
 	}
 
@@ -353,7 +472,7 @@ func merge3Material(bm, om, tm *gltf.Material, name string, conflicts *[]Semanti
 		out.DoubleSided = tm.DoubleSided
 	} else if om.DoubleSided != baseDS && tm.DoubleSided != baseDS && om.DoubleSided != tm.DoubleSided {
 		*conflicts = append(*conflicts, SemanticConflict{
-			Path:   "materials/" + name + "/doubleSided",
+			Path:   joinPath("materials", name, "doubleSided"),
 			Ours:   fmt.Sprintf("%v", om.DoubleSided),
 			Theirs: fmt.Sprintf("%v", tm.DoubleSided),
 		})
@@ -412,17 +531,17 @@ func setRoughness(m *gltf.Material, v float64) {
 // Full index-remapping is deferred to a future release.
 func mergeMeshList(base, ours, theirs []*gltf.Mesh, conflicts *[]SemanticConflict) []*gltf.Mesh {
 	baseMap, _ := meshMap(base)
-	oursMap, _ := meshMap(ours)
-	theirsMap, _ := meshMap(theirs)
+	oursMap, oursOrder := meshMap(ours)
+	theirsMap, theirsOrder := meshMap(theirs)
 
 	for i, om := range ours {
-		name := meshName(om, i)
+		name := oursOrder[i]
 		bm := baseMap[name]
 		tm, inTheirs := theirsMap[name]
 		if !inTheirs {
 			if bm != nil {
 				*conflicts = append(*conflicts, SemanticConflict{
-					Path: "meshes/" + name, Ours: "kept", Theirs: "removed",
+					Path: joinPath("meshes", name), Ours: "kept", Theirs: "removed",
 				})
 			}
 			continue
@@ -431,20 +550,19 @@ func mergeMeshList(base, ours, theirs []*gltf.Mesh, conflicts *[]SemanticConflic
 		theirChanged := !jsonEqual(bm, tm)
 		if ourChanged && theirChanged && !jsonEqual(om, tm) {
 			*conflicts = append(*conflicts, SemanticConflict{
-				Path:   "meshes/" + name,
+				Path:   joinPath("meshes", name),
 				Ours:   fmt.Sprintf("%d primitives", len(om.Primitives)),
 				Theirs: fmt.Sprintf("%d primitives", len(tm.Primitives)),
 			})
 		}
 	}
-	for i, tm := range theirs {
-		name := meshName(tm, i)
+	for _, name := range theirsOrder {
 		if _, inOurs := oursMap[name]; inOurs {
 			continue
 		}
 		if baseMap[name] != nil {
 			*conflicts = append(*conflicts, SemanticConflict{
-				Path: "meshes/" + name, Ours: "removed", Theirs: "kept",
+				Path: joinPath("meshes", name), Ours: "removed", Theirs: "kept",
 			})
 		}
 	}
@@ -457,17 +575,17 @@ func mergeMeshList(base, ours, theirs []*gltf.Mesh, conflicts *[]SemanticConflic
 // returns ours unchanged. Same accessor-index constraint as mergeMeshList.
 func mergeAnimationList(base, ours, theirs []*gltf.Animation, conflicts *[]SemanticConflict) []*gltf.Animation {
 	baseMap, _ := animMap(base)
-	oursMap, _ := animMap(ours)
-	theirsMap, _ := animMap(theirs)
+	oursMap, oursOrder := animMap(ours)
+	theirsMap, theirsOrder := animMap(theirs)
 
 	for i, oa := range ours {
-		name := animName(oa, i)
+		name := oursOrder[i]
 		ba := baseMap[name]
 		ta, inTheirs := theirsMap[name]
 		if !inTheirs {
 			if ba != nil {
 				*conflicts = append(*conflicts, SemanticConflict{
-					Path: "animations/" + name, Ours: "kept", Theirs: "removed",
+					Path: joinPath("animations", name), Ours: "kept", Theirs: "removed",
 				})
 			}
 			continue
@@ -476,20 +594,19 @@ func mergeAnimationList(base, ours, theirs []*gltf.Animation, conflicts *[]Seman
 		theirChanged := !jsonEqual(ba, ta)
 		if ourChanged && theirChanged && !jsonEqual(oa, ta) {
 			*conflicts = append(*conflicts, SemanticConflict{
-				Path:   "animations/" + name,
+				Path:   joinPath("animations", name),
 				Ours:   fmt.Sprintf("%d channels", len(oa.Channels)),
 				Theirs: fmt.Sprintf("%d channels", len(ta.Channels)),
 			})
 		}
 	}
-	for i, ta := range theirs {
-		name := animName(ta, i)
+	for _, name := range theirsOrder {
 		if _, inOurs := oursMap[name]; inOurs {
 			continue
 		}
 		if baseMap[name] != nil {
 			*conflicts = append(*conflicts, SemanticConflict{
-				Path: "animations/" + name, Ours: "removed", Theirs: "kept",
+				Path: joinPath("animations", name), Ours: "removed", Theirs: "kept",
 			})
 		}
 	}
@@ -536,17 +653,23 @@ func (h *Handler) ApplyChoices(merged, theirs Blob, takePaths []string) (Blob, e
 }
 
 func applyChoice(docM, docT *gltf.Document, path string) {
-	parts := strings.SplitN(path, "/", 3)
+	// Conflict paths use the same escaped, "/"-separated form as diff paths, so
+	// they have to be unescaped before the name is matched against the document.
+	parts := splitPath(path)
 	if len(parts) < 2 {
 		return
 	}
 	name := parts[1]
+	prop := ""
+	if len(parts) > 2 {
+		prop = parts[2]
+	}
 
 	switch parts[0] {
 	case "nodes":
 		tn := nodeByName(docT.Nodes, name)
 		mn := nodeByName(docM.Nodes, name)
-		if len(parts) == 2 {
+		if prop == "" {
 			if tn != nil && mn == nil {
 				docM.Nodes = append(docM.Nodes, tn)
 			} else if tn == nil && mn != nil {
@@ -557,7 +680,7 @@ func applyChoice(docM, docT *gltf.Document, path string) {
 		if mn == nil || tn == nil {
 			return
 		}
-		switch parts[2] {
+		switch prop {
 		case "translation":
 			mn.Translation = tn.TranslationOrDefault()
 		case "rotation":
@@ -571,7 +694,7 @@ func applyChoice(docM, docT *gltf.Document, path string) {
 	case "materials":
 		tm := materialByName(docT.Materials, name)
 		mm := materialByName(docM.Materials, name)
-		if len(parts) == 2 {
+		if prop == "" {
 			if tm != nil && mm == nil {
 				docM.Materials = append(docM.Materials, tm)
 			} else if tm == nil && mm != nil {
@@ -583,7 +706,7 @@ func applyChoice(docM, docT *gltf.Document, path string) {
 			return
 		}
 		tPBR := pbrOrDefault(tm)
-		switch parts[2] {
+		switch prop {
 		case "baseColorFactor":
 			setBaseColor(mm, tPBR.BaseColorFactorOrDefault())
 		case "metallicFactor":
@@ -598,19 +721,20 @@ func applyChoice(docM, docT *gltf.Document, path string) {
 	}
 }
 
+// The *ByName/remove* helpers below resolve the same disambiguated keys the
+// merge conflicts were reported with, so a choice taken on the second "Wheel"
+// lands on that node and not on the first.
+
 func nodeByName(nodes []*gltf.Node, name string) *gltf.Node {
-	for i, n := range nodes {
-		if nodeName(n, i) == name {
-			return n
-		}
-	}
-	return nil
+	m, _ := nodeMap(nodes)
+	return m[name]
 }
 
 func removeNode(nodes []*gltf.Node, name string) []*gltf.Node {
+	_, keys := nodeMap(nodes)
 	out := nodes[:0:0]
 	for i, n := range nodes {
-		if nodeName(n, i) != name {
+		if keys[i] != name {
 			out = append(out, n)
 		}
 	}
@@ -618,18 +742,15 @@ func removeNode(nodes []*gltf.Node, name string) []*gltf.Node {
 }
 
 func materialByName(mats []*gltf.Material, name string) *gltf.Material {
-	for i, m := range mats {
-		if materialName(m, i) == name {
-			return m
-		}
-	}
-	return nil
+	m, _ := materialMap(mats)
+	return m[name]
 }
 
 func removeMaterial(mats []*gltf.Material, name string) []*gltf.Material {
+	_, keys := materialMap(mats)
 	out := mats[:0:0]
 	for i, m := range mats {
-		if materialName(m, i) != name {
+		if keys[i] != name {
 			out = append(out, m)
 		}
 	}
@@ -666,16 +787,29 @@ func (h *Handler) Diff(base, head Blob) (StructuredDiff, error) {
 		return StructuredDiff{}, fmt.Errorf("parsing head: %w", err)
 	}
 
+	// The referenced collections are matched first and shared, because a reference
+	// can only be compared by identity once its referent's pairing is in hand
+	// (collectionMatch.same): a node names a mesh and a primitive names a material.
+	//
+	// THE ORDER IS LOAD-BEARING: materials, then meshes, then nodes. Each pairing
+	// feeds the next collection's content signatures (materialTokens →
+	// meshSignature, nodeIndex.adoptMeshPairs → meshField), which is what lets a
+	// name-stripped file still state its references as cross-file identity.
+	// Reordering these calls would silently degrade those fields to opaque —
+	// TestOptimizerStrippedNamesMatchByContent fails loudly if that happens.
+	mats := matchMaterials(docA, docB)
+	meshes := matchMeshes(docA, docB, mats)
+
 	// Non-nil so an empty diff marshals as [] (not null) — every consumer, from
 	// the renderer bundle to ForgeHub, can then trust changes is always a list.
 	changes := []DiffChange{}
-	if c := diffNodes(docA, docB); c != nil {
+	if c := diffNodes(docA, docB, meshes); c != nil {
 		changes = append(changes, *c)
 	}
-	if c := diffMaterials(docA, docB); c != nil {
+	if c := diffMaterials(docA, docB, mats); c != nil {
 		changes = append(changes, *c)
 	}
-	if c := diffMeshes(docA, docB); c != nil {
+	if c := diffMeshes(docA, docB, meshes, mats); c != nil {
 		changes = append(changes, *c)
 	}
 	if c := diffAnimations(docA, docB); c != nil {
@@ -703,59 +837,230 @@ func parseDoc(blob Blob) (*gltf.Document, error) {
 	return doc, nil
 }
 
+// ── cross-collection identity ─────────────────────────────────────────────────
+
+// collectionMatch is one collection's cross-revision identity match (identity.go)
+// plus what reporting it needs: the diff key each side is walked under and the
+// entities the cascade saw.
+//
+// It is built once per document pair and shared, because the collections
+// reference each other. A node names a mesh, a primitive names a material, and
+// those references are array indices — so comparing one across revisions needs
+// the *referent's* pairing, not its key string (same).
+type collectionMatch struct {
+	aKeys, bKeys []string
+	aEnts, bEnts []entity
+	pairs        pairing
+}
+
+// same reports whether a base-side reference and a head-side reference point at
+// the same element of this collection.
+//
+// By identity and not by rendered key, for the reason diffNodeProps compares a
+// node's parent through pairing.sameEntity: renaming the *referent* changes every
+// key that names it, so a string compare reports every node instancing a renamed
+// mesh as re-meshed and every primitive using a renamed material as reassigned —
+// edits nobody made, which the renderer then tints as modified geometry. The
+// index behind the reference did not move.
+//
+// Comparing the raw indices instead is the other failure and the one the keys
+// exist to avoid: inserting an unrelated mesh upstream renumbers every mesh after
+// it. A dangling reference is the one case with no element to pair on either
+// side, so there the index is all that is left to compare.
+func (m collectionMatch) same(ai, bi *int) bool {
+	switch {
+	case ai == nil || bi == nil:
+		return ai == nil && bi == nil
+	case *ai < 0 || *ai >= len(m.aKeys) || *bi < 0 || *bi >= len(m.bKeys):
+		return *ai == *bi
+	}
+	return m.pairs.sameEntity(*ai, *bi)
+}
+
+// meshMatch is the meshes collection's match plus the per-side lookups the mesh
+// compare reads buffers through, so both readers of the mesh pairing — the node
+// diff, for what each node instances, and the mesh diff itself — build it once.
+type meshMatch struct {
+	collectionMatch
+	aSide, bSide meshSide
+}
+
+// matchMeshes needs the materials pairing (mats) because a mesh's content
+// signature states each primitive's material as a cross-file token resolved
+// through it — see Diff for why the collection order is load-bearing.
+func matchMeshes(a, b *gltf.Document, mats collectionMatch) meshMatch {
+	aKeys, bKeys := uniqueKeys(a.Meshes, meshName), uniqueKeys(b.Meshes, meshName)
+	aSide, bSide := newMeshSide(a), newMeshSide(b)
+	aTok, bTok := materialTokens(aSide, mats, true), materialTokens(bSide, mats, false)
+	aEnts, bEnts := meshEntities(a, aKeys, aSide, aTok), meshEntities(b, bKeys, bSide, bTok)
+	// The exact-content tier's deep verification: canonical sequences, not their
+	// 64-bit digests, decide an identity asserted from signature equality alone.
+	deepEq := func(ai, bi int) bool {
+		return canonMeshesEqual(aSide, bSide, a.Meshes[ai], b.Meshes[bi])
+	}
+	pairs := matchEntities(aEnts, bEnts, deepEq)
+	matchByPosition(pairs, aEnts, bEnts)
+	return meshMatch{
+		collectionMatch: collectionMatch{
+			aKeys: aKeys, bKeys: bKeys,
+			aEnts: aEnts, bEnts: bEnts,
+			pairs: pairs,
+		},
+		aSide: aSide, bSide: bSide,
+	}
+}
+
+func matchMaterials(a, b *gltf.Document) collectionMatch {
+	aKeys, bKeys := uniqueKeys(a.Materials, materialName), uniqueKeys(b.Materials, materialName)
+	aEnts, bEnts := materialEntities(a, aKeys), materialEntities(b, bKeys)
+	pairs := matchEntities(aEnts, bEnts, nil)
+	matchByPosition(pairs, aEnts, bEnts)
+	return collectionMatch{
+		aKeys: aKeys, bKeys: bKeys,
+		aEnts: aEnts, bEnts: bEnts,
+		pairs: pairs,
+	}
+}
+
+// entities returns one side's entity list, for callers holding only a side flag.
+func (m collectionMatch) entities(isBase bool) []entity {
+	if isBase {
+		return m.aEnts
+	}
+	return m.bEnts
+}
+
+// pathKeys hands out the key each change of one collection is reported under, so
+// that no two siblings ever land on the same path.
+//
+// Before identity matching there was one key namespace per collection: both sides
+// were walked in a merged key order (mergeKeyOrder), so a key named one element
+// and one element only. Matching by id or by content breaks that, because the two
+// namespaces come apart — a matched element is reported under its *head* key
+// while an unmatched base element is reported under its *base* key. Base
+// [A(id=1), B] against head [B(id=1)] emits the rename A→B at `nodes/B` and the
+// removal of the old B at `nodes/B`: two unrelated nodes at one path.
+//
+// That is not merely confusing. A path is the selection key the change tree, the
+// host and the renderer all address a row by, and every one of them keys a map or
+// a set on it — so one of the two rows is dropped, and the one that loses is the
+// deletion, which is the single thing identity.go's own header says a diff must
+// never hide.
+//
+// Head keys are handed out unchanged: a consumer selecting by path is addressing
+// the file in front of it. A base key that collides takes uniqueKeys' own `#N`
+// suffix, and `label` keeps the element's key in its own file, so a consumer that
+// resolves the label against the revision the change is about still finds it.
+type pathKeys struct{ taken map[string]bool }
+
+// newPathKeys reserves the whole head-side namespace up front, because the base
+// side is walked first and must not claim a key a later head-side row needs.
+func newPathKeys(headKeys []string) *pathKeys {
+	taken := make(map[string]bool, len(headKeys))
+	for _, k := range headKeys {
+		taken[k] = true
+	}
+	return &pathKeys{taken: taken}
+}
+
+// removed returns the key a removed base element is reported under.
+func (p *pathKeys) removed(baseKey string) string {
+	k := baseKey
+	for dup := 1; p.taken[k]; dup++ {
+		k = fmt.Sprintf("%s#%d", baseKey, dup)
+	}
+	p.taken[k] = true
+	return k
+}
+
 // ── nodes ─────────────────────────────────────────────────────────────────────
 
-func diffNodes(a, b *gltf.Document) *DiffChange {
-	aMap, aOrder := nodeMap(a.Nodes)
-	bMap, _ := nodeMap(b.Nodes)
+func diffNodes(a, b *gltf.Document, meshes meshMatch) *DiffChange {
+	aIx, bIx := indexNodes(a), indexNodes(b)
+	// Resolve mesh references through the mesh pairing before any node signature
+	// is built (Diff's load-bearing collection order): a node drawing a
+	// name-stripped-but-content-paired mesh then states real geometry identity
+	// instead of an opaque index.
+	aIx.adoptMeshPairs(meshes, true)
+	bIx.adoptMeshPairs(meshes, false)
+	aEnts, bEnts := nodeEntities(aIx), nodeEntities(bIx)
+	m := matchEntities(aEnts, bEnts, nil)
+	// Nodes have a tree, so their leftovers get the structural tier — after the
+	// per-element content tiers (stronger evidence) and before the positional
+	// fallback (the weakest).
+	matchByStructure(m, aIx, bIx)
+	matchByPosition(m, aEnts, bEnts)
+	keys := newPathKeys(bIx.keys)
 
-	seen := make(map[string]bool)
-	names := make([]string, 0, len(a.Nodes)+len(b.Nodes))
-	for _, k := range aOrder {
-		names = append(names, k)
-		seen[k] = true
-	}
-	for i, n := range b.Nodes {
-		k := nodeName(n, i)
-		if !seen[k] {
-			names = append(names, k)
-		}
-	}
-
+	// Base order first, then the head elements nothing matched — the same order
+	// mergeKeyOrder produced when a name was the only way to pair two elements.
 	var children []DiffChange
-	for _, name := range names {
-		an, inA := aMap[name]
-		bn, inB := bMap[name]
-
-		switch {
-		case !inA:
+	for ai := range aIx.nodes {
+		bi, matched := m.headOf[ai]
+		if !matched {
+			path := joinPath("nodes", keys.removed(aIx.keys[ai]))
 			c := DiffChange{
-				Path: "nodes." + name, Label: name,
-				Kind: Added, After: "node",
-			}
-			if props := nodePropsOneSide(bn, Added); len(props) > 0 {
-				c.Children = props
-			}
-			children = append(children, c)
-		case !inB:
-			c := DiffChange{
-				Path: "nodes." + name, Label: name,
+				Path: path, Label: aIx.keys[ai],
 				Kind: Removed, Before: "node",
 			}
-			if props := nodePropsOneSide(an, Removed); len(props) > 0 {
+			if props := nodePropsOneSide(aIx, ai, path, Removed); len(props) > 0 {
 				c.Children = props
 			}
 			children = append(children, c)
-		default:
-			if props := diffNodeProps(an, bn); len(props) > 0 {
-				children = append(children, DiffChange{
-					Path:     "nodes." + name,
-					Label:    name,
-					Kind:     Modified,
-					Children: props,
-				})
-			}
+			continue
 		}
+		// A matched element is reported under its *current* name: the path a
+		// consumer selects with has to address the file it is looking at.
+		bKey := bIx.keys[bi]
+		path := joinPath("nodes", bKey)
+		props := diffNodeProps(aIx, ai, bIx, bi, path, m, meshes)
+		// The same identity test diffNodeProps makes for the parent child row,
+		// recomputed rather than sniffed out of props: did this node move to a
+		// different parent?
+		reparented := !m.sameEntity(aIx.parent[ai], bIx.parent[bi])
+		switch {
+		// Precedence per #59: a rename plus a move is ONE change, the rename, with
+		// the move hanging under it — `reparented` is the node-level kind only when
+		// the pair is not also a rename.
+		case isRename(aEnts[ai], bEnts[bi]):
+			children = append(children, DiffChange{
+				Path: path, Label: bKey, Kind: Renamed,
+				Before: bareName(aEnts[ai]), After: renameAfter(bareName(bEnts[bi]), m.how[ai]),
+				Children: props,
+			})
+		// Wraps, not replaces: the `<node>/parent` child row (Before/After = the
+		// old/new parent KEY) stays in props under this change, so a consumer that
+		// predates the kind still sees the move, and diff-map's field list still
+		// contains "parent". Before/After here are parent keys too — matching what
+		// the child row prints — plus the pairing evidence, renameAfter-style.
+		case reparented:
+			children = append(children, DiffChange{
+				Path: path, Label: bKey, Kind: Reparented,
+				Before: aIx.parentKey(ai), After: reparentAfter(bIx.parentKey(bi), m.how[ai]),
+				Children: props,
+			})
+		case len(props) > 0:
+			children = append(children, DiffChange{
+				Path:     path,
+				Label:    bKey,
+				Kind:     Modified,
+				Children: props,
+			})
+		}
+	}
+	for bi := range bIx.nodes {
+		if _, matched := m.baseOf[bi]; matched {
+			continue
+		}
+		path := joinPath("nodes", bIx.keys[bi])
+		c := DiffChange{
+			Path: path, Label: bIx.keys[bi],
+			Kind: Added, After: "node",
+		}
+		if props := nodePropsOneSide(bIx, bi, path, Added); len(props) > 0 {
+			c.Children = props
+		}
+		children = append(children, c)
 	}
 
 	if len(children) == 0 {
@@ -769,14 +1074,10 @@ func diffNodes(a, b *gltf.Document) *DiffChange {
 }
 
 func nodeMap(nodes []*gltf.Node) (map[string]*gltf.Node, []string) {
+	order := uniqueKeys(nodes, nodeName)
 	m := make(map[string]*gltf.Node, len(nodes))
-	order := make([]string, 0, len(nodes))
 	for i, n := range nodes {
-		k := nodeName(n, i)
-		if _, dup := m[k]; !dup {
-			m[k] = n
-			order = append(order, k)
-		}
+		m[order[i]] = n
 	}
 	return m, order
 }
@@ -788,123 +1089,280 @@ func nodeName(n *gltf.Node, i int) string {
 	return fmt.Sprintf("node[%d]", i)
 }
 
-func diffNodeProps(a, b *gltf.Node) []DiffChange {
+// nodeIndex is a document's node array plus the derived lookups the diff needs:
+// a unique key per node, the parent of every node, and the key of every mesh the
+// nodes can point at. glTF stores the hierarchy as child index lists, so the
+// parent has to be inverted out of them — without it a re-parent (moving
+// Mirror_L from Body to Door_L) changes nothing the flat node walk can see, and
+// diffs as no change at all.
+type nodeIndex struct {
+	nodes  []*gltf.Node
+	keys   []string // diff key per node index
+	parent []int    // parent node index, or rootIndex for a top-level node
+	// meshKeys maps a mesh index to the disambiguated key the meshes collection
+	// is diffed under, resolved once per document rather than once per node —
+	// meshSide.materialKeys, for the mesh a node instances.
+	meshKeys []string
+	// meshNamed says, per mesh index, whether that key came from the mesh's own
+	// name. An unnamed mesh's key is `mesh[3]`: the array index in a wrapper,
+	// which the next revision points at a different mesh. Content matching must
+	// know the difference (identity.go, fieldKind opaque).
+	meshNamed []bool
+	// meshPairTok is the cross-file token of each mesh's pairing — the base-side
+	// key, whichever side this index is — or "" for a mesh nothing evidence-based
+	// paired. Set by adoptMeshPairs; nil when this index is not part of a diff
+	// (the animation walk builds nodeIndexes too and never matches on them).
+	meshPairTok []string
+}
+
+const rootIndex = -1
+
+// rootParentLabel is the reported parent of a node that sits at the top of the
+// hierarchy (a scene root, or an orphan no node lists as a child).
+const rootParentLabel = "<root>"
+
+func indexNodes(doc *gltf.Document) *nodeIndex {
+	nodes := doc.Nodes
+	ix := &nodeIndex{
+		nodes:     nodes,
+		keys:      uniqueKeys(nodes, nodeName),
+		parent:    make([]int, len(nodes)),
+		meshKeys:  uniqueKeys(doc.Meshes, meshName),
+		meshNamed: make([]bool, len(doc.Meshes)),
+	}
+	for i, m := range doc.Meshes {
+		ix.meshNamed[i] = m.Name != ""
+	}
+	for i := range nodes {
+		ix.parent[i] = rootIndex
+	}
+	for i, n := range nodes {
+		for _, c := range n.Children {
+			// Ignore dangling indices, self-parenting and a second claim on an
+			// already-parented node: malformed documents must not break the diff.
+			if c >= 0 && c < len(nodes) && c != i && ix.parent[c] == rootIndex {
+				ix.parent[c] = i
+			}
+		}
+	}
+	return ix
+}
+
+// parentKey names the parent of node i for display and comparison.
+func (ix *nodeIndex) parentKey(i int) string {
+	if i < 0 || i >= len(ix.parent) || ix.parent[i] == rootIndex {
+		return rootParentLabel
+	}
+	return ix.keys[ix.parent[i]]
+}
+
+// meshKey names the mesh a node instances, using the same disambiguated key the
+// meshes collection is diffed under. The *name* and not the array index is
+// deliberate, for meshSide.materialKey's reason one level up: inserting an
+// unrelated mesh upstream shifts every index after it. Comparing raw indices
+// would report every node below the insertion as having been re-meshed, and —
+// because the mesh is the heaviest component of a node's content descriptor
+// (meshWeight) — would hand a node that draws something else a perfect content
+// match with whichever node happens to sit at its old number.
+func (ix *nodeIndex) meshKey(idx *int) string {
+	if idx == nil {
+		return "<none>"
+	}
+	if *idx < 0 || *idx >= len(ix.meshKeys) {
+		return fmt.Sprintf("<dangling mesh %d>", *idx)
+	}
+	return ix.meshKeys[*idx]
+}
+
+// adoptMeshPairs resolves this side's mesh keys through the meshes pairing, so
+// meshField can state a reference to any evidence-paired mesh — named or not —
+// as the pair's canonical token. A byPosition pair is skipped for pairToken's
+// reason: an equal array index must not be laundered into a stated value.
+func (ix *nodeIndex) adoptMeshPairs(m meshMatch, isBase bool) {
+	ix.meshPairTok = make([]string, len(ix.meshKeys))
+	for k := range ix.meshKeys {
+		if tok, ok := pairToken(m.collectionMatch, k, isBase); ok {
+			ix.meshPairTok[k] = tok
+		}
+	}
+}
+
+// meshField is meshKey as a content-descriptor component, classified by what the
+// string is worth as evidence of identity (identity.go, fieldKind).
+//
+// A mesh nobody assigned is unstated and not a shared value: two nodes that both
+// draw nothing have no geometry in common, and meshWeight is six elevenths of a
+// node's descriptor — enough on its own to pair any deleted empty, joint, camera
+// or light node with any added one. A reference is stated when it can be
+// resolved to a cross-file identity: the mesh's own name, or — adoptMeshPairs —
+// the canonical token of whatever pairing the mesh cascade found, which is what
+// lets a node keep its geometry evidence in a file whose mesh names a pipeline
+// tool stripped. An unresolvable unnamed mesh is `mesh[1]`: the array index this
+// key scheme exists to avoid comparing, so it is opaque — counted, never agreed
+// on.
+func (ix *nodeIndex) meshField(idx *int) sigField {
+	f := sigField{value: "mesh=" + ix.meshKey(idx), weight: meshWeight}
+	switch {
+	case idx == nil:
+		f.kind = unstated
+	case *idx < 0 || *idx >= len(ix.meshNamed):
+		f.kind = opaque
+	case ix.meshPairTok != nil && ix.meshPairTok[*idx] != "":
+		f.value = "mesh=" + ix.meshPairTok[*idx]
+	case !ix.meshNamed[*idx]:
+		f.kind = opaque
+	}
+	return f
+}
+
+// parentField is meshField for a node's place in the hierarchy: the root is
+// where everything nobody parented ends up, and an unnamed parent contributes
+// its array index, which names a different node in the next revision.
+func (ix *nodeIndex) parentField(i int) sigField {
+	f := sigField{value: "parent=" + ix.parentKey(i), weight: 1}
+	switch p := ix.parent[i]; {
+	case p == rootIndex:
+		f.kind = unstated
+	case ix.nodes[p].Name == "":
+		f.kind = opaque
+	}
+	return f
+}
+
+// nodeEntities reduces one side's nodes to what the identity cascade needs
+// (identity.go).
+func nodeEntities(ix *nodeIndex) []entity {
+	out := make([]entity, len(ix.nodes))
+	for i, n := range ix.nodes {
+		out[i] = entity{
+			key:  ix.keys[i],
+			name: n.Name,
+			uid:  extrasUID(n.Extras),
+			sig:  func() signature { return nodeSignature(ix, i) },
+		}
+	}
+	return out
+}
+
+// diffNodeProps compares the properties of one node across both sides. path is
+// the node's own fully-qualified path; every child change is qualified against
+// it so consumers get a usable selection key without composing anything. m is the
+// node pairing and meshes the mesh one, which is what makes "the same parent" and
+// "the same mesh" answerable across a rename.
+func diffNodeProps(aIx *nodeIndex, ai int, bIx *nodeIndex, bi int, path string, m pairing, meshes meshMatch) []DiffChange {
+	a, b := aIx.nodes[ai], bIx.nodes[bi]
 	var changes []DiffChange
 
+	// Hierarchy first: a re-parent is a structural change and reads better above
+	// the transform noise it usually comes with. The comparison is by identity and
+	// not by name — renaming a parent must not report every one of its children as
+	// having been moved onto a different one.
+	if !m.sameEntity(aIx.parent[ai], bIx.parent[bi]) {
+		changes = append(changes, DiffChange{
+			Path: childPath(path, "parent"), Label: "parent",
+			Kind: Modified, Before: aIx.parentKey(ai), After: bIx.parentKey(bi),
+		})
+	}
 	if ta, tb := a.TranslationOrDefault(), b.TranslationOrDefault(); !nearEq3(ta, tb) {
 		changes = append(changes, DiffChange{
-			Path: "translation", Label: "translation",
+			Path: childPath(path, "translation"), Label: "translation",
 			Kind: Modified, Before: fmtVec3(blenderTranslation(ta)), After: fmtVec3(blenderTranslation(tb)),
 		})
 	}
 	if ra, rb := a.RotationOrDefault(), b.RotationOrDefault(); !nearEq4(ra, rb) {
 		changes = append(changes, DiffChange{
-			Path: "rotation", Label: "rotation",
+			Path: childPath(path, "rotation"), Label: "rotation",
 			Kind: Modified, Before: fmtRot(ra), After: fmtRot(rb),
 		})
 	}
 	if sa, sb := a.ScaleOrDefault(), b.ScaleOrDefault(); !nearEq3(sa, sb) {
 		changes = append(changes, DiffChange{
-			Path: "scale", Label: "scale",
+			Path: childPath(path, "scale"), Label: "scale",
 			Kind: Modified, Before: fmtVec3(blenderScale(sa)), After: fmtVec3(blenderScale(sb)),
 		})
 	}
-	meshA, meshB := ptrLabel(a.Mesh, "mesh"), ptrLabel(b.Mesh, "mesh")
-	if meshA != meshB {
+	// The mesh, like the parent, by identity: renaming a mesh must not report every
+	// node that draws it as having been pointed at different geometry.
+	if !meshes.same(a.Mesh, b.Mesh) {
 		changes = append(changes, DiffChange{
-			Path: "mesh", Label: "mesh",
-			Kind: Modified, Before: meshA, After: meshB,
+			Path: childPath(path, "mesh"), Label: "mesh",
+			Kind: Modified, Before: aIx.meshKey(a.Mesh), After: bIx.meshKey(b.Mesh),
 		})
 	}
 	return changes
 }
 
-func nodePropsOneSide(n *gltf.Node, kind ChangeKind) []DiffChange {
+func nodePropsOneSide(ix *nodeIndex, i int, path string, kind ChangeKind) []DiffChange {
+	n := ix.nodes[i]
 	var changes []DiffChange
-	if t := n.TranslationOrDefault(); !nearEq3(t, gltf.DefaultTranslation) {
-		v := fmtVec3(blenderTranslation(t))
-		c := DiffChange{Path: "translation", Label: "translation", Kind: kind}
+	add := func(segment string, v string) {
+		c := DiffChange{Path: childPath(path, segment), Label: segment, Kind: kind}
 		if kind == Added {
 			c.After = v
 		} else {
 			c.Before = v
 		}
 		changes = append(changes, c)
+	}
+	if p := ix.parentKey(i); p != rootParentLabel {
+		add("parent", p)
+	}
+	if t := n.TranslationOrDefault(); !nearEq3(t, gltf.DefaultTranslation) {
+		add("translation", fmtVec3(blenderTranslation(t)))
 	}
 	if r := n.RotationOrDefault(); !nearEq4(r, gltf.DefaultRotation) {
-		v := fmtRot(r)
-		c := DiffChange{Path: "rotation", Label: "rotation", Kind: kind}
-		if kind == Added {
-			c.After = v
-		} else {
-			c.Before = v
-		}
-		changes = append(changes, c)
+		add("rotation", fmtRot(r))
 	}
 	if s := n.ScaleOrDefault(); !nearEq3(s, gltf.DefaultScale) {
-		v := fmtVec3(blenderScale(s))
-		c := DiffChange{Path: "scale", Label: "scale", Kind: kind}
-		if kind == Added {
-			c.After = v
-		} else {
-			c.Before = v
-		}
-		changes = append(changes, c)
+		add("scale", fmtVec3(blenderScale(s)))
 	}
-	if m := ptrLabel(n.Mesh, "mesh"); m != "" {
-		c := DiffChange{Path: "mesh", Label: "mesh", Kind: kind}
-		if kind == Added {
-			c.After = m
-		} else {
-			c.Before = m
-		}
-		changes = append(changes, c)
+	if n.Mesh != nil {
+		add("mesh", ix.meshKey(n.Mesh))
 	}
 	return changes
 }
 
 // ── materials ─────────────────────────────────────────────────────────────────
 
-func diffMaterials(a, b *gltf.Document) *DiffChange {
-	aMap, aOrder := materialMap(a.Materials)
-	bMap, _ := materialMap(b.Materials)
-
-	seen := make(map[string]bool)
-	names := make([]string, 0, len(a.Materials)+len(b.Materials))
-	for _, k := range aOrder {
-		names = append(names, k)
-		seen[k] = true
-	}
-	for i, m := range b.Materials {
-		k := materialName(m, i)
-		if !seen[k] {
-			names = append(names, k)
-		}
-	}
+func diffMaterials(a, b *gltf.Document, m collectionMatch) *DiffChange {
+	aKeys, bKeys, aEnts, bEnts := m.aKeys, m.bKeys, m.aEnts, m.bEnts
+	keys := newPathKeys(bKeys)
 
 	var children []DiffChange
-	for _, name := range names {
-		am, inA := aMap[name]
-		bm, inB := bMap[name]
-		switch {
-		case !inA:
+	for ai, am := range a.Materials {
+		bi, matched := m.pairs.headOf[ai]
+		if !matched {
 			children = append(children, DiffChange{
-				Path: "materials." + name, Label: name,
-				Kind: Added, After: "material",
-			})
-		case !inB:
-			children = append(children, DiffChange{
-				Path: "materials." + name, Label: name,
+				Path: joinPath("materials", keys.removed(aKeys[ai])), Label: aKeys[ai],
 				Kind: Removed, Before: "material",
 			})
-		default:
-			if props := diffMaterialProps(am, bm); len(props) > 0 {
-				children = append(children, DiffChange{
-					Path: "materials." + name, Label: name,
-					Kind: Modified, Children: props,
-				})
-			}
+			continue
 		}
+		bKey := bKeys[bi]
+		path := joinPath("materials", bKey)
+		props := diffMaterialProps(am, b.Materials[bi], a, b, path)
+		switch {
+		case isRename(aEnts[ai], bEnts[bi]):
+			children = append(children, DiffChange{
+				Path: path, Label: bKey, Kind: Renamed,
+				Before: bareName(aEnts[ai]), After: renameAfter(bareName(bEnts[bi]), m.pairs.how[ai]),
+				Children: props,
+			})
+		case len(props) > 0:
+			children = append(children, DiffChange{
+				Path: path, Label: bKey,
+				Kind: Modified, Children: props,
+			})
+		}
+	}
+	for bi := range b.Materials {
+		if _, matched := m.pairs.baseOf[bi]; matched {
+			continue
+		}
+		children = append(children, DiffChange{
+			Path: joinPath("materials", bKeys[bi]), Label: bKeys[bi],
+			Kind: Added, After: "material",
+		})
 	}
 	if len(children) == 0 {
 		return nil
@@ -916,14 +1374,10 @@ func diffMaterials(a, b *gltf.Document) *DiffChange {
 }
 
 func materialMap(mats []*gltf.Material) (map[string]*gltf.Material, []string) {
+	order := uniqueKeys(mats, materialName)
 	m := make(map[string]*gltf.Material, len(mats))
-	order := make([]string, 0, len(mats))
 	for i, mat := range mats {
-		k := materialName(mat, i)
-		if _, dup := m[k]; !dup {
-			m[k] = mat
-			order = append(order, k)
-		}
+		m[order[i]] = mat
 	}
 	return m, order
 }
@@ -935,45 +1389,58 @@ func materialName(m *gltf.Material, i int) string {
 	return fmt.Sprintf("material[%d]", i)
 }
 
-func diffMaterialProps(a, b *gltf.Material) []DiffChange {
+// materialEntities reduces one side's materials to what the identity cascade
+// needs (identity.go).
+func materialEntities(doc *gltf.Document, keys []string) []entity {
+	out := make([]entity, len(doc.Materials))
+	for i, m := range doc.Materials {
+		out[i] = entity{
+			key:  keys[i],
+			name: m.Name,
+			uid:  extrasUID(m.Extras),
+			sig:  func() signature { return materialSignature(doc, m) },
+		}
+	}
+	return out
+}
+
+// diffMaterialProps compares one material across both sides. docA/docB are the
+// owning documents, needed to resolve texture → image/sampler references.
+func diffMaterialProps(a, b *gltf.Material, docA, docB *gltf.Document, path string) []DiffChange {
 	var changes []DiffChange
+	emit := func(segment, before, after string) {
+		changes = append(changes, DiffChange{
+			Path: childPath(path, segment), Label: segment,
+			Kind: Modified, Before: before, After: after,
+		})
+	}
+	// emitIfDiff is for properties whose descriptor string *is* the comparison.
+	emitIfDiff := func(segment, before, after string) {
+		if before != after {
+			emit(segment, before, after)
+		}
+	}
 	aPBR := pbrOrDefault(a)
 	bPBR := pbrOrDefault(b)
 	if ca, cb := aPBR.BaseColorFactorOrDefault(), bPBR.BaseColorFactorOrDefault(); ca != cb {
-		changes = append(changes, DiffChange{
-			Path: "baseColorFactor", Label: "baseColorFactor",
-			Kind: Modified, Before: fmtVec4(ca), After: fmtVec4(cb),
-		})
+		emit("baseColorFactor", fmtVec4(ca), fmtVec4(cb))
 	}
 	if ma, mb := aPBR.MetallicFactorOrDefault(), bPBR.MetallicFactorOrDefault(); !nearEq(ma, mb) {
-		changes = append(changes, DiffChange{
-			Path: "metallicFactor", Label: "metallicFactor",
-			Kind: Modified, Before: fmtF(ma), After: fmtF(mb),
-		})
+		emit("metallicFactor", fmtF(ma), fmtF(mb))
 	}
 	if ra, rb := aPBR.RoughnessFactorOrDefault(), bPBR.RoughnessFactorOrDefault(); !nearEq(ra, rb) {
-		changes = append(changes, DiffChange{
-			Path: "roughnessFactor", Label: "roughnessFactor",
-			Kind: Modified, Before: fmtF(ra), After: fmtF(rb),
-		})
+		emit("roughnessFactor", fmtF(ra), fmtF(rb))
 	}
 	if a.EmissiveFactor != b.EmissiveFactor {
-		changes = append(changes, DiffChange{
-			Path: "emissiveFactor", Label: "emissiveFactor",
-			Kind: Modified, Before: fmtVec3(a.EmissiveFactor), After: fmtVec3(b.EmissiveFactor),
-		})
+		emit("emissiveFactor", fmtVec3(a.EmissiveFactor), fmtVec3(b.EmissiveFactor))
 	}
-	if a.AlphaMode != b.AlphaMode {
-		changes = append(changes, DiffChange{
-			Path: "alphaMode", Label: "alphaMode",
-			Kind: Modified, Before: string(a.AlphaMode), After: string(b.AlphaMode),
-		})
-	}
-	if a.DoubleSided != b.DoubleSided {
-		changes = append(changes, DiffChange{
-			Path: "doubleSided", Label: "doubleSided",
-			Kind: Modified, Before: fmt.Sprintf("%v", a.DoubleSided), After: fmt.Sprintf("%v", b.DoubleSided),
-		})
+	emitIfDiff("alphaMode", a.AlphaMode.String(), b.AlphaMode.String())
+	emitIfDiff("doubleSided", fmt.Sprintf("%v", a.DoubleSided), fmt.Sprintf("%v", b.DoubleSided))
+
+	// Texture slots. Retexturing a model changes nothing else in the material,
+	// so without these a retexture-only commit diffed as no change at all.
+	for _, slot := range textureSlots {
+		emitIfDiff(slot.label, slot.describe(docA, a), slot.describe(docB, b))
 	}
 	return changes
 }
@@ -985,52 +1452,169 @@ func pbrOrDefault(m *gltf.Material) *gltf.PBRMetallicRoughness {
 	return &gltf.PBRMetallicRoughness{}
 }
 
+// ── material texture slots ────────────────────────────────────────────────────
+
+// textureSlot is one texture-bearing property of a material, rendered as a
+// self-contained descriptor string for diffing.
+//
+// The descriptor deliberately resolves the reference to *content* — image URI,
+// or mime + content hash for embedded images, plus the sampler's own filter and
+// wrap modes — and never mentions the texture/image/sampler array indices. Those
+// indices shift whenever an unrelated texture is inserted upstream, which would
+// report every material in the document as modified; two slots that describe
+// identically do reference identical image data.
+type textureSlot struct {
+	label    string
+	describe func(doc *gltf.Document, m *gltf.Material) string
+}
+
+var textureSlots = []textureSlot{
+	{"baseColorTexture", func(doc *gltf.Document, m *gltf.Material) string {
+		if p := m.PBRMetallicRoughness; p != nil && p.BaseColorTexture != nil {
+			return textureInfoLabel(doc, &p.BaseColorTexture.Index, p.BaseColorTexture.TexCoord, "")
+		}
+		return noTexture
+	}},
+	{"metallicRoughnessTexture", func(doc *gltf.Document, m *gltf.Material) string {
+		if p := m.PBRMetallicRoughness; p != nil && p.MetallicRoughnessTexture != nil {
+			return textureInfoLabel(doc, &p.MetallicRoughnessTexture.Index, p.MetallicRoughnessTexture.TexCoord, "")
+		}
+		return noTexture
+	}},
+	{"normalTexture", func(doc *gltf.Document, m *gltf.Material) string {
+		if t := m.NormalTexture; t != nil && t.Index != nil {
+			return textureInfoLabel(doc, t.Index, t.TexCoord, "scale="+fmtF(t.ScaleOrDefault()))
+		}
+		return noTexture
+	}},
+	{"occlusionTexture", func(doc *gltf.Document, m *gltf.Material) string {
+		if t := m.OcclusionTexture; t != nil && t.Index != nil {
+			return textureInfoLabel(doc, t.Index, t.TexCoord, "strength="+fmtF(t.StrengthOrDefault()))
+		}
+		return noTexture
+	}},
+	{"emissiveTexture", func(doc *gltf.Document, m *gltf.Material) string {
+		if t := m.EmissiveTexture; t != nil {
+			return textureInfoLabel(doc, &t.Index, t.TexCoord, "")
+		}
+		return noTexture
+	}},
+}
+
+const noTexture = "<none>"
+
+// textureInfoLabel renders a resolved texture reference: what image it points
+// at, how it is sampled, and which UV set it uses.
+func textureInfoLabel(doc *gltf.Document, idx *int, texCoord int, extra string) string {
+	if idx == nil {
+		return noTexture
+	}
+	if *idx < 0 || *idx >= len(doc.Textures) {
+		return fmt.Sprintf("<dangling texture %d>", *idx)
+	}
+	t := doc.Textures[*idx]
+	parts := []string{imageRefLabel(doc, t.Source), samplerRefLabel(doc, t.Sampler), fmt.Sprintf("uv=%d", texCoord)}
+	if extra != "" {
+		parts = append(parts, extra)
+	}
+	return strings.Join(parts, " ")
+}
+
+// imageRefLabel describes the image a texture samples. External images are
+// identified by URI; embedded ones (data URI or bufferView) by mime type plus a
+// hash of their bytes, so swapping the embedded pixels shows up as a change.
+func imageRefLabel(doc *gltf.Document, src *int) string {
+	if src == nil {
+		return "image=<none>"
+	}
+	if *src < 0 || *src >= len(doc.Images) {
+		return fmt.Sprintf("image=<dangling %d>", *src)
+	}
+	im := doc.Images[*src]
+	switch {
+	case im.IsEmbeddedResource():
+		data, err := im.MarshalData()
+		if err != nil {
+			data = []byte(im.URI)
+		}
+		return fmt.Sprintf("image=embedded mime=%s hash=%s", imageMime(im), contentHash(data))
+	case im.URI != "":
+		return "image=" + im.URI
+	case im.BufferView != nil:
+		data, ok := bufferViewBytes(doc, *im.BufferView)
+		if !ok {
+			return fmt.Sprintf("image=bufferView[%d] mime=%s hash=<unreadable>", *im.BufferView, imageMime(im))
+		}
+		return fmt.Sprintf("image=bufferView mime=%s hash=%s", imageMime(im), contentHash(data))
+	default:
+		return "image=<empty>"
+	}
+}
+
+func imageMime(im *gltf.Image) string {
+	if im.MimeType != "" {
+		return im.MimeType
+	}
+	// Recover the mime type from a data URI: "data:image/png;base64,…".
+	if rest, ok := strings.CutPrefix(im.URI, "data:"); ok {
+		if mime, _, found := strings.Cut(rest, ";"); found {
+			return mime
+		}
+	}
+	return "<unknown>"
+}
+
+func samplerRefLabel(doc *gltf.Document, s *int) string {
+	if s == nil {
+		return "sampler=default"
+	}
+	if *s < 0 || *s >= len(doc.Samplers) {
+		return fmt.Sprintf("sampler=<dangling %d>", *s)
+	}
+	sm := doc.Samplers[*s]
+	return fmt.Sprintf("sampler=(mag=%d min=%d wrapS=%d wrapT=%d)", sm.MagFilter, sm.MinFilter, sm.WrapS, sm.WrapT)
+}
+
 // ── meshes ────────────────────────────────────────────────────────────────────
 
-func diffMeshes(a, b *gltf.Document) *DiffChange {
-	aMap, aOrder := meshMap(a.Meshes)
-	bMap, _ := meshMap(b.Meshes)
-
-	seen := make(map[string]bool)
-	names := make([]string, 0, len(a.Meshes)+len(b.Meshes))
-	for _, k := range aOrder {
-		names = append(names, k)
-		seen[k] = true
-	}
-	for i, m := range b.Meshes {
-		k := meshName(m, i)
-		if !seen[k] {
-			names = append(names, k)
-		}
-	}
+func diffMeshes(a, b *gltf.Document, m meshMatch, mats collectionMatch) *DiffChange {
+	aKeys, bKeys, aEnts, bEnts := m.aKeys, m.bKeys, m.aEnts, m.bEnts
+	keys := newPathKeys(bKeys)
 
 	var children []DiffChange
-	for _, name := range names {
-		am, inA := aMap[name]
-		bm, inB := bMap[name]
-		switch {
-		case !inA:
+	for ai, am := range a.Meshes {
+		bi, matched := m.pairs.headOf[ai]
+		if !matched {
 			children = append(children, DiffChange{
-				Path: "meshes." + name, Label: name,
-				Kind: Added, After: fmt.Sprintf("%d primitives", len(bm.Primitives)),
-			})
-		case !inB:
-			children = append(children, DiffChange{
-				Path: "meshes." + name, Label: name,
+				Path: joinPath("meshes", keys.removed(aKeys[ai])), Label: aKeys[ai],
 				Kind: Removed, Before: fmt.Sprintf("%d primitives", len(am.Primitives)),
 			})
-		default:
-			if len(am.Primitives) != len(bm.Primitives) {
-				children = append(children, DiffChange{
-					Path: "meshes." + name, Label: name, Kind: Modified,
-					Children: []DiffChange{{
-						Path: "primitives", Label: "primitives", Kind: Modified,
-						Before: fmt.Sprintf("%d", len(am.Primitives)),
-						After:  fmt.Sprintf("%d", len(bm.Primitives)),
-					}},
-				})
-			}
+			continue
 		}
+		bKey := bKeys[bi]
+		path := joinPath("meshes", bKey)
+		props := diffMeshPrimitives(am, b.Meshes[bi], m.aSide, m.bSide, path, mats)
+		switch {
+		case isRename(aEnts[ai], bEnts[bi]):
+			children = append(children, DiffChange{
+				Path: path, Label: bKey, Kind: Renamed,
+				Before: bareName(aEnts[ai]), After: renameAfter(bareName(bEnts[bi]), m.pairs.how[ai]),
+				Children: props,
+			})
+		case len(props) > 0:
+			children = append(children, DiffChange{
+				Path: path, Label: bKey, Kind: Modified, Children: props,
+			})
+		}
+	}
+	for bi, bm := range b.Meshes {
+		if _, matched := m.pairs.baseOf[bi]; matched {
+			continue
+		}
+		children = append(children, DiffChange{
+			Path: joinPath("meshes", bKeys[bi]), Label: bKeys[bi],
+			Kind: Added, After: fmt.Sprintf("%d primitives", len(bm.Primitives)),
+		})
 	}
 	if len(children) == 0 {
 		return nil
@@ -1042,14 +1626,10 @@ func diffMeshes(a, b *gltf.Document) *DiffChange {
 }
 
 func meshMap(meshes []*gltf.Mesh) (map[string]*gltf.Mesh, []string) {
+	order := uniqueKeys(meshes, meshName)
 	m := make(map[string]*gltf.Mesh, len(meshes))
-	order := make([]string, 0, len(meshes))
 	for i, mesh := range meshes {
-		k := meshName(mesh, i)
-		if _, dup := m[k]; !dup {
-			m[k] = mesh
-			order = append(order, k)
-		}
+		m[order[i]] = mesh
 	}
 	return m, order
 }
@@ -1061,49 +1641,455 @@ func meshName(m *gltf.Mesh, i int) string {
 	return fmt.Sprintf("mesh[%d]", i)
 }
 
+// meshEntities reduces one side's meshes to what the identity cascade needs
+// (identity.go). The signature closure is what keeps vertex bytes unread until a
+// mesh actually turns out to be a rename candidate; structKey is the byte-free
+// bucket key the exact-content tier uses so bucketing stays that cheap too.
+func meshEntities(doc *gltf.Document, keys []string, side meshSide, matTok refToken) []entity {
+	out := make([]entity, len(doc.Meshes))
+	for i, m := range doc.Meshes {
+		out[i] = entity{
+			key:       keys[i],
+			name:      m.Name,
+			uid:       extrasUID(m.Extras),
+			sig:       func() signature { return meshSignature(side, m, matTok) },
+			structKey: func() string { return meshStructuralKey(side, m, matTok) },
+		}
+	}
+	return out
+}
+
+// ── mesh primitives: geometry, metrics, material ──────────────────────────────
+//
+// A mesh used to be compared by name and primitive *count* only, so the single
+// most common edit in a 3D review — sculpting vertices without touching
+// topology — diffed as no change at all, and so did reassigning a primitive to
+// another existing material. Both are compared here.
+//
+// The cost discipline, in the order the checks run:
+//
+//	material   a name lookup; zero byte reads.
+//	geometry   a memory compare of the accessor byte spans. No hashing on the
+//	           unchanged path, which is the overwhelmingly common one, and a
+//	           digest computed only for the streams actually displayed.
+//	vertices   Accessor.Count; zero byte reads.
+//	bounds     Accessor.Min/Max, which glTF *requires* on POSITION; zero
+//	           byte reads.
+//	centroid   the only check that decodes typed vertex data, so it runs
+//	           exclusively for primitives whose POSITION bytes already differ.
+//
+// What is deliberately never emitted is a per-vertex payload: a StructuredDiff
+// carrying 400k displacements is multiple megabytes of JSON, and the change tree
+// is not where that belongs. Booleans and metrics only; the per-vertex deviation
+// heatmap is issue #46, computed renderer-side from the two models it already has.
+
+// meshSide bundles one side of the comparison with the document-wide lookups the
+// primitive compare needs, so the helpers below take two symmetric arguments
+// instead of a widening list of positional ones.
+type meshSide struct {
+	doc *gltf.Document
+	// materialKeys maps a material index to the disambiguated key the materials
+	// collection is diffed under, resolved once per document rather than once per
+	// primitive.
+	materialKeys []string
+	// canon memoizes each primitive's canonical quantized form (quantize.go), so
+	// the one expensive decode-and-sort runs at most once per primitive per diff
+	// however many candidate pairs look at it. A map field so the memo is shared
+	// by every copy of this value.
+	canon map[*gltf.Primitive]*canonPrim
+}
+
+func newMeshSide(doc *gltf.Document) meshSide {
+	return meshSide{
+		doc:          doc,
+		materialKeys: uniqueKeys(doc.Materials, materialName),
+		canon:        make(map[*gltf.Primitive]*canonPrim),
+	}
+}
+
+// diffMeshPrimitives compares the primitive lists of one mesh that exists on
+// both sides.
+//
+// glTF primitives carry no identity of their own — they are an ordered array —
+// so they are compared pairwise by index, and a count change is reported as its
+// own row while the overlapping prefix is still compared. Content-based
+// primitive matching, like content-based node matching, belongs with the
+// identity cascade of issue #42.
+func diffMeshPrimitives(am, bm *gltf.Mesh, a, b meshSide, path string, mats collectionMatch) []DiffChange {
+	var changes []DiffChange
+	primitivesPath := childPath(path, "primitives")
+	if len(am.Primitives) != len(bm.Primitives) {
+		changes = append(changes, DiffChange{
+			Path: primitivesPath, Label: "primitives", Kind: Modified,
+			Before: fmt.Sprintf("%d", len(am.Primitives)),
+			After:  fmt.Sprintf("%d", len(bm.Primitives)),
+		})
+	}
+	for i := range min(len(am.Primitives), len(bm.Primitives)) {
+		primPath := childPath(primitivesPath, strconv.Itoa(i))
+		props := diffPrimitive(am.Primitives[i], bm.Primitives[i], a, b, primPath, mats)
+		if len(props) > 0 {
+			changes = append(changes, DiffChange{
+				Path: primPath, Label: fmt.Sprintf("primitive[%d]", i),
+				Kind: Modified, Children: props,
+			})
+		}
+	}
+	return changes
+}
+
+// diffPrimitive compares one primitive across both sides.
+func diffPrimitive(ap, bp *gltf.Primitive, a, b meshSide, path string, mats collectionMatch) []DiffChange {
+	var changes []DiffChange
+	emit := func(segment, before, after string) {
+		changes = append(changes, DiffChange{
+			Path: childPath(path, segment), Label: segment,
+			Kind: Modified, Before: before, After: after,
+		})
+	}
+
+	// Which material a primitive points at. Assigning an object a different
+	// material that already exists in the file changes nothing but this index,
+	// which used to diff as no change whatsoever. Compared by identity for
+	// collectionMatch.same's reason: a renamed material is still the same material,
+	// and reporting the primitives that use it as reassigned contradicts the rename
+	// the materials collection reports two changes further down the same diff.
+	if !mats.same(ap.Material, bp.Material) {
+		emit("material", a.materialKey(ap.Material), b.materialKey(bp.Material))
+	}
+
+	geometry, positionChanged := diffPrimitiveGeometry(ap, bp, a, b, path)
+	if geometry != nil {
+		changes = append(changes, *geometry)
+	}
+
+	aPos, bPos := positionAccessor(a.doc, ap), positionAccessor(b.doc, bp)
+	if aPos == nil || bPos == nil {
+		return changes
+	}
+	if aPos.Count != bPos.Count {
+		emit("vertices", fmtCount(aPos.Count), fmtCount(bPos.Count)+" ("+fmtSigned(bPos.Count-aPos.Count)+")")
+	}
+	aSize, aOK := primitiveExtent(aPos)
+	bSize, bOK := primitiveExtent(bPos)
+	if aOK && bOK && !nearEq3(aSize, bSize) {
+		emit("bounds", fmtVec3(aSize), fmtVec3(bSize)+" ("+dominantAxisDelta(aSize, bSize)+")")
+	}
+	if positionChanged {
+		if aC, ok := primitiveCentroid(a.doc, aPos); ok {
+			if bC, ok := primitiveCentroid(b.doc, bPos); ok && !nearEq3(aC, bC) {
+				emit("centroid", fmtVec3(aC), fmtVec3(bC)+" (moved "+fmtDistance(aC, bC)+")")
+			}
+		}
+	}
+	return changes
+}
+
+// materialKey names the material an index refers to, using the same
+// disambiguated key the materials collection is diffed under. The *name* and not
+// the array index is deliberate: inserting an unrelated material upstream shifts
+// every index after it, which would report every primitive in the document as
+// reassigned.
+func (s meshSide) materialKey(idx *int) string {
+	if idx == nil {
+		return noMaterial
+	}
+	if *idx < 0 || *idx >= len(s.materialKeys) {
+		return fmt.Sprintf("<dangling material %d>", *idx)
+	}
+	return s.materialKeys[*idx]
+}
+
+const noMaterial = "<none>"
+
+// ── primitive geometry ────────────────────────────────────────────────────────
+
+// leadingAttributes are the vertex semantics reported first, being the ones a
+// reviewer looks for. Every other semantic the primitive carries is compared
+// too, just after these; a fixed list of three would silently ignore an edit to
+// TANGENT or COLOR_0, which is the same class of blind spot this compare exists
+// to remove.
+var leadingAttributes = []string{gltf.POSITION, gltf.NORMAL, gltf.TEXCOORD_0}
+
+// indicesStream names the index buffer in the stream list. It is not an
+// attribute semantic, so it cannot collide with one.
+const indicesStream = "indices"
+
+const (
+	noStream      = "<none>"
+	readable      = "readable"
+	notComparable = "not comparable (external buffer or sparse accessor)"
+)
+
+// diffPrimitiveGeometry compares every vertex stream of a primitive pair. It
+// reports whether POSITION specifically changed, which is what gates the one
+// expensive metric (the centroid).
+func diffPrimitiveGeometry(ap, bp *gltf.Primitive, a, b meshSide, path string) (*DiffChange, bool) {
+	geometryPath := childPath(path, "geometry")
+	var streams []DiffChange
+	var aBlocked, bBlocked, positionChanged bool
+
+	for _, stream := range primitiveStreams(ap, bp) {
+		as := readStream(a.doc, ap, stream)
+		bs := readStream(b.doc, bp, stream)
+		changed := false
+		switch {
+		case !as.present && !bs.present:
+			// Neither side carries this semantic; nothing to compare.
+		case as.present != bs.present:
+			// A stream gained or lost outright — added UVs, stripped tangents.
+			changed = true
+		case !as.readable || !bs.readable:
+			// Bytes we cannot read must never be reported as "unchanged". The row
+			// is emitted whether or not the two descriptors happen to match, so a
+			// document whose geometry lives in an external .bin says so instead of
+			// silently claiming the mesh is untouched.
+			aBlocked = aBlocked || !as.readable
+			bBlocked = bBlocked || !bs.readable
+			changed = true
+		default:
+			changed = !equalStreams(as, bs)
+		}
+		if !changed {
+			continue
+		}
+		if stream == gltf.POSITION {
+			positionChanged = true
+		}
+		streams = append(streams, DiffChange{
+			Path: childPath(geometryPath, stream), Label: stream, Kind: Modified,
+			Before: as.describe(a.doc), After: bs.describe(b.doc),
+		})
+	}
+
+	if len(streams) == 0 {
+		return nil, false
+	}
+	change := &DiffChange{
+		Path: geometryPath, Label: "geometry", Kind: Modified, Children: streams,
+	}
+	// The geometry row's own value reports comparability; its children report
+	// content. It carries no value at all in the ordinary case, where the changed
+	// streams below it are the whole story.
+	if aBlocked || bBlocked {
+		change.Before = comparability(aBlocked)
+		change.After = comparability(bBlocked)
+	}
+	return change, positionChanged
+}
+
+func comparability(blocked bool) string {
+	if blocked {
+		return notComparable
+	}
+	return readable
+}
+
+// primitiveStreams lists the vertex streams to compare for a primitive pair:
+// the union of both sides' attribute semantics — so a semantic present on only
+// one side still participates — with leadingAttributes first, the remainder in
+// name order for a stable report, and the index buffer last.
+func primitiveStreams(ap, bp *gltf.Primitive) []string {
+	present := make(map[string]bool, len(ap.Attributes)+len(bp.Attributes))
+	for _, attrs := range []gltf.PrimitiveAttributes{ap.Attributes, bp.Attributes} {
+		for name := range attrs {
+			present[name] = true
+		}
+	}
+	out := make([]string, 0, len(present)+1)
+	for _, name := range leadingAttributes {
+		if present[name] {
+			out = append(out, name)
+		}
+	}
+	rest := make([]string, 0, len(present))
+	for name := range present {
+		if !slices.Contains(leadingAttributes, name) {
+			rest = append(rest, name)
+		}
+	}
+	slices.Sort(rest)
+	out = append(out, rest...)
+	if ap.Indices != nil || bp.Indices != nil {
+		out = append(out, indicesStream)
+	}
+	return out
+}
+
+// streamState is one side's view of one vertex stream. The descriptor is
+// deliberately *not* built here: it hashes the bytes, and the unchanged path
+// must not pay for a value nobody displays.
+type streamState struct {
+	present  bool
+	index    int
+	data     []byte
+	stride   int // bytes between consecutive elements; == elem when tightly packed
+	elem     int // bytes per element
+	count    int
+	readable bool
+}
+
+func readStream(doc *gltf.Document, p *gltf.Primitive, stream string) streamState {
+	idx, ok := primitiveStreamIndex(p, stream)
+	if !ok {
+		return streamState{index: -1}
+	}
+	s := streamState{present: true, index: idx}
+	if idx >= 0 && idx < len(doc.Accessors) {
+		acc := doc.Accessors[idx]
+		s.elem = acc.ComponentType.ByteSize() * acc.Type.Components()
+		s.count = acc.Count
+		s.data, s.stride, s.readable = accessorSpan(doc, acc)
+	}
+	return s
+}
+
+// equalStreams reports whether two vertex streams hold the same values.
+//
+// Tightly packed data — the overwhelmingly common case — is a single memory
+// compare, which is the reason this whole compare is affordable: no hashing, no
+// decoding, no allocation on the unchanged path.
+//
+// Interleaved data has to be compared element by element instead, because an
+// interleaved accessor's byte span *contains its neighbours' bytes*: POSITION at
+// stride 24 and NORMAL at the same view offset 12 overlap everywhere except the
+// first and last element. Comparing those spans whole would report NORMAL as
+// changed every time a position moved, which on an optimiser's output means
+// every stream of every edited primitive. Comparing per element also makes the
+// layout itself irrelevant, so the same vertices packed tightly in one file and
+// interleaved in another compare equal, as they should.
+func equalStreams(a, b streamState) bool {
+	if a.elem != b.elem || a.elem <= 0 {
+		return false
+	}
+	if a.stride == a.elem && b.stride == b.elem {
+		return bytes.Equal(a.data, b.data)
+	}
+	if a.count != b.count {
+		return false
+	}
+	for i := range a.count {
+		av, bv := a.data[i*a.stride:], b.data[i*b.stride:]
+		if !bytes.Equal(av[:a.elem], bv[:b.elem]) {
+			return false
+		}
+	}
+	return true
+}
+
+// describe renders the stream the way animation keyframe streams are rendered —
+// shape plus a content digest, or an explicit <unreadable> marker — so the two
+// halves of the handler report accessor data in one voice.
+func (s streamState) describe(doc *gltf.Document) string {
+	if !s.present {
+		return noStream
+	}
+	return accessorLabel(doc, s.index)
+}
+
+// primitiveStreamIndex resolves a stream name to the accessor index it uses. ok
+// is false when the primitive does not carry that stream; a dangling index is
+// reported as present, and rendered as dangling, rather than as absent.
+func primitiveStreamIndex(p *gltf.Primitive, stream string) (int, bool) {
+	if stream == indicesStream {
+		if p.Indices == nil {
+			return 0, false
+		}
+		return *p.Indices, true
+	}
+	idx, ok := p.Attributes[stream]
+	return idx, ok
+}
+
+func positionAccessor(doc *gltf.Document, p *gltf.Primitive) *gltf.Accessor {
+	idx, ok := p.Attributes[gltf.POSITION]
+	if !ok || idx < 0 || idx >= len(doc.Accessors) {
+		return nil
+	}
+	return doc.Accessors[idx]
+}
+
+// primitiveExtent returns the size of a primitive's axis-aligned bounding box,
+// in Blender space, for free: glTF *requires* min/max on a POSITION accessor, so
+// this reads no vertex bytes at all. Files that omit them anyway report !ok and
+// the bounds row is simply not emitted — the geometry row above it already says
+// whether the vertices changed.
+//
+// Extents are unsigned, so converting them to Blender space only reorders the
+// axes; the sign flip that blenderTranslation applies to a position would be
+// wrong here.
+func primitiveExtent(acc *gltf.Accessor) ([3]float64, bool) {
+	if len(acc.Min) < 3 || len(acc.Max) < 3 {
+		return [3]float64{}, false
+	}
+	var size [3]float64
+	for i := range 3 {
+		size[i] = acc.Max[i] - acc.Min[i]
+	}
+	return blenderScale(size), true
+}
+
+// primitiveCentroid averages a primitive's vertex positions, in Blender space —
+// the cheapest single number that answers "did the shape move, or only change
+// shape". It is the one metric that decodes typed vertex data, so callers run it
+// only for primitives already known to have changed POSITION bytes.
+//
+// It decodes in place from the accessor's own span rather than materialising a
+// slice of vectors, and reports !ok rather than guessing whenever the data is
+// not plain little-endian float32 VEC3: an unreadable buffer, or positions
+// quantized by KHR_mesh_quantization.
+func primitiveCentroid(doc *gltf.Document, acc *gltf.Accessor) ([3]float64, bool) {
+	if acc.Count == 0 || acc.ComponentType != gltf.ComponentFloat || acc.Type != gltf.AccessorVec3 {
+		return [3]float64{}, false
+	}
+	data, stride, ok := accessorSpan(doc, acc)
+	if !ok {
+		return [3]float64{}, false
+	}
+	const elem = 3 * 4 // VEC3 of float32; glTF buffers are little-endian by spec.
+	var sum [3]float64
+	for i := range acc.Count {
+		v := data[i*stride:]
+		if len(v) < elem {
+			return [3]float64{}, false
+		}
+		sum[0] += float64(math.Float32frombits(binary.LittleEndian.Uint32(v[0:4])))
+		sum[1] += float64(math.Float32frombits(binary.LittleEndian.Uint32(v[4:8])))
+		sum[2] += float64(math.Float32frombits(binary.LittleEndian.Uint32(v[8:12])))
+	}
+	n := float64(acc.Count)
+	return blenderTranslation([3]float64{sum[0] / n, sum[1] / n, sum[2] / n}), true
+}
+
 // ── animations ────────────────────────────────────────────────────────────────
 
 func diffAnimations(a, b *gltf.Document) *DiffChange {
 	aMap, aOrder := animMap(a.Animations)
-	bMap, _ := animMap(b.Animations)
+	bMap, bOrder := animMap(b.Animations)
+	names := mergeKeyOrder(aOrder, bOrder)
 
-	seen := make(map[string]bool)
-	names := make([]string, 0, len(a.Animations)+len(b.Animations))
-	for _, k := range aOrder {
-		names = append(names, k)
-		seen[k] = true
-	}
-	for i, an := range b.Animations {
-		k := animName(an, i)
-		if !seen[k] {
-			names = append(names, k)
-		}
-	}
+	aIx, bIx := indexNodes(a), indexNodes(b)
 
 	var children []DiffChange
 	for _, name := range names {
 		aa, inA := aMap[name]
 		ba, inB := bMap[name]
+		path := joinPath("animations", name)
 		switch {
 		case !inA:
 			children = append(children, DiffChange{
-				Path: "animations." + name, Label: name,
+				Path: path, Label: name,
 				Kind: Added, After: fmt.Sprintf("%d channels", len(ba.Channels)),
 			})
 		case !inB:
 			children = append(children, DiffChange{
-				Path: "animations." + name, Label: name,
+				Path: path, Label: name,
 				Kind: Removed, Before: fmt.Sprintf("%d channels", len(aa.Channels)),
 			})
 		default:
-			if len(aa.Channels) != len(ba.Channels) {
+			if props := diffAnimationProps(aa, ba, a, b, aIx, bIx, path); len(props) > 0 {
 				children = append(children, DiffChange{
-					Path: "animations." + name, Label: name, Kind: Modified,
-					Children: []DiffChange{{
-						Path: "channels", Label: "channels", Kind: Modified,
-						Before: fmt.Sprintf("%d", len(aa.Channels)),
-						After:  fmt.Sprintf("%d", len(ba.Channels)),
-					}},
+					Path: path, Label: name, Kind: Modified, Children: props,
 				})
 			}
 		}
@@ -1118,14 +2104,10 @@ func diffAnimations(a, b *gltf.Document) *DiffChange {
 }
 
 func animMap(anims []*gltf.Animation) (map[string]*gltf.Animation, []string) {
+	order := uniqueKeys(anims, animName)
 	m := make(map[string]*gltf.Animation, len(anims))
-	order := make([]string, 0, len(anims))
 	for i, a := range anims {
-		k := animName(a, i)
-		if _, dup := m[k]; !dup {
-			m[k] = a
-			order = append(order, k)
-		}
+		m[order[i]] = a
 	}
 	return m, order
 }
@@ -1135,6 +2117,185 @@ func animName(a *gltf.Animation, i int) string {
 		return a.Name
 	}
 	return fmt.Sprintf("anim[%d]", i)
+}
+
+// diffAnimationProps compares two animations that exist on both sides. Channel
+// counts alone miss the common case — an artist retimes or rescales the
+// keyframes of an existing channel — which used to diff as no change at all, so
+// each channel is also compared by target, interpolation, and the bytes of its
+// sampler's input (times) and output (values) accessors.
+func diffAnimationProps(aa, ba *gltf.Animation, docA, docB *gltf.Document, aIx, bIx *nodeIndex, path string) []DiffChange {
+	var changes []DiffChange
+	channelsPath := childPath(path, "channels")
+	if len(aa.Channels) != len(ba.Channels) {
+		changes = append(changes, DiffChange{
+			Path: channelsPath, Label: "channels", Kind: Modified,
+			Before: fmt.Sprintf("%d", len(aa.Channels)),
+			After:  fmt.Sprintf("%d", len(ba.Channels)),
+		})
+	}
+
+	// glTF channels are positional and carry no identity of their own, so they
+	// are compared pairwise by index. Content-based channel matching belongs with
+	// the identity cascade (issue #42).
+	for i := range min(len(aa.Channels), len(ba.Channels)) {
+		ac, bc := aa.Channels[i], ba.Channels[i]
+		chPath := childPath(channelsPath, strconv.Itoa(i))
+		var props []DiffChange
+		emit := func(segment, before, after string) {
+			if before == after {
+				return
+			}
+			props = append(props, DiffChange{
+				Path: childPath(chPath, segment), Label: segment,
+				Kind: Modified, Before: before, After: after,
+			})
+		}
+		emit("target", channelTargetLabel(aIx, ac), channelTargetLabel(bIx, bc))
+		as, bs := animSampler(aa, ac.Sampler), animSampler(ba, bc.Sampler)
+		emit("interpolation", samplerInterpolationLabel(as), samplerInterpolationLabel(bs))
+		emit("input", samplerStreamLabel(docA, as, true), samplerStreamLabel(docB, bs, true))
+		emit("output", samplerStreamLabel(docA, as, false), samplerStreamLabel(docB, bs, false))
+		if len(props) > 0 {
+			changes = append(changes, DiffChange{
+				Path: chPath, Label: fmt.Sprintf("channel[%d]", i),
+				Kind: Modified, Children: props,
+			})
+		}
+	}
+	return changes
+}
+
+func animSampler(a *gltf.Animation, i int) *gltf.AnimationSampler {
+	if i < 0 || i >= len(a.Samplers) {
+		return nil
+	}
+	return a.Samplers[i]
+}
+
+// channelTargetLabel names what a channel drives: the target node (by diff key,
+// so a channel repointed at another node surfaces) and the animated property.
+func channelTargetLabel(ix *nodeIndex, c *gltf.AnimationChannel) string {
+	node := "<none>"
+	if c.Target.Node != nil {
+		if n := *c.Target.Node; n >= 0 && n < len(ix.keys) {
+			node = ix.keys[n]
+		} else {
+			node = fmt.Sprintf("<dangling node %d>", n)
+		}
+	}
+	return node + "." + c.Target.Path.String()
+}
+
+func samplerInterpolationLabel(s *gltf.AnimationSampler) string {
+	if s == nil {
+		return "<missing sampler>"
+	}
+	// The zero value is the glTF default, LINEAR.
+	return s.Interpolation.String()
+}
+
+// samplerStreamLabel describes one keyframe stream by its shape plus a hash of
+// the bytes it addresses, so editing the values shows up even though the
+// keyframe count and the accessor index stay the same. A byte compare is all
+// this needs; the shared geometry-compare helper is issue #43.
+func samplerStreamLabel(doc *gltf.Document, s *gltf.AnimationSampler, input bool) string {
+	if s == nil {
+		return "<missing sampler>"
+	}
+	if input {
+		return accessorLabel(doc, s.Input)
+	}
+	return accessorLabel(doc, s.Output)
+}
+
+func accessorLabel(doc *gltf.Document, idx int) string {
+	if idx < 0 || idx >= len(doc.Accessors) {
+		return fmt.Sprintf("<dangling accessor %d>", idx)
+	}
+	acc := doc.Accessors[idx]
+	shape := fmt.Sprintf("count=%d type=%v component=%v", acc.Count, acc.Type, acc.ComponentType)
+	data, ok := accessorBytes(doc, acc)
+	if !ok {
+		return shape + " hash=<unreadable>"
+	}
+	return shape + " hash=" + contentHash(data)
+}
+
+// accessorBytes returns the buffer bytes an accessor addresses. Sparse
+// accessors, dangling indices and buffers whose data was never loaded (an
+// external URI with no filesystem to read it from) report !ok; the caller then
+// reports the accessor's shape without a hash rather than guessing at equality.
+func accessorBytes(doc *gltf.Document, acc *gltf.Accessor) ([]byte, bool) {
+	data, _, ok := accessorSpan(doc, acc)
+	return data, ok
+}
+
+// accessorSpan is accessorBytes plus the stride between consecutive elements:
+// the element size for tightly packed data, and BufferView.ByteStride when the
+// attribute is interleaved with others in one buffer view. Callers that only
+// compare bytes ignore the stride; callers that decode typed values need it to
+// step over the neighbouring attributes.
+//
+// The span length is stride×(count−1) + element size, not count×element size:
+// the naive product under-reads interleaved data by the trailing padding of the
+// last element and over-reads nothing, so it can miss an edit to the final
+// vertex entirely.
+func accessorSpan(doc *gltf.Document, acc *gltf.Accessor) ([]byte, int, bool) {
+	if acc.BufferView == nil || acc.Sparse != nil {
+		return nil, 0, false
+	}
+	if *acc.BufferView < 0 || *acc.BufferView >= len(doc.BufferViews) {
+		return nil, 0, false
+	}
+	bv := doc.BufferViews[*acc.BufferView]
+	if bv.Buffer < 0 || bv.Buffer >= len(doc.Buffers) {
+		return nil, 0, false
+	}
+	data := doc.Buffers[bv.Buffer].Data
+	elem := acc.ComponentType.ByteSize() * acc.Type.Components()
+	stride := elem
+	if bv.ByteStride > 0 {
+		stride = bv.ByteStride
+	}
+	length := 0
+	if acc.Count > 0 {
+		length = (acc.Count-1)*stride + elem
+	}
+	start := bv.ByteOffset + acc.ByteOffset
+	if elem <= 0 || length < 0 || start < 0 || start+length > len(data) {
+		return nil, 0, false
+	}
+	if bv.ByteLength > 0 && acc.ByteOffset+length > bv.ByteLength {
+		return nil, 0, false
+	}
+	return data[start : start+length], stride, true
+}
+
+// bufferViewBytes returns a buffer view's bytes, used to hash images stored in
+// the binary chunk rather than referenced by URI.
+func bufferViewBytes(doc *gltf.Document, idx int) ([]byte, bool) {
+	if idx < 0 || idx >= len(doc.BufferViews) {
+		return nil, false
+	}
+	bv := doc.BufferViews[idx]
+	if bv.Buffer < 0 || bv.Buffer >= len(doc.Buffers) {
+		return nil, false
+	}
+	data := doc.Buffers[bv.Buffer].Data
+	if bv.ByteOffset < 0 || bv.ByteLength < 0 || bv.ByteOffset+bv.ByteLength > len(data) {
+		return nil, false
+	}
+	return data[bv.ByteOffset : bv.ByteOffset+bv.ByteLength], true
+}
+
+// contentHash is a short, stable digest for diff labels. FNV-1a is not a
+// cryptographic hash and does not need to be: its only job is to make "these
+// bytes differ" visible in a human-readable value.
+func contentHash(b []byte) string {
+	h := fnv.New64a()
+	_, _ = h.Write(b)
+	return fmt.Sprintf("%016x", h.Sum64())
 }
 
 // ── math / formatting helpers ─────────────────────────────────────────────────
@@ -1182,9 +2343,9 @@ func quatToBlenderEulerDeg(q [4]float64) [3]float64 {
 func quatToMatrix(q [4]float64) [3][3]float64 {
 	x, y, z, w := q[0], q[1], q[2], q[3]
 	return [3][3]float64{
-		{1 - 2*(y*y+z*z), 2*(x*y - w*z), 2*(x*z + w*y)},
-		{2*(x*y + w*z), 1 - 2*(x*x+z*z), 2*(y*z - w*x)},
-		{2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x+y*y)},
+		{1 - 2*(y*y+z*z), 2 * (x*y - w*z), 2 * (x*z + w*y)},
+		{2 * (x*y + w*z), 1 - 2*(x*x+z*z), 2 * (y*z - w*x)},
+		{2 * (x*z - w*y), 2 * (y*z + w*x), 1 - 2*(x*x+y*y)},
 	}
 }
 
@@ -1234,6 +2395,63 @@ func fmtVec3(v [3]float64) string {
 
 func fmtVec4(v [4]float64) string {
 	return fmt.Sprintf("[%s %s %s %s]", fmtF(v[0]), fmtF(v[1]), fmtF(v[2]), fmtF(v[3]))
+}
+
+// fmtCount groups a count in thousands. Vertex counts run to six and seven
+// digits, where an ungrouped run of digits is genuinely hard to compare against
+// the one next to it.
+func fmtCount(n int) string {
+	digits := strconv.Itoa(n)
+	sign := ""
+	if strings.HasPrefix(digits, "-") {
+		sign, digits = "-", digits[1:]
+	}
+	var b strings.Builder
+	b.Grow(len(digits) + len(digits)/3 + 1)
+	for i := range len(digits) {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte(digits[i])
+	}
+	return sign + b.String()
+}
+
+// fmtSigned renders a delta with an explicit sign, so "+624" reads as a gain
+// without the reader having to compare the two numbers themselves.
+func fmtSigned(n int) string {
+	if n >= 0 {
+		return "+" + fmtCount(n)
+	}
+	return fmtCount(n)
+}
+
+// dominantAxisDelta names the axis that moved most between two vectors, e.g.
+// "+0.15 Y" — the one fact a reviewer wants from a bounding-box change.
+func dominantAxisDelta(before, after [3]float64) string {
+	axes := [3]string{"X", "Y", "Z"}
+	best := 0
+	for i := 1; i < 3; i++ {
+		if math.Abs(after[i]-before[i]) > math.Abs(after[best]-before[best]) {
+			best = i
+		}
+	}
+	d := after[best] - before[best]
+	sign := ""
+	if d >= 0 {
+		sign = "+"
+	}
+	return sign + fmtF(d) + " " + axes[best]
+}
+
+// fmtDistance formats a distance between two points. It carries one more decimal
+// than fmtF because it is the only value here that is meaningful at a scale
+// finer than the dimensions around it: a centroid shift of a few millimetres on
+// a metre-scale model is a real edit, and fmtF's two decimals would print it as
+// "0.00".
+func fmtDistance(a, b [3]float64) string {
+	d := math.Sqrt((b[0]-a[0])*(b[0]-a[0]) + (b[1]-a[1])*(b[1]-a[1]) + (b[2]-a[2])*(b[2]-a[2]))
+	return strconv.FormatFloat(d, 'f', 3, 64)
 }
 
 func ptrLabel(p *int, prefix string) string {
