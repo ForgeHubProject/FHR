@@ -16,6 +16,7 @@ maintainer  = "ForgeHub Project"
 ".gltf" = { handler = "gltf-scene", build = "df769f7" }
 ".glb"  = { handler = "gltf-scene", build = "df769f7" }
 ".csv"  = { handler = "csv", build = "b67693d" }
+".ipynb" = { handler = "ipynb", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -44,6 +45,17 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/forge-handler-csv_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/forge-handler-csv.wasm"
 
+# The ipynb handler — rolling release `ipynb-latest`, overwritten on each push
+# to main that touches packages/handler-ipynb/. Notebooks are JSON, so it ships
+# the wasm build too (Tier B in-browser diff).
+[assets.handlers."ipynb"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -52,3 +64,4 @@ maintainer  = "ForgeHub Project"
 [assets.renderers]
 "gltf-scene" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/renderer-gltf-scene.js"
 "csv"        = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/renderer-csv.js"
+"ipynb"      = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/renderer-ipynb.js"
