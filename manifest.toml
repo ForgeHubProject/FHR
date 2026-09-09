@@ -15,7 +15,7 @@ maintainer  = "ForgeHub Project"
 [formats]
 ".gltf" = { handler = "gltf-scene", build = "df769f7" }
 ".glb"  = { handler = "gltf-scene", build = "df769f7" }
-".csv"  = { handler = "csv", build = "0000000" }
+".csv"  = { handler = "csv", build = "b67693d" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
