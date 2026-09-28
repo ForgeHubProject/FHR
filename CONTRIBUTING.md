@@ -30,6 +30,24 @@ Your handler is a standalone binary (`forge-handler-<name>`) that speaks JSON
 over stdin/stdout. Forge CLI calls it as a subprocess. ForgeHub API runs it
 as a WASM module. The language is completely up to you.
 
+**Writing it in Go?** Don't copy the protocol plumbing — use the shared
+module in `packages/go`. Package `fhr` holds the wire types and both entry
+points (the subprocess protocol for native builds, the `__forgeHandler*` wasm
+global for `GOOS=js` builds), so your package is just the format logic plus:
+
+```go
+func main() {
+	fhr.Run(&Handler{}, fhr.Info{
+		ID:           "myformat",
+		Formats:      []string{".myformat"},
+		Capabilities: &fhr.Capabilities{SemanticCompare: true},
+	})
+}
+```
+
+with `replace github.com/forgehubproject/fhr/packages/go => ../go` in your
+`go.mod`. `packages/handler-csv` is the smallest worked example.
+
 Both paths produce the same `StructuredDiff` output. The frontend renderer
 consumes that output — it doesn't know or care which path the backend used.
 

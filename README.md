@@ -43,6 +43,7 @@ fhr/
 ├── manifest.toml                    # registry index (forge source add <url>)
 ├── packages/
 │   ├── types/                       # @fhr/types — the shared contract
+│   ├── go/                          # Go SDK: wire types + subprocess/wasm entry points
 │   ├── example-handler-ts/          # skeleton: TypeScript handler (direct import)
 │   └── example-handler-native/      # skeleton: any-language handler (subprocess)
 ├── CONTRIBUTING.md

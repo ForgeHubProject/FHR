@@ -36,6 +36,42 @@ jobs:
       - name: Test
         run: npm run test
 
+  # The shared Go module every Go handler builds against (packages/go). Its
+  # entry points are build-tagged per target, so it gets both lanes too — the
+  # handler lanes below only prove it through each handler's own suite.
+  go-sdk:
+    name: Go SDK (native + wasm)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/go/go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Vet (native + wasm)
+        run: |
+          go vet ./...
+          GOOS=js GOARCH=wasm go vet ./...
+
+      - name: Test (native)
+        run: go test ./...
+
+      - name: Test (wasm)
+        env:
+          GOOS: js
+          GOARCH: wasm
+        run: |
+          export PATH="$PATH:$(go env GOROOT)/lib/wasm:$(go env GOROOT)/misc/wasm"
+          go test ./...
+
   discover-handlers:
     name: Discover handler packages
     runs-on: ubuntu-latest

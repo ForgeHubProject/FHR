@@ -1,13 +1,6 @@
 //go:build js && wasm
 
-// WebAssembly entry point for the gltf-scene handler.
-//
-// Built with `GOOS=js GOARCH=wasm`, this exposes the same diff/merge logic as
-// the native subprocess binary — but callable directly from a browser, so
-// ForgeHub (or forge's local --web shell) can compute a StructuredDiff client
-// side instead of on the server (SPEC-RENDERING.md §4, Tier B). Diff and merge
-// share the exact Handler code in gltf.go, so no producer/consumer skew.
-package main
+package fhr
 
 import (
 	"encoding/base64"
@@ -15,13 +8,17 @@ import (
 	"syscall/js"
 )
 
-func main() {
+// Run registers the handler's api as a JS global (GlobalName) and keeps the Go
+// runtime alive so the exported callbacks remain invokable. Every call takes
+// Uint8Arrays and answers a JSON string — {"error": "..."} on failure — which is
+// the contract ForgeHub's wasm-worker.cjs and browserWasm.ts parse.
+func Run(h Handler, info Info) {
+	info = info.withDefaults()
 	api := js.Global().Get("Object").New()
-	api.Set("diff", js.FuncOf(wasmDiff))
-	api.Set("merge", js.FuncOf(wasmMerge))
-	api.Set("info", js.FuncOf(wasmInfo))
-	js.Global().Set("__forgeHandlerGltfScene", api)
-	// Keep the Go runtime alive so the exported callbacks remain invokable.
+	api.Set("diff", js.FuncOf(func(_ js.Value, args []js.Value) any { return wasmDiff(h, args) }))
+	api.Set("merge", js.FuncOf(func(_ js.Value, args []js.Value) any { return wasmMerge(h, args) }))
+	api.Set("info", js.FuncOf(func(_ js.Value, _ []js.Value) any { return jsResult(info) }))
+	js.Global().Set(GlobalName(info.ID), api)
 	select {}
 }
 
@@ -49,11 +46,10 @@ func jsError(err error) any {
 }
 
 // diff(base, head): two Uint8Arrays → StructuredDiff JSON string.
-func wasmDiff(_ js.Value, args []js.Value) any {
+func wasmDiff(h Handler, args []js.Value) any {
 	if len(args) < 2 {
 		return `{"error":"diff(base, head) requires two Uint8Array arguments"}`
 	}
-	h := &Handler{}
 	d, err := h.Diff(bytesFromArg(args[0]), bytesFromArg(args[1]))
 	if err != nil {
 		return jsError(err)
@@ -62,26 +58,17 @@ func wasmDiff(_ js.Value, args []js.Value) any {
 }
 
 // merge(base, ours, theirs): three Uint8Arrays → {blob: base64, conflicts?}.
-func wasmMerge(_ js.Value, args []js.Value) any {
+func wasmMerge(h Handler, args []js.Value) any {
 	if len(args) < 3 {
 		return `{"error":"merge(base, ours, theirs) requires three Uint8Array arguments"}`
 	}
-	h := &Handler{}
 	merged, ci, err := h.Merge(bytesFromArg(args[0]), bytesFromArg(args[1]), bytesFromArg(args[2]))
 	if err != nil {
 		return jsError(err)
 	}
-	out := map[string]any{"blob": base64.StdEncoding.EncodeToString(merged)}
+	out := mergeOutput{Blob: base64.StdEncoding.EncodeToString(merged)}
 	if ci != nil {
-		out["conflicts"] = ci.Conflicts
+		out.Conflicts = ci.Conflicts
 	}
 	return jsResult(out)
-}
-
-func wasmInfo(_ js.Value, _ []js.Value) any {
-	return jsResult(map[string]any{
-		"id":       handlerID,
-		"formats":  []string{".gltf", ".glb"},
-		"protocol": protocolVer,
-	})
 }
