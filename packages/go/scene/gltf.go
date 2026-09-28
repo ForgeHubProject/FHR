@@ -1,10 +1,15 @@
-// Package main provides a format-aware handler for .gltf and .glb files,
-// exposed as a standalone binary implementing the FHR subprocess protocol.
+// Package scene is the 3D family's semantic diff engine, over the glTF document
+// model: cross-revision identity (identity.go), quantized geometry signatures
+// (quantize.go), and the node/material/mesh/animation diff and merge below.
+//
+// The gltf-scene handler is this package's Handler wrapped in fhr.Run. Other 3D
+// formats reuse the engine by building a *gltf.Document from their own file and
+// calling DiffDocuments, which is what makes glTF the family's canonical scene
+// model (#67): one identity and geometry engine, one set of change paths, and
+// one viewer that already understands them.
 //
 // Migrated from forgehubproject/forge internal/handler/gltf/gltf.go.
-// The diff and merge logic is unchanged; the forge-internal types have been
-// replaced with the local wire types in types.go.
-package main
+package scene
 
 import (
 	"bytes"
@@ -786,7 +791,19 @@ func (h *Handler) Diff(base, head Blob) (StructuredDiff, error) {
 	if err != nil {
 		return StructuredDiff{}, fmt.Errorf("parsing head: %w", err)
 	}
+	return StructuredDiff{Version: "1.0", Format: "gltf-scene", Changes: DiffDocuments(docA, docB)}, nil
+}
 
+// DiffDocuments is the engine behind Diff, for callers that already hold the two
+// documents — a 3D format handler that converted its own file to glTF. An empty
+// document (&gltf.Document{}) is the added/deleted-file side. The result is
+// never nil, so it marshals as [] when nothing changed.
+//
+// The change paths are the ones every gltf-scene consumer already speaks
+// (nodes/<name>/..., materials/<name>/..., meshes/<name>/...; SPEC.md), keyed
+// by the documents' element names. A converter controls those names, so it
+// controls what the paths say.
+func DiffDocuments(docA, docB *gltf.Document) []DiffChange {
 	// The referenced collections are matched first and shared, because a reference
 	// can only be compared by identity once its referent's pairing is in hand
 	// (collectionMatch.same): a node names a mesh and a primitive names a material.
@@ -815,8 +832,7 @@ func (h *Handler) Diff(base, head Blob) (StructuredDiff, error) {
 	if c := diffAnimations(docA, docB); c != nil {
 		changes = append(changes, *c)
 	}
-
-	return StructuredDiff{Version: "1.0", Format: "gltf-scene", Changes: changes}, nil
+	return changes
 }
 
 // parseSideOrEmpty parses a blob, or returns an empty document for an empty

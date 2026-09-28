@@ -1,4 +1,4 @@
-package main
+package scene
 
 // Regression tests for the diff defects catalogued in issue #41: silent
 // data loss (duplicate names, invisible re-parents, undiffed textures and
