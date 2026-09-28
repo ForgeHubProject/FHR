@@ -40,7 +40,7 @@ func (h *Handler) Diff(base, head fhr.Blob) (fhr.StructuredDiff, error) {
 		return fhr.StructuredDiff{}, fmt.Errorf("head: %w", err)
 	}
 
-	changes := scene.DiffDocuments(toGLTF(a), toGLTF(b))
+	changes := collapseGroupTwins(scene.DiffDocuments(toGLTF(a), toGLTF(b)))
 	relabel(changes)
 	changes = append(changes, diffMtlLibs(a.mtlLibs, b.mtlLibs)...)
 	changes = append(changes, diffUninterpreted(a, b)...)
@@ -88,6 +88,78 @@ func relabel(changes []fhr.DiffChange) {
 			changes[i].Label = l
 		}
 	}
+}
+
+// collapseGroupTwins drops the mesh half of a group that was added, removed or
+// renamed as a whole. glTF models an OBJ group as a node plus a mesh of its
+// own, and the engine reports each — so without this a reviewer reads
+// "Drawer added" twice. OBJ has only the group. The node row stays (it carries
+// the parent and the mesh reference); a mesh row stays whenever it says
+// something the node row cannot, which is any row with children: geometry and
+// material changes.
+func collapseGroupTwins(changes []fhr.DiffChange) []fhr.DiffChange {
+	var nodes, meshes *fhr.DiffChange
+	for i := range changes {
+		switch changes[i].Path {
+		case "nodes":
+			nodes = &changes[i]
+		case "meshes":
+			meshes = &changes[i]
+		}
+	}
+	if nodes == nil || meshes == nil {
+		return changes
+	}
+
+	// The mesh each wholly added/removed node references, by its diff key —
+	// the `mesh` child row's value — and each renamed node's rename.
+	twins := map[string]fhr.ChangeKind{}
+	renames := map[[2]any]bool{}
+	for _, n := range nodes.Children {
+		switch n.Kind {
+		case fhr.Added, fhr.Removed:
+			for _, c := range n.Children {
+				if c.Path != n.Path+"/mesh" {
+					continue
+				}
+				key := c.After
+				if n.Kind == fhr.Removed {
+					key = c.Before
+				}
+				if k, ok := key.(string); ok {
+					twins["meshes/"+escapeSegment(k)] = n.Kind
+				}
+			}
+		case fhr.Renamed:
+			renames[[2]any{n.Before, n.After}] = true
+		}
+	}
+
+	kept := meshes.Children[:0]
+	for _, m := range meshes.Children {
+		twin := len(m.Children) == 0 &&
+			(twins[m.Path] == m.Kind && m.Kind != "" || m.Kind == fhr.Renamed && renames[[2]any{m.Before, m.After}])
+		if !twin {
+			kept = append(kept, m)
+		}
+	}
+	meshes.Children = kept
+	if len(kept) > 0 {
+		return changes
+	}
+	out := changes[:0]
+	for _, c := range changes {
+		if c.Path != "meshes" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// escapeSegment is the engine's path-segment escaping (SPEC.md §7 change
+// paths): "%" and "/" are the two characters that would make a path ambiguous.
+func escapeSegment(s string) string {
+	return strings.NewReplacer("%", "%25", "/", "%2F").Replace(s)
 }
 
 // diffMtlLibs reports a change to the mtllib references. glTF has no place for

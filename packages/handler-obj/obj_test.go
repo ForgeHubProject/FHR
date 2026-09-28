@@ -110,15 +110,15 @@ func TestRewoundFaceIsAnIndexChangeOnly(t *testing.T) {
 
 func TestAddedAndDeletedFiles(t *testing.T) {
 	d := diffOf(t, "", quad)
-	mustHave(t, d, "added nodes/Cube", "added meshes/Cube")
+	mustHave(t, d, "added nodes/Cube")
 	d = diffOf(t, quad, "")
-	mustHave(t, d, "removed nodes/Cube", "removed meshes/Cube")
+	mustHave(t, d, "removed nodes/Cube")
 }
 
 func TestObjectAddedAndRemoved(t *testing.T) {
 	two := quad + "o Lid\nv 0 0 1\nv 1 0 1\nv 1 1 1\nf 5 6 7\n"
-	mustHave(t, diffOf(t, quad, two), "added nodes/Lid", "added meshes/Lid")
-	mustHave(t, diffOf(t, two, quad), "removed nodes/Lid", "removed meshes/Lid")
+	mustHave(t, diffOf(t, quad, two), "added nodes/Lid")
+	mustHave(t, diffOf(t, two, quad), "removed nodes/Lid")
 }
 
 // Renaming an object without touching its geometry is one rename, found by
@@ -130,6 +130,33 @@ func TestRenamedObjectIsOneRename(t *testing.T) {
 		t.Fatalf("want nodes/Box renamed Cube → Box, got %+v in\n  %s", c, strings.Join(flat(d), "\n  "))
 	}
 	mustLack(t, d, "nodes/Cube")
+}
+
+// A group added, removed or renamed whole is one row, not a node row plus a
+// mesh row: OBJ has no separate mesh to report. Mesh rows that say more
+// (geometry, material) stay.
+func TestWholeGroupChangesAreReportedOnce(t *testing.T) {
+	two := quad + "o Lid\nv 0 0 1\nv 1 0 1\nv 1 1 1\nf 5 6 7\n"
+	for name, d := range map[string]fhr.StructuredDiff{
+		"added":   diffOf(t, quad, two),
+		"removed": diffOf(t, two, quad),
+		"renamed": diffOf(t, quad, strings.Replace(quad, "o Cube", "o Box", 1)),
+	} {
+		for _, row := range flat(d) {
+			if strings.Contains(row, "meshes/") {
+				t.Errorf("%s: mesh twin still reported: %v", name, flat(d))
+			}
+		}
+		if len(flat(d)) == 0 {
+			t.Errorf("%s: the node row itself must remain", name)
+		}
+	}
+	// Geometry that changed alongside the move of another group still shows.
+	d := diffOf(t, two, strings.Replace(two, "o Lid", "o Cap", 1)+"o Extra\nv 9 9 9\nf 1 2 8\n")
+	mustHave(t, d, "renamed nodes/Cap", "added nodes/Extra")
+	mustLack(t, d, "meshes/Cap", "meshes/Extra")
+	d = diffOf(t, two, strings.Replace(two, "v 1 1 1", "v 2 2 2", 1))
+	mustHave(t, d, "modified meshes/Lid")
 }
 
 // o → g is a parent/child relationship, and a group name is scoped to its
