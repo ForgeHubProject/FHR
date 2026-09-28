@@ -202,6 +202,18 @@ export type MountProps = {
   diff?: StructuredDiff;
   /** Raw blob references, served same-origin by the consumer. */
   blobs?: RendererBlobs;
+  /**
+   * The same sides as `blobs`, converted by the handler's optional `preview`
+   * call (SPEC.md §7) into what a browser can draw — for the 3D family, a GLB
+   * whose element names are the names the diff's change paths address. Present
+   * only when the handler declares a preview and the host computed it (on
+   * demand, cached by blob id + handler build — never stored beside the file).
+   *
+   * A renderer for such a format draws these and keeps `blobs` for anything
+   * that needs the original bytes. Absent means no preview is available here,
+   * and the renderer MUST degrade to what it can show without one.
+   */
+  previews?: RendererBlobs;
   theme?: "light" | "dark";
   /**
    * The change the host wants selected, as a `DiffChange.path`. The inbound half

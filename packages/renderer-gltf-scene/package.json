@@ -4,6 +4,11 @@
   "description": "FHR renderer bundle for glTF/GLB scene diffs",
   "type": "module",
   "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./scene-renderer": "./src/scene-renderer.ts",
+    "./index-3d": "./src/index-3d.ts"
+  },
   "fhr": {
     "bundleBudgetGzipBytes": {
       "renderer.js": 20480,

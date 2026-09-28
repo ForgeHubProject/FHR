@@ -10,6 +10,8 @@ on:
       # The shared Go SDK and the scene engine are compiled into this handler.
       - 'packages/go/**'
       - 'packages/renderer-obj/**'
+      # renderer-obj bundles the gltf-scene review surface and viewport.
+      - 'packages/renderer-gltf-scene/**'
       - 'packages/renderer-sdk/**'
       - 'packages/types/**'
       # Include this workflow so changes to how the release is built/published
@@ -88,12 +90,16 @@ jobs:
           npm run build --workspace @fhr/renderer-sdk
           BUILD_SHA="$(git rev-parse --short HEAD)" npm run build --workspace @fhr/renderer-obj
           cp packages/renderer-obj/dist/renderer.js renderer-obj.js
+          # The lite bundle lazy-imports the gltf-scene viewport chunk as a sibling.
+          cp packages/renderer-obj/dist/renderer-3d.js renderer-obj-3d.js
 
-      - name: Upload renderer artifact
+      - name: Upload renderer artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: renderer-obj.js
-          path: renderer-obj.js
+          name: renderer-bundles
+          path: |
+            renderer-obj.js
+            renderer-obj-3d.js
 
   release:
     name: Publish rolling release

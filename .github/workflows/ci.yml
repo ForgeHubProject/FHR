@@ -23,12 +23,14 @@ jobs:
 
       # Build in dependency order first: typecheck resolves @fhr/types and
       # @fhr/renderer-sdk through their built .d.ts, and this also proves the
-      # renderer bundle still bundles.
-      - name: Build (types → sdk → renderer)
+      # 3D family's bundles still bundle within their budgets (renderer-obj
+      # bundles the gltf-scene viewport, so a change there can break it).
+      - name: Build (types → sdk → renderers)
         run: |
           npm run build --workspace @fhr/types
           npm run build --workspace @fhr/renderer-sdk
           npm run build --workspace @fhr/renderer-gltf-scene
+          npm run build --workspace @fhr/renderer-obj
 
       - name: Type check
         run: npm run typecheck

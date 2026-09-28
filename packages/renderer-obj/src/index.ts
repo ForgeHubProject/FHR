@@ -1,5 +1,5 @@
-import { defineRenderer, renderDiffTree } from "@fhr/renderer-sdk";
 import type { MountProps } from "@fhr/types";
+import { defineSceneRenderer, type SceneRendererOptions } from "@fhr/renderer-gltf-scene/scene-renderer";
 
 // Replaced at bundle-build time with the release's short commit SHA (see
 // build.mjs). Guarded with typeof so importing the source directly (e.g. in a
@@ -8,17 +8,22 @@ declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ !== "undefined" ? __BUILD__ : "dev";
 
 /**
- * Reference renderer for Wavefront OBJ diffs. Renders the semantic change tree
- * the obj handler produces — the scene engine's objects, geometry and
- * materials, plus the OBJ-only material-library and uninterpreted-statement
- * rows. The 3D view arrives by mounting the handler's GLB preview in the
- * gltf-scene viewport (#67); the tree is the floor every host can show.
+ * Wavefront OBJ is a 3D family member (#67), so it renders on the gltf-scene
+ * review surface — the linked change tree and the lazy 3D viewport — rather
+ * than a viewer of its own.
+ *
+ * The browser never parses OBJ. The obj handler diffs OBJ by converting it to a
+ * glTF document, and its `preview` call returns that document as a GLB
+ * (SPEC.md §7), so the viewport draws `previews` and every change path in the
+ * diff names a node that exists in what it draws. With no preview from the
+ * host, the change tree is the whole view.
  */
-export default defineRenderer({
+export const sceneOptions: SceneRendererOptions = {
   handlerId: "obj",
   extensions: [".obj"],
   build: BUILD,
-  render(container: HTMLElement, props: MountProps) {
-    renderDiffTree(container, props);
-  },
-});
+  chunk: "renderer-obj-3d.js",
+  geometry: (props: MountProps) => props.previews,
+};
+
+export default defineSceneRenderer(sceneOptions);
