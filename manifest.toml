@@ -15,7 +15,7 @@ maintainer  = "ForgeHub Project"
 [formats]
 ".gltf" = { handler = "gltf-scene", build = "6a306fc" }
 ".glb"  = { handler = "gltf-scene", build = "6a306fc" }
-".csv"  = { handler = "csv", build = "8eba2a3" }
+".csv"  = { handler = "csv", build = "6a306fc" }
 ".ipynb" = { handler = "ipynb", build = "6a306fc" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
