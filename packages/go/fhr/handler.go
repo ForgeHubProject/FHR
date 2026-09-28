@@ -31,6 +31,22 @@ type Handler interface {
 	Merge(base, ours, theirs Blob) (Blob, *ConflictInfo, error)
 }
 
+// Previewer is optional. A handler whose format a browser cannot draw directly
+// converts one blob into something a renderer can — for the 3D family, a GLB
+// whose element names are exactly the names the handler's diff paths use, so
+// the viewer and the diff cannot disagree about what a change points at.
+//
+// The preview is derived data: hosts compute it on demand and may cache it by
+// blob id and handler build, never store it next to the source file.
+type Previewer interface {
+	// PreviewMediaType is what Preview produces, e.g. MediaTypeGLB.
+	PreviewMediaType() string
+	Preview(blob Blob) (Blob, error)
+}
+
+// MediaTypeGLB is the media type of a binary glTF preview.
+const MediaTypeGLB = "model/gltf-binary"
+
 // Info is the handler's answer to the protocol's "info" call. It is the same
 // shape forge reads (internal/fhr.Info); fields a handler leaves unset are
 // omitted rather than guessed.
@@ -39,6 +55,10 @@ type Info struct {
 	Formats      []string      `json:"formats"`
 	Protocol     string        `json:"protocol"`
 	Capabilities *Capabilities `json:"capabilities,omitempty"`
+	// Preview is the media type the handler's preview call produces, declared
+	// only by handlers that implement Previewer — Run fills it in from the
+	// handler itself, so the declaration cannot outlive the implementation.
+	Preview string `json:"preview,omitempty"`
 }
 
 // Capabilities is the handler's own declaration of what it supports — the
@@ -49,9 +69,14 @@ type Capabilities struct {
 	SemanticMerge   bool `json:"semanticMerge"`
 }
 
-func (i Info) withDefaults() Info {
+func (i Info) withDefaults(h Handler) Info {
 	if i.Protocol == "" {
 		i.Protocol = ProtocolVersion
+	}
+	if p, ok := h.(Previewer); ok {
+		i.Preview = p.PreviewMediaType()
+	} else {
+		i.Preview = ""
 	}
 	return i
 }

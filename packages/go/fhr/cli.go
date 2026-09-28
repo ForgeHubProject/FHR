@@ -25,6 +25,15 @@ type mergeOutput struct {
 	Conflicts []SemanticConflict `json:"conflicts,omitempty"` // omitted on clean merge
 }
 
+type previewInput struct {
+	Blob string `json:"blob"` // base64-encoded blob
+}
+
+type previewOutput struct {
+	MediaType string `json:"mediaType"`
+	Blob      string `json:"blob"` // base64-encoded preview
+}
+
 // cliError is a failure the protocol reports on stderr as {"error": "..."}.
 type cliError struct{ err error }
 
@@ -34,9 +43,9 @@ type cliError struct{ err error }
 // exported so the protocol can be exercised in-process (and under GOOS=js,
 // where the wasm tests run it too).
 func RunCLI(h Handler, info Info, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	info = info.withDefaults()
+	info = info.withDefaults(h)
 	if len(args) < 1 {
-		fmt.Fprintf(stderr, "usage: %s <match|diff|merge|info> [filepath]\n", info.binaryName())
+		fmt.Fprintf(stderr, "usage: %s <match|diff|merge|%sinfo> [filepath]\n", info.binaryName(), previewUsage(info))
 		return 1
 	}
 
@@ -53,6 +62,9 @@ func RunCLI(h Handler, info Info, args []string, stdin io.Reader, stdout, stderr
 
 	case "merge":
 		out, fail = cliMerge(h, stdin)
+
+	case "preview":
+		out, fail = cliPreview(h, info, stdin)
 
 	case "info":
 		out = info
@@ -119,6 +131,38 @@ func cliMerge(h Handler, stdin io.Reader) (any, *cliError) {
 		out.Conflicts = ci.Conflicts
 	}
 	return out, nil
+}
+
+func cliPreview(h Handler, info Info, stdin io.Reader) (any, *cliError) {
+	p, ok := h.(Previewer)
+	if !ok {
+		return nil, &cliError{errNoPreview(info)}
+	}
+	var inp previewInput
+	if err := json.NewDecoder(stdin).Decode(&inp); err != nil {
+		return nil, &cliError{err}
+	}
+	blob, err := decodeBlob("input", inp.Blob)
+	if err != nil {
+		return nil, &cliError{err}
+	}
+	out, err := p.Preview(blob)
+	if err != nil {
+		return nil, &cliError{err}
+	}
+	return previewOutput{MediaType: p.PreviewMediaType(), Blob: base64.StdEncoding.EncodeToString(out)}, nil
+}
+
+func errNoPreview(info Info) error {
+	return fmt.Errorf("%s has no preview: the format renders from its own bytes", info.ID)
+}
+
+// previewUsage lists the preview subcommand only for handlers that have one.
+func previewUsage(info Info) string {
+	if info.Preview == "" {
+		return ""
+	}
+	return "preview|"
 }
 
 func decodeBlob(side, s string) (Blob, error) {
