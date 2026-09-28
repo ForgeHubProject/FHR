@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'packages/handler-ipynb/**'
+      # The shared Go SDK is compiled into this handler's binaries.
+      - 'packages/go/**'
       - 'packages/renderer-ipynb/**'
       - 'packages/renderer-sdk/**'
       - 'packages/types/**'

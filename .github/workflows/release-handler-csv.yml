@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'packages/handler-csv/**'
+      # The shared Go SDK is compiled into this handler's binaries.
+      - 'packages/go/**'
       - 'packages/renderer-csv/**'
       - 'packages/renderer-sdk/**'
       - 'packages/types/**'
