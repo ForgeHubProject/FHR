@@ -9,15 +9,20 @@ import (
 )
 
 // Run registers the handler's api as a JS global (GlobalName) and keeps the Go
-// runtime alive so the exported callbacks remain invokable. Every call takes
-// Uint8Arrays and answers a JSON string — {"error": "..."} on failure — which is
-// the contract ForgeHub's wasm-worker.cjs and browserWasm.ts parse.
+// runtime alive so the exported callbacks remain invokable. diff, merge and
+// info take Uint8Arrays and answer a JSON string — {"error": "..."} on failure —
+// which is the contract ForgeHub's wasm-worker.cjs and browserWasm.ts parse.
+// preview, registered only for a Previewer, answers an object instead (see
+// wasmPreview), so a large preview never round-trips through base64 and JSON.
 func Run(h Handler, info Info) {
-	info = info.withDefaults()
+	info = info.withDefaults(h)
 	api := js.Global().Get("Object").New()
 	api.Set("diff", js.FuncOf(func(_ js.Value, args []js.Value) any { return wasmDiff(h, args) }))
 	api.Set("merge", js.FuncOf(func(_ js.Value, args []js.Value) any { return wasmMerge(h, args) }))
 	api.Set("info", js.FuncOf(func(_ js.Value, _ []js.Value) any { return jsResult(info) }))
+	if p, ok := h.(Previewer); ok {
+		api.Set("preview", js.FuncOf(func(_ js.Value, args []js.Value) any { return wasmPreview(p, args) }))
+	}
 	js.Global().Set(GlobalName(info.ID), api)
 	select {}
 }
@@ -71,4 +76,24 @@ func wasmMerge(h Handler, args []js.Value) any {
 		out.Conflicts = ci.Conflicts
 	}
 	return jsResult(out)
+}
+
+// preview(blob): one Uint8Array → {mediaType, blob: Uint8Array} on success, or
+// {error} — an object either way, so callers test `.error` rather than parse.
+func wasmPreview(p Previewer, args []js.Value) any {
+	result := js.Global().Get("Object").New()
+	if len(args) < 1 {
+		result.Set("error", "preview(blob) requires one Uint8Array argument")
+		return result
+	}
+	out, err := p.Preview(bytesFromArg(args[0]))
+	if err != nil {
+		result.Set("error", err.Error())
+		return result
+	}
+	arr := js.Global().Get("Uint8Array").New(len(out))
+	js.CopyBytesToJS(arr, out)
+	result.Set("mediaType", p.PreviewMediaType())
+	result.Set("blob", arr)
+	return result
 }
