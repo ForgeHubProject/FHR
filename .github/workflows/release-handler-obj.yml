@@ -137,16 +137,26 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Patch build SHA in manifest.toml
+      # One step, re-applied from scratch on every attempt: several handlers
+      # release at once whenever a shared package changes, and their lines are
+      # adjacent in manifest.toml, so a bare push is rejected and a rebase
+      # conflicts. Each attempt starts from the current main and rewrites only
+      # this handler's line (same as the other release workflows, #78).
+      - name: Bump build SHA in manifest.toml
         env:
           SHA: ${{ needs.release.outputs.sha }}
         run: |
-          sed -i 's/\(handler = "obj", build = "\)[^"]*"/\1'"$SHA"'"/' manifest.toml
-
-      - name: Commit updated manifest
-        run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add manifest.toml
-          git diff --cached --quiet || git commit -m "chore: update obj build SHA to ${{ needs.release.outputs.sha }}"
-          git push
+          for attempt in 1 2 3 4 5; do
+            git fetch --quiet origin main
+            git reset --quiet --hard origin/main
+            sed -i 's/\(handler = "obj", build = "\)[^"]*"/\1'"$SHA"'"/' manifest.toml
+            git add manifest.toml
+            git diff --cached --quiet && exit 0
+            git commit --quiet -m "chore: update obj build SHA to $SHA"
+            git push --quiet origin HEAD:main && exit 0
+            sleep $((attempt * 5))
+          done
+          echo "could not push the manifest bump after 5 attempts" >&2
+          exit 1
