@@ -463,13 +463,45 @@ exit:   0 on success
            → Forge falls back to blob-pick, same as plain git
 ```
 
+**`forge-handler-<name> preview`** *(optional — only handlers that declare `preview` in `info`)*
+```
+stdin:  { "blob": "<base64>" }
+stdout: { "mediaType": "model/gltf-binary", "blob": "<base64>" }
+exit:   0 on success, 1 with { "error": "…" } on failure
+```
+
+A format the browser cannot draw from its own bytes converts one blob into one
+it can. The preview is derived data: a host computes it on demand and may cache
+it keyed by blob id and handler build, and never stores it beside the source
+file — the file in the repository stays the only source of truth.
+
+For the 3D family the preview is a GLB, and the handler that produces it
+computes its diff over the *same* glTF document (packages/go/scene
+`DiffDocuments`). The element names in the preview are therefore exactly the
+names the diff's change paths address (`nodes/Sensor#1` is the second node named
+`Sensor` in the preview, by the engine's duplicate-name rule), so the gltf-scene
+viewer can mount any member's preview with no per-format mapping.
+
 **`forge-handler-<name> info`** *(optional but recommended)*
 ```
-stdout: { "id": "gltf-scene", "version": "1.0.0", "formats": [".glb", ".gltf"], "protocol": "1.0" }
+stdout: { "id": "obj", "formats": [".obj"], "protocol": "1.0",
+          "capabilities": { "semanticCompare": true, "semanticMerge": false },
+          "preview": "model/gltf-binary" }
 exit:   0 always
 ```
 
+`capabilities` and `preview` are optional; `preview` is the media type the
+`preview` call produces and is present only for handlers that have one.
+
 Blobs are base64-encoded to keep the transport pure JSON. The same binary works as both a CLI subprocess and a WASM module.
+
+**WASM entry points.** A `GOOS=js` build registers one global whose name starts
+with `__forgeHandler` (`__forgeHandlerGltfScene`) holding the same calls:
+`diff(base, head)`, `merge(base, ours, theirs)` and `info()` take `Uint8Array`s
+and return a JSON string (`{"error": "…"}` on failure); `preview(blob)`, when
+present, returns an object — `{ mediaType, blob: Uint8Array }` or `{ error }` —
+so a large preview never round-trips through base64. Go handlers get all of
+this, and the subprocess protocol above, from `packages/go/fhr`.
 
 ---
 

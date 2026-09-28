@@ -163,3 +163,55 @@ func TestGlobalName(t *testing.T) {
 		}
 	}
 }
+
+// previewStub is a stub that also converts: its preview is the input reversed.
+type previewStub struct{ stub }
+
+func (p *previewStub) PreviewMediaType() string { return MediaTypeGLB }
+
+func (p *previewStub) Preview(blob Blob) (Blob, error) {
+	if string(blob) == "boom" {
+		return nil, errors.New("parsing: boom")
+	}
+	out := make(Blob, len(blob))
+	for i, b := range blob {
+		out[len(blob)-1-i] = b
+	}
+	return out, nil
+}
+
+func TestPreview(t *testing.T) {
+	p := &previewStub{}
+
+	code, out, _ := run(t, p, `{"blob":"`+b64("abc")+`"}`, "preview")
+	if code != 0 || out != `{"mediaType":"model/gltf-binary","blob":"`+b64("cba")+`"}`+"\n" {
+		t.Fatalf("preview: code=%d out=%q", code, out)
+	}
+
+	code, _, errOut := run(t, p, `{"blob":"`+b64("boom")+`"}`, "preview")
+	if code != 1 || errOut != `{"error":"parsing: boom"}`+"\n" {
+		t.Fatalf("preview error: code=%d err=%q", code, errOut)
+	}
+
+	// info and usage advertise preview only for a Previewer — declared from the
+	// implementation, so a stale Info cannot claim one the handler lacks.
+	code, out, _ = run(t, p, "", "info")
+	if code != 0 || out != `{"id":"stub","formats":[".stub"],"protocol":"1.0","preview":"model/gltf-binary"}`+"\n" {
+		t.Fatalf("info: code=%d out=%q", code, out)
+	}
+	_, _, errOut = run(t, p, "")
+	if errOut != "usage: forge-handler-stub <match|diff|merge|preview|info> [filepath]\n" {
+		t.Fatalf("usage: %q", errOut)
+	}
+	var o bytes.Buffer
+	lying := Info{ID: "stub", Formats: []string{".stub"}, Preview: MediaTypeGLB}
+	RunCLI(&stub{}, lying, []string{"info"}, strings.NewReader(""), &o, &bytes.Buffer{})
+	if strings.Contains(o.String(), "preview") {
+		t.Fatalf("a handler without Preview must not declare one: %q", o.String())
+	}
+
+	code, _, errOut = run(t, &stub{}, `{"blob":""}`, "preview")
+	if code != 1 || errOut != `{"error":"stub has no preview: the format renders from its own bytes"}`+"\n" {
+		t.Fatalf("no preview: code=%d err=%q", code, errOut)
+	}
+}
