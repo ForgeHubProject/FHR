@@ -57,6 +57,7 @@ import {
   resolveMaterialPrimitives,
   resolveMeshNodes,
   resolveNodeIndex,
+  resolveNodeName,
   type NameIndex,
 } from "./node-index.js";
 import { disposeTree, type DisposeReport } from "./dispose.js";
@@ -339,7 +340,12 @@ export function buildOverlay(input: OverlayInput): Overlay {
     // A renamed node is called something else in the previous version, so the
     // base file has to be looked up under the old name — otherwise the ghost and
     // the motion vector for "renamed and moved" silently find nothing.
-    const inBase = base ? resolveNodeIndex(base.index, change.oldName ?? change.name) : null;
+    // A rename's previous name is a bare name, not a key: resolve it as one.
+    const inBase = base
+      ? change.oldName !== undefined
+        ? resolveNodeName(base.index, change.oldName)
+        : resolveNodeIndex(base.index, change.name)
+      : null;
     if (inHead?.ambiguous) note(ambiguousNameMessage(change.name, inHead.all.length));
     if (change.oldName !== undefined && inBase?.ambiguous) {
       note(ambiguousPreviousNameMessage(change.oldName, inBase.all.length));
