@@ -614,7 +614,7 @@ export function buildOverlay(input: OverlayInput): Overlay {
     const one = stats.unpaintable === 1;
     notes.push(
       `${stats.unpaintable} ${one ? "change" : "changes"} in the list ${one ? "has" : "have"} no place on the ` +
-        `model — an animation edit, or geometry nothing in the scene draws. ${one ? "It is" : "They are"} ` +
+        `model — an animation edit, a file-level detail, or geometry nothing in the scene draws. ${one ? "It is" : "They are"} ` +
         `listed but not highlighted here.`,
     );
   }
