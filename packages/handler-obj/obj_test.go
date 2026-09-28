@@ -252,18 +252,44 @@ func TestMtlLibChange(t *testing.T) {
 // A statement the handler does not interpret must still surface when it
 // changes: "no changes" for a changed file is the one answer never allowed.
 func TestUninterpretedStatementsSurface(t *testing.T) {
-	a := strings.Replace(quad, "f 1 2 3 4", "s 1\nf 1 2 3 4", 1)
-	b := strings.Replace(quad, "f 1 2 3 4", "s off\nf 1 2 3 4", 1)
+	a := strings.Replace(quad, "f 1 2 3 4", "lod 1\nf 1 2 3 4", 1)
+	b := strings.Replace(quad, "f 1 2 3 4", "lod 2\nf 1 2 3 4", 1)
 	c := find(diffOf(t, a, b), "other")
-	if c == nil || c.Kind != fhr.Modified || c.After != "s ×1 (content changed)" {
-		t.Fatalf("smoothing change = %+v", c)
+	if c == nil || c.Kind != fhr.Modified || c.After != "lod ×1 (content changed)" {
+		t.Fatalf("lod change = %+v", c)
 	}
 	c = find(diffOf(t, quad, a), "other")
-	if c == nil || c.Kind != fhr.Added || c.After != "s ×1" {
-		t.Fatalf("added smoothing = %+v", c)
+	if c == nil || c.Kind != fhr.Added || c.After != "lod ×1" {
+		t.Fatalf("added lod = %+v", c)
 	}
 	if find(diffOf(t, a, a), "other") != nil {
 		t.Fatal("unchanged statements must not be reported")
+	}
+}
+
+// Smoothing groups are OBJ-only (glTF has none), so they are diffed beside the
+// engine, per object/group, under that node's own path.
+func TestSmoothingChangesAreReportedPerGroup(t *testing.T) {
+	two := quad + "o Lid\nv 0 0 1\nv 1 0 1\nv 1 1 1\nf 5 6 7\n"
+	smooth := strings.Replace(two, "o Lid", "o Lid\ns 1", 1)
+	c := find(diffOf(t, two, smooth), "nodes/Lid/smoothing")
+	if c == nil || c.Kind != fhr.Added || c.After != "1 (1 face)" {
+		t.Fatalf("smoothing added = %+v in %v", c, flat(diffOf(t, two, smooth)))
+	}
+	mustLack(t, diffOf(t, two, smooth), "nodes/Cube/smoothing", "other")
+
+	c = find(diffOf(t, smooth, two), "nodes/Lid/smoothing")
+	if c == nil || c.Kind != fhr.Removed {
+		t.Fatalf("smoothing removed = %+v", c)
+	}
+	// `s off` and `s 0` are the absence of smoothing, not a change.
+	if got := flat(diffOf(t, two, strings.Replace(two, "o Lid", "o Lid\ns off", 1))); len(got) != 0 {
+		t.Fatalf("s off is not a change: %v", got)
+	}
+	// A change of group number on the same faces is a modification.
+	c = find(diffOf(t, smooth, strings.Replace(smooth, "s 1", "s 2", 1)), "nodes/Lid/smoothing")
+	if c == nil || c.Kind != fhr.Modified || c.Before != "1 (1 face)" || c.After != "2 (1 face)" {
+		t.Fatalf("smoothing modified = %+v", c)
 	}
 }
 
@@ -387,12 +413,6 @@ func TestMatch(t *testing.T) {
 		if h.Match(path) != want {
 			t.Errorf("Match(%q) = %v", path, !want)
 		}
-	}
-}
-
-func TestMergeIsUnsupported(t *testing.T) {
-	if _, _, err := (&Handler{}).Merge(nil, nil, nil); err == nil {
-		t.Fatal("want an error")
 	}
 }
 

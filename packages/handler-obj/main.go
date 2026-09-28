@@ -8,6 +8,6 @@ func main() {
 	fhr.Run(&Handler{}, fhr.Info{
 		ID:           "obj",
 		Formats:      []string{".obj"},
-		Capabilities: &fhr.Capabilities{SemanticCompare: true, SemanticMerge: false},
+		Capabilities: &fhr.Capabilities{SemanticCompare: true, SemanticMerge: true},
 	})
 }

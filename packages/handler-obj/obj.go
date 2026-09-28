@@ -7,6 +7,10 @@
 // mtllib references and any statements it does not interpret. The same
 // document, given a viewable surface and encoded as GLB, is the preview a
 // viewer draws, so a change path always names a node that exists in it.
+//
+// Merge works on OBJ itself, not on the converted glTF — a merged glTF could
+// only be written back as triangles — per object/group, and writes a fresh
+// file with every index recomputed (merge.go, write.go).
 package main
 
 import (
@@ -41,16 +45,11 @@ func (h *Handler) Diff(base, head fhr.Blob) (fhr.StructuredDiff, error) {
 	}
 
 	changes := collapseGroupTwins(scene.DiffDocuments(toGLTF(a), toGLTF(b)))
+	changes = addSmoothing(changes, a, b)
 	relabel(changes)
 	changes = append(changes, diffMtlLibs(a.mtlLibs, b.mtlLibs)...)
 	changes = append(changes, diffUninterpreted(a, b)...)
 	return fhr.StructuredDiff{Version: "1.0", Format: "obj", Changes: changes}, nil
-}
-
-// Merge is not supported: a merged glTF cannot be written back as the OBJ it
-// came from, and a text merge of OBJ is not semantic.
-func (h *Handler) Merge(_, _, _ fhr.Blob) (fhr.Blob, *fhr.ConflictInfo, error) {
-	return nil, nil, fmt.Errorf("semantic merge is not yet supported for obj")
 }
 
 // PreviewMediaType is the GLB the preview produces.
@@ -154,6 +153,140 @@ func collapseGroupTwins(changes []fhr.DiffChange) []fhr.DiffChange {
 		}
 	}
 	return out
+}
+
+// addSmoothing reports smoothing-group changes per object/group. glTF has no
+// smoothing groups, so the engine never sees them; they are diffed here and
+// hung under the engine's row for that node (`nodes/Top/smoothing`), keyed by
+// the same node keys its paths use. A node that only exists on one side is
+// already reported whole, so only nodes present on both sides are compared.
+func addSmoothing(changes []fhr.DiffChange, a, b *objFile) []fhr.DiffChange {
+	aNodes, aKeys := flatten(a)
+	bNodes, bKeys := flatten(b)
+	aByKey := make(map[string]*objNode, len(aNodes))
+	for i, n := range aNodes {
+		aByKey[aKeys[i]] = n
+	}
+
+	var rows []fhr.DiffChange
+	for i, bn := range bNodes {
+		an, ok := aByKey[bKeys[i]]
+		if !ok || smoothingSeq(an) == smoothingSeq(bn) {
+			continue
+		}
+		path := "nodes/" + escapeSegment(bKeys[i])
+		row := sideChange(path+"/smoothing", "smoothing", smoothingSummary(an), smoothingSummary(bn))
+		if row.Before == row.After {
+			// Same groups and counts, on different faces.
+			row.After = row.After.(string) + " (on other faces)"
+		}
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		return changes
+	}
+
+	nodesAt := -1
+	for i := range changes {
+		if changes[i].Path == "nodes" {
+			nodesAt = i
+		}
+	}
+	if nodesAt < 0 {
+		changes = append([]fhr.DiffChange{{Path: "nodes", Kind: fhr.Modified, Label: "nodes"}}, changes...)
+		nodesAt = 0
+	}
+	nodes := &changes[nodesAt]
+	for _, row := range rows {
+		parent := strings.TrimSuffix(row.Path, "/smoothing")
+		found := false
+		for i := range nodes.Children {
+			if nodes.Children[i].Path == parent {
+				nodes.Children[i].Children = append(nodes.Children[i].Children, row)
+				found = true
+				break
+			}
+		}
+		if !found {
+			nodes.Children = append(nodes.Children, fhr.DiffChange{
+				Path: parent, Kind: fhr.Modified, Label: unescapeSegment(strings.TrimPrefix(parent, "nodes/")),
+				Children: []fhr.DiffChange{row},
+			})
+		}
+	}
+	return changes
+}
+
+// smoothingSeq is a node's per-element smoothing, in element order: the
+// state a change is judged on.
+func smoothingSeq(n *objNode) string {
+	var b strings.Builder
+	for _, e := range n.elems {
+		b.WriteString(e.smooth)
+		b.WriteByte(0)
+	}
+	return b.String()
+}
+
+// smoothingSummary says what a node's faces are smoothed with, e.g.
+// "1 (6 faces)", "1 (4 faces), off (2 faces)"; "" when nothing is smoothed.
+func smoothingSummary(n *objNode) string {
+	var order []string
+	count := map[string]int{}
+	for _, e := range n.elems {
+		if count[e.smooth] == 0 {
+			order = append(order, e.smooth)
+		}
+		count[e.smooth]++
+	}
+	if len(order) == 0 || len(order) == 1 && order[0] == "" {
+		return ""
+	}
+	parts := make([]string, len(order))
+	for i, g := range order {
+		name := g
+		if g == "" {
+			name = "off"
+		}
+		unit := "faces"
+		if count[g] == 1 {
+			unit = "face"
+		}
+		parts[i] = fmt.Sprintf("%s (%d %s)", name, count[g], unit)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// flatten lists a file's nodes in document order — the order toGLTF writes
+// them — with the keys the engine gives them: the name, and `name#1`, `#2`, …
+// for repeats (packages/go/scene uniqueKeys).
+func flatten(f *objFile) ([]*objNode, []string) {
+	var nodes []*objNode
+	var walk func(n *objNode)
+	walk = func(n *objNode) {
+		nodes = append(nodes, n)
+		for _, c := range n.children {
+			walk(c)
+		}
+	}
+	for _, r := range f.roots {
+		walk(r)
+	}
+	keys := make([]string, len(nodes))
+	taken := make(map[string]bool, len(nodes))
+	for i, n := range nodes {
+		key := n.name
+		for dup := 1; taken[key]; dup++ {
+			key = fmt.Sprintf("%s#%d", n.name, dup)
+		}
+		taken[key] = true
+		keys[i] = key
+	}
+	return nodes, keys
+}
+
+func unescapeSegment(s string) string {
+	return strings.NewReplacer("%2F", "/", "%25", "%").Replace(s)
 }
 
 // escapeSegment is the engine's path-segment escaping (SPEC.md §7 change

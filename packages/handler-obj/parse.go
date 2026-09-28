@@ -29,23 +29,36 @@ type objFile struct {
 	hasColor  []bool
 	uvs       [][2]float64
 	normals   [][3]float64
+	// The statements' own text after the keyword, fields single-spaced, per
+	// pool entry — what the merge writes back, so a vertex it carries over is
+	// the same line it read rather than a reformatted float.
+	posText, uvText, normalText []string
+
+	// Comment lines before the first statement: the exporter banner. A merged
+	// file keeps its current side's.
+	header []string
 
 	roots   []*objNode
 	mtlLibs []string // mtllib references, in order of first appearance
 
-	// Statements this handler does not interpret (smoothing groups, free-form
-	// geometry, …). They are not diffed semantically, but a change to them must
-	// not read as "no change" — see diffUninterpreted.
+	// Statements this handler does not interpret (free-form geometry, display
+	// attributes, …). They are not diffed semantically, but a change to them
+	// must not read as "no change" — see diffUninterpreted — and a merge
+	// refuses files that carry them, since it could not place them.
 	other     map[string]int // keyword → count
 	otherHash uint64         // hash of the uninterpreted lines, in order
 }
 
 // objNode is one object or group and the elements assigned to it.
 type objNode struct {
-	name     string
-	elems    []objElem
-	children []*objNode
-	byName   map[string]*objNode // children by name
+	name string
+	// stmt is the statement that opened it — "o", "g", or "" for the implicit
+	// node holding elements that precede any o/g — and rawName its argument
+	// text, so a merge writes the same statement back (a bare `g` stays bare).
+	stmt, rawName string
+	elems         []objElem
+	children      []*objNode
+	byName        map[string]*objNode // children by name
 }
 
 type elemKind uint8
@@ -61,26 +74,26 @@ const (
 type objElem struct {
 	kind     elemKind
 	material string
+	smooth   string // smoothing group in effect; "" is off (`s off`, `s 0`, or none)
 	refs     []vref
 }
 
 type vref struct{ v, vt, vn int }
 
 // newChild appends a child node without making it reachable by name.
-func (n *objNode) newChild(name string) *objNode {
-	c := &objNode{name: name, byName: map[string]*objNode{}}
+func (n *objNode) newChild(name, stmt, rawName string) *objNode {
+	c := &objNode{name: name, stmt: stmt, rawName: rawName, byName: map[string]*objNode{}}
 	n.children = append(n.children, c)
 	return c
 }
 
 // child returns the named child, creating it on first use.
-func (n *objNode) child(name string) *objNode {
+func (n *objNode) child(name, stmt, rawName string) *objNode {
 	if c, ok := n.byName[name]; ok {
 		return c
 	}
-	c := &objNode{name: name, byName: map[string]*objNode{}}
+	c := n.newChild(name, stmt, rawName)
 	n.byName[name] = c
-	n.children = append(n.children, c)
 	return c
 }
 
@@ -101,6 +114,8 @@ func parseOBJ(blob []byte) (*objFile, error) {
 	var object *objNode                            // current `o`, nil before the first
 	var target *objNode                            // node receiving elements
 	material := ""
+	smooth := ""
+	statements := false // seen anything but comments yet
 	h := fnv.New64a()
 
 	lines := strings.Split(string(blob), "\n")
@@ -113,8 +128,12 @@ func parseOBJ(blob []byte) (*objFile, error) {
 			line = strings.TrimSuffix(line, "\\") + " " + strings.TrimSpace(lines[i])
 		}
 		if line == "" || line[0] == '#' {
+			if !statements && line != "" {
+				f.header = append(f.header, line)
+			}
 			continue
 		}
+		statements = true
 		fields := strings.Fields(line)
 		kw, args := fields[0], fields[1:]
 		fail := func(format string, a ...any) error {
@@ -131,6 +150,7 @@ func parseOBJ(blob []byte) (*objFile, error) {
 				return nil, fail("%v", err)
 			}
 			f.positions = append(f.positions, [3]float64{p[0], p[1], p[2]})
+			f.posText = append(f.posText, strings.Join(args, " "))
 			// `v x y z r g b` is the de-facto vertex-color extension; a 4th
 			// value alone is the rational weight w, which meshes do not use.
 			var c [3]float64
@@ -158,6 +178,7 @@ func parseOBJ(blob []byte) (*objFile, error) {
 				uv = append(uv, 0)
 			}
 			f.uvs = append(f.uvs, [2]float64{uv[0], uv[1]})
+			f.uvText = append(f.uvText, strings.Join(args, " "))
 
 		case "vn":
 			if len(args) < 3 {
@@ -168,23 +189,33 @@ func parseOBJ(blob []byte) (*objFile, error) {
 				return nil, fail("%v", err)
 			}
 			f.normals = append(f.normals, [3]float64{nv[0], nv[1], nv[2]})
+			f.normalText = append(f.normalText, strings.Join(args, " "))
 
 		case "o":
-			object = top.newChild(nameOf(args))
+			object = top.newChild(nameOf(args), "o", strings.Join(args, " "))
 			target = object
 
 		case "g":
 			// `g` with several names puts the elements in several groups; OBJ
 			// viewers (three.js's OBJLoader among them) treat the whole list as
 			// one name, and so does this handler.
+			raw := strings.Join(args, " ")
 			if object != nil {
-				target = object.child(nameOf(args))
+				target = object.child(nameOf(args), "g", raw)
 			} else {
-				target = top.child(nameOf(args))
+				target = top.child(nameOf(args), "g", raw)
 			}
 
 		case "usemtl":
 			material = strings.Join(args, " ")
+
+		case "s":
+			// Smoothing groups apply to the faces that follow. "off" and "0" are
+			// the same state as no statement at all.
+			smooth = strings.Join(args, " ")
+			if smooth == "off" || smooth == "0" {
+				smooth = ""
+			}
 
 		case "mtllib":
 			for _, lib := range args {
@@ -194,7 +225,7 @@ func parseOBJ(blob []byte) (*objFile, error) {
 			}
 
 		case "f", "l", "p":
-			e := objElem{material: material}
+			e := objElem{material: material, smooth: smooth}
 			minRefs := 3
 			switch kw {
 			case "l":
@@ -213,7 +244,7 @@ func parseOBJ(blob []byte) (*objFile, error) {
 				e.refs = append(e.refs, r)
 			}
 			if target == nil {
-				target = top.child(defaultNode)
+				target = top.child(defaultNode, "", "")
 			}
 			target.elems = append(target.elems, e)
 
