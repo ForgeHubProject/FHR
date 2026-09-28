@@ -1,4 +1,4 @@
-package main
+package scene
 
 // Tests for issue #47: stable identity across revisions — the authored
 // extras.fhr_uid convention and the conservative content-signature fallback that

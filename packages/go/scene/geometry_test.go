@@ -1,4 +1,4 @@
-package main
+package scene
 
 // Tests for issue #43: change detection *inside* a mesh. A mesh used to be
 // compared by name and primitive count only, so the commonest edit in a 3D
