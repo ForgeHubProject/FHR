@@ -1,10 +1,10 @@
-package main
+package scene
 
 import "github.com/forgehubproject/fhr/packages/go/fhr"
 
-// The wire types live in the shared fhr package; these aliases only keep the
-// handler's own code unqualified. They are the same types, so they cannot
-// drift from @fhr/types the way per-handler copies did.
+// The wire types live in the fhr package; these aliases keep the engine's code
+// unqualified. They are the same types, so scene.DiffChange and fhr.DiffChange
+// are interchangeable for callers.
 type (
 	Blob             = fhr.Blob
 	ChangeKind       = fhr.ChangeKind

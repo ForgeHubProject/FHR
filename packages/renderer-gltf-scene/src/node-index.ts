@@ -19,8 +19,9 @@ import { sceneRootName, type GltfDocument, type GltfNode } from "./gltf-parse.js
 
 /**
  * The display key the handler uses for a node: its name, or `node[i]` when the
- * name is absent or empty. Mirrors handler-gltf-scene's `nodeName`, and must
- * keep mirroring it — this is the contract the diff's labels are written in.
+ * name is absent or empty. Mirrors the scene engine's `nodeName`
+ * (packages/go/scene), and must keep mirroring it — this is the contract the
+ * diff's labels are written in.
  */
 export function nodeKey(node: Pick<GltfNode, "name"> | undefined, index: number): string {
   const name = node?.name;

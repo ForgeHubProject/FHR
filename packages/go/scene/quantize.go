@@ -1,4 +1,4 @@
-package main
+package scene
 
 // Quantized, canonically-ordered geometry digests — for MATCHING only (#42).
 //

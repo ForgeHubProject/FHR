@@ -7,7 +7,8 @@ on:
     branches: [main]
     paths:
       - 'packages/handler-gltf-scene/**'
-      # The shared Go SDK is compiled into this handler's binaries.
+      # The shared Go SDK and the scene engine (packages/go/scene) are this
+      # handler's code now; its own package is only the entry point.
       - 'packages/go/**'
       - 'packages/renderer-gltf-scene/**'
       - 'packages/renderer-sdk/**'

@@ -1,4 +1,4 @@
-package main
+package scene
 
 // Stable identity for scene entities: which element of the previous revision is
 // which element of the current one (issue #47).
