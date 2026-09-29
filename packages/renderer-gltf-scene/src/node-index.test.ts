@@ -7,6 +7,7 @@ import {
   nodeKey,
   normalizeName,
   resolveNodeIndex,
+  resolveNodeName,
 } from "./node-index.js";
 import type { EntityChange } from "./diff-map.js";
 import { buildGltf, toGlb } from "./glb-fixture.js";
@@ -77,12 +78,25 @@ describe("buildNameIndex / resolveNodeIndex", () => {
     expect(resolveNodeIndex(index, "node[2]").index).toBe(2);
   });
 
-  it("flags duplicate names, picking the first (the handler's node map does too)", () => {
+  it("keys duplicate names apart the way the engine does: Cube, then Cube#1", () => {
     const index = indexOf([{ name: "Cube" }, { name: "Other" }, { name: "Cube" }]);
-    const hit = resolveNodeIndex(index, "Cube");
-    expect(hit.index).toBe(0);
-    expect(hit.all).toEqual([0, 2]);
-    expect(hit.ambiguous).toBe(true);
+    expect(index.keyByIndex).toEqual(["Cube", "Other", "Cube#1"]);
+    expect(resolveNodeIndex(index, "Cube")).toMatchObject({ index: 0, all: [0], ambiguous: false });
+    expect(resolveNodeIndex(index, "Cube#1")).toMatchObject({ index: 2, all: [2], ambiguous: false });
+  });
+
+  it("resolves a rename's bare previous name, flagging duplicates as the guess they are", () => {
+    // A path says `Wheel` or `Wheel#1` and means one node; a rename's `before`
+    // says only "Wheel", which in this file could be either.
+    const index = indexOf([{ name: "Wheel" }, { name: "Wheel" }]);
+    expect(resolveNodeName(index, "Wheel")).toMatchObject({ index: 0, all: [0, 1], ambiguous: true });
+    expect(resolveNodeIndex(index, "Wheel")).toMatchObject({ index: 0, all: [0], ambiguous: false });
+    expect(resolveNodeName(index, "wheel")).toMatchObject({ via: "normalized" });
+  });
+
+  it("never lets a name that literally contains #1 take a duplicate's key", () => {
+    const index = indexOf([{ name: "Cube" }, { name: "Cube#1" }, { name: "Cube" }]);
+    expect(index.keyByIndex).toEqual(["Cube", "Cube#1", "Cube#2"]);
   });
 
   it("flags duplicates that only collide after normalisation", () => {

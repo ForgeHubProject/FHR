@@ -52,6 +52,13 @@ export type PrimitiveRef = { node: number; primitive: number };
 export type NameIndex = {
   /** Display key → node indices, document order. */
   byKey: Map<string, number[]>;
+  /**
+   * Raw node name → every node carrying it, document order. A diff *path*
+   * speaks keys (`byKey`, where duplicates are keyed apart), but a rename's
+   * previous name is the bare name — and when the previous version had two
+   * nodes of that name, which one was renamed is genuinely a guess.
+   */
+  byName: Map<string, number[]>;
   /** Normalised key → node indices, document order. */
   byNormalized: Map<string, number[]>;
   /**
@@ -95,9 +102,10 @@ export type Resolution = {
   /** Exact-key match, normalised match, or no match. */
   via: "key" | "normalized" | "none";
   /**
-   * More than one node carries this name. The handler's diff can only speak
-   * about the first (its node map keeps the first of a duplicate name), so a
-   * change on this name is ambiguous — worth telling the reviewer.
+   * The label matched more than one node, so which one the change meant is a
+   * guess — worth telling the reviewer. Only a *normalised* match can do this:
+   * duplicate names are not ambiguous, because the engine keys them apart
+   * (`Wheel`, `Wheel#1`, …) and this index keys them the same way.
    */
   ambiguous: boolean;
 };
@@ -128,12 +136,17 @@ const fallbackName = (kind: string) => (item: { name?: string } | undefined, i: 
 export function buildNameIndex(doc: GltfDocument): NameIndex {
   const nodes = doc.nodes ?? [];
   const byKey = new Map<string, number[]>();
+  const byName = new Map<string, number[]>();
   const byNormalized = new Map<string, number[]>();
-  const keyByIndex: string[] = new Array<string>(nodes.length);
+  // Duplicate node names are keyed apart exactly as the engine keys them — the
+  // first keeps the bare name, the rest take `#1`, `#2`, … in document order —
+  // so `nodes/Sensor#1` in a diff is the second node named Sensor, not a name
+  // this file lacks. (Meshes and materials below have always done this.)
+  const keyByIndex = uniqueKeys(nodes, (node, i) => nodeKey(node, i));
   for (let i = 0; i < nodes.length; i++) {
-    const key = nodeKey(nodes[i], i);
-    keyByIndex[i] = key;
+    const key = keyByIndex[i]!;
     push(byKey, key, i);
+    push(byName, nodeKey(nodes[i], i), i);
     push(byNormalized, normalizeName(key), i);
   }
 
@@ -170,6 +183,7 @@ export function buildNameIndex(doc: GltfDocument): NameIndex {
 
   return {
     byKey,
+    byName,
     byNormalized,
     keyByIndex,
     nodeCount: nodes.length,
@@ -295,6 +309,21 @@ export function resolveNodeIndex(index: NameIndex, label: string): Resolution {
     return { index: normalized[0]!, all: normalized, via: "normalized", ambiguous: normalized.length > 1 };
   }
   return MISS;
+}
+
+/**
+ * Resolve a node's bare *name* — a rename's previous name, which carries no
+ * duplicate key — to the first node of that name, flagging it ambiguous when
+ * the file has several. Falls back to key resolution for a name this file does
+ * not carry verbatim (a mangled label).
+ */
+export function resolveNodeName(index: NameIndex, name: string): Resolution {
+  if (name === "") return MISS;
+  const named = index.byName.get(name);
+  if (named && named.length > 0) {
+    return { index: named[0]!, all: named, via: "key", ambiguous: named.length > 1 };
+  }
+  return resolveNodeIndex(index, name);
 }
 
 /** The banner shown when a changed name can't be pinned to one node. */

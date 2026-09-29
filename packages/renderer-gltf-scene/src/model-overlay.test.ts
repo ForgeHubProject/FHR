@@ -175,16 +175,30 @@ describe("tinting the head model", () => {
     expect(overlay.stats.unmatched).toBe(0);
   });
 
-  it("warns when a changed name is ambiguous in the file", async () => {
+  it("pins a change to the duplicate the engine keyed it to, without a warning", async () => {
     const head = await side({
       nodes: [
         { name: "Cube", mesh: 0 },
         { name: "Cube", mesh: 0 },
       ],
     });
-    const overlay = buildOverlay({ head, changes: [change("Cube", "modified", ["mesh"])] });
-    expect(overlay.notes.join(" ")).toContain("2 nodes in this file are called \"Cube\"");
-    expect(overlay.stats.tinted).toBe(1); // the first, as the handler meant
+    // The engine keys the second "Cube" as "Cube#1" — a name, not a guess.
+    const overlay = buildOverlay({ head, changes: [change("Cube#1", "modified", ["mesh"])] });
+    expect(overlay.stats.tinted).toBe(1);
+    expect(overlay.stats.unmatched).toBe(0);
+    expect(overlay.notes.join(" ")).not.toContain("are called");
+  });
+
+  it("warns when a mangled label matches more than one node", async () => {
+    const head = await side({
+      nodes: [
+        { name: "Cube.001", mesh: 0 },
+        { name: "Cube 001", mesh: 0 },
+      ],
+    });
+    const overlay = buildOverlay({ head, changes: [change("cube-001", "modified", ["mesh"])] });
+    expect(overlay.notes.join(" ")).toContain("2 nodes in this file are called \"cube-001\"");
+    expect(overlay.stats.tinted).toBe(1);
   });
 });
 

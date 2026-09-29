@@ -85,16 +85,25 @@ export type LiveView = {
   toggle3d(): void;
 };
 
-/** Blob identity: what makes a re-fetch and a re-parse unavoidable. */
+/** Blob identity: what makes a re-fetch and a re-parse unavoidable. Previews
+ *  count too — for a format drawn from its handler's preview, they are the
+ *  geometry. */
 function blobKey(props: MountProps): string {
   const b = props.blobs;
-  return [b?.base?.url, b?.head?.url, b?.ours?.url, b?.theirs?.url].join("|");
+  const p = props.previews;
+  return [b?.base?.url, b?.head?.url, b?.ours?.url, b?.theirs?.url, p?.base?.url, p?.head?.url].join("|");
 }
 
+/**
+ * `mountScene` is null when there is no geometry to draw — a format that draws
+ * its handler's preview, on a host that did not provide one. The change tree
+ * still renders; the "View in 3D" toggle is left out rather than offered and
+ * then failed, and "view" mode says what is missing.
+ */
 export function createLiveView(
   container: HTMLElement,
   initial: MountProps,
-  mountScene: SceneMounter,
+  mountScene: SceneMounter | null,
 ): LiveView {
   const doc = container.ownerDocument;
   let props = initial;
@@ -173,8 +182,15 @@ export function createLiveView(
 
   // ── "view" mode: a single snapshot, so the scene *is* the view ───────────────
   if (props.mode === "view") {
+    if (!mountScene) {
+      const note = doc.createElement("div");
+      note.style.cssText = "padding:12px 4px;font:13px ui-sans-serif,system-ui;color:#8b949e";
+      note.textContent = "No 3D preview is available for this file here.";
+      container.appendChild(note);
+      return view;
+    }
     const host = openViewport(container, doc);
-    void attachScene(host);
+    void attachScene(host, mountScene);
     return view;
   }
 
@@ -187,7 +203,8 @@ export function createLiveView(
     onStep: (delta) => view.step(delta),
   });
   applyPalette(container);
-  if (props.mode !== "diff") return view;
+  if (props.mode !== "diff" || !mountScene) return view;
+  const mountDiffScene = mountScene;
 
   // ── the "View in 3D" toggle ──────────────────────────────────────────────────
   const bar = doc.createElement("div");
@@ -233,7 +250,7 @@ export function createLiveView(
     // from the other end: too short to work in on a large display, too tall to fit
     // a laptop's window, and unable to tell the two apart.
     host.style.cssText = viewportFillCss(0) + ";margin-top:8px;border-radius:8px;overflow:hidden";
-    void attachScene(host).then((ok) => {
+    void attachScene(host, mountDiffScene).then((ok) => {
       button.textContent = ok ? "Hide 3D" : "View in 3D";
     });
   };
@@ -243,7 +260,7 @@ export function createLiveView(
   return view;
 
   /** Mount the scene into `host`, wire its picks, and hand it the selection. */
-  async function attachScene(host: HTMLElement): Promise<boolean> {
+  async function attachScene(host: HTMLElement, mountScene: SceneMounter): Promise<boolean> {
     const status = doc.createElement("div");
     status.style.cssText = "padding:12px 4px;font:13px ui-sans-serif,system-ui;color:#8b949e";
     status.textContent = "Loading 3D scene…";

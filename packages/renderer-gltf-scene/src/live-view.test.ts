@@ -332,6 +332,37 @@ describe("createLiveView — the 3D half", () => {
 // about that is which sizing rule each of the two viewports is given — the
 // heights themselves are the browser's arithmetic, and viewport-fill.ts holds
 // the decision behind them.
+describe("createLiveView — nothing to draw", () => {
+  // A format drawn from its handler's preview, on a host that provided none
+  // (scene-renderer.ts `geometry` → undefined): the tree is the whole view.
+  const bare = (mode: MountProps["mode"]) => {
+    const doc = createFakeDocument();
+    const container = doc.createElement("div");
+    const view = createLiveView(asElement(container), { mode, diff }, null);
+    return { container, view };
+  };
+
+  it("renders the change tree and offers no 3D toggle it could not honour", () => {
+    const { container, view } = bare("diff");
+    expect(container.byClass("fhr-diff").length).toBe(1);
+    expect(container.descendants().some((e) => e.tagName === "BUTTON" && e.className === "")).toBe(false);
+    view.toggle3d();
+    expect(view.scene).toBeNull();
+  });
+
+  it("says what is missing in view mode instead of an empty viewport", () => {
+    const { container } = bare("view");
+    expect(container.allText()).toContain("No 3D preview is available");
+  });
+
+  it("still re-draws when a preview arrives, since previews are geometry", () => {
+    const { view } = bare("diff");
+    const prev: MountProps = { mode: "diff", diff };
+    const next: MountProps = { ...prev, previews: { head: { url: "/head.glb", size: 1 } } };
+    expect(view.update(next, prev)).toBe(false);
+  });
+});
+
 describe("createLiveView — how much room the scene gets", () => {
   it("fills the container in view mode, where the scene is the whole picture", () => {
     // The fake container reports a height, which is the case a host that lays
