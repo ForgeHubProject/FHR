@@ -25,6 +25,12 @@ type mergeOutput struct {
 	Conflicts []SemanticConflict `json:"conflicts,omitempty"` // omitted on clean merge
 }
 
+type applyChoicesInput struct {
+	Merged string   `json:"merged"` // base64: the merge's result, ours at every conflict
+	Theirs string   `json:"theirs"` // base64
+	Take   []string `json:"take"`   // conflict paths to take from theirs
+}
+
 type previewInput struct {
 	Blob string `json:"blob"` // base64-encoded blob
 }
@@ -45,7 +51,7 @@ type cliError struct{ err error }
 func RunCLI(h Handler, info Info, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	info = info.withDefaults(h)
 	if len(args) < 1 {
-		fmt.Fprintf(stderr, "usage: %s <match|diff|merge|%sinfo> [filepath]\n", info.binaryName(), previewUsage(info))
+		fmt.Fprintf(stderr, "usage: %s <match|diff|merge|%s%sinfo> [filepath]\n", info.binaryName(), applyUsage(h), previewUsage(info))
 		return 1
 	}
 
@@ -65,6 +71,9 @@ func RunCLI(h Handler, info Info, args []string, stdin io.Reader, stdout, stderr
 
 	case "preview":
 		out, fail = cliPreview(h, info, stdin)
+
+	case "apply-choices":
+		out, fail = cliApplyChoices(h, info, stdin)
 
 	case "info":
 		out = info
@@ -153,8 +162,42 @@ func cliPreview(h Handler, info Info, stdin io.Reader) (any, *cliError) {
 	return previewOutput{MediaType: p.PreviewMediaType(), Blob: base64.StdEncoding.EncodeToString(out)}, nil
 }
 
+func cliApplyChoices(h Handler, info Info, stdin io.Reader) (any, *cliError) {
+	a, ok := h.(ChoiceApplier)
+	if !ok {
+		return nil, &cliError{fmt.Errorf("%s cannot apply conflict choices", info.ID)}
+	}
+	var inp applyChoicesInput
+	if err := json.NewDecoder(stdin).Decode(&inp); err != nil {
+		return nil, &cliError{err}
+	}
+	merged, err := decodeBlob("merged", inp.Merged)
+	if err != nil {
+		return nil, &cliError{err}
+	}
+	theirs, err := decodeBlob("theirs", inp.Theirs)
+	if err != nil {
+		return nil, &cliError{err}
+	}
+	out, err := a.ApplyChoices(merged, theirs, inp.Take)
+	if err != nil {
+		return nil, &cliError{err}
+	}
+	return struct {
+		Blob string `json:"blob"`
+	}{base64.StdEncoding.EncodeToString(out)}, nil
+}
+
 func errNoPreview(info Info) error {
 	return fmt.Errorf("%s has no preview: the format renders from its own bytes", info.ID)
+}
+
+// applyUsage lists the apply-choices subcommand only for handlers that have it.
+func applyUsage(h Handler) string {
+	if _, ok := h.(ChoiceApplier); ok {
+		return "apply-choices|"
+	}
+	return ""
 }
 
 // previewUsage lists the preview subcommand only for handlers that have one.
