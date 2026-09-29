@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Box3, PerspectiveCamera, Vector3 } from "three";
-import { createFlyTo, DEFAULT_FLY_MS, frameBox, smoothstep, type OrbitLike } from "./flyto.js";
+import { createFlyTo, DEFAULT_FLY_MS, frameBox, OPENING_DIRECTION, smoothstep, type OrbitLike } from "./flyto.js";
 
 /** OrbitControls' surface as far as the tween is concerned. */
 function fakeControls(): OrbitLike & { updates: number } {
@@ -59,6 +59,15 @@ describe("frameBox", () => {
     expect(framing.position.z).toBeGreaterThan(0);
   });
 
+  it("frames from a given direction instead of the current one", () => {
+    const camera = new PerspectiveCamera(50, 1.5, 0.1, 5000);
+    camera.position.set(0, 0, 50);
+    const framing = frameBox(boxAt(new Vector3()), camera, undefined, new Vector3(1, 0, 0));
+    expect(framing.position.x).toBeGreaterThan(0);
+    expect(framing.position.y).toBeCloseTo(0);
+    expect(framing.position.z).toBeCloseTo(0);
+  });
+
   it("leaves the camera alone for an empty box", () => {
     const camera = new PerspectiveCamera();
     camera.position.set(1, 2, 3);
@@ -67,6 +76,31 @@ describe("frameBox", () => {
 });
 
 describe("createFlyTo", () => {
+  // The opening view must not depend on where the model sits. The camera
+  // starts at the origin, and "its current direction" was the direction from
+  // the model back to the origin: top-down for a model above it, and edge-on
+  // for a flat model beside it — which drew nothing at all.
+  it("opens on the three-quarter view wherever the model sits", () => {
+    for (const center of [new Vector3(0, 0.4, 0), new Vector3(4.5, 0.5, 0), new Vector3(-3, 0, 7)]) {
+      const camera = new PerspectiveCamera(50, 1.5, 0.1, 5000);
+      const flyTo = createFlyTo(camera, fakeControls());
+      flyTo.snap(boxAt(center));
+      const dir = camera.position.clone().sub(center).normalize();
+      expect(dir.toArray().map((v) => +v.toFixed(3))).toEqual(OPENING_DIRECTION.toArray().map((v) => +v.toFixed(3)));
+    }
+  });
+
+  it("never opens edge-on to a flat part", () => {
+    // A single face in the XY plane, sitting along +X: zero depth in Z.
+    const flat = new Box3(new Vector3(0, 0, 0), new Vector3(9, 1, 0));
+    const camera = new PerspectiveCamera(50, 1.5, 0.1, 5000);
+    createFlyTo(camera, fakeControls()).snap(flat);
+    const center = flat.getCenter(new Vector3());
+    const viewing = center.clone().sub(camera.position).normalize();
+    // The face's normal is Z; edge-on means viewing ⟂ Z. Well away from that:
+    expect(Math.abs(viewing.z)).toBeGreaterThan(0.4);
+  });
+
   it("snaps without a tween", () => {
     const camera = new PerspectiveCamera(50, 1.5, 0.1, 5000);
     const controls = fakeControls();
