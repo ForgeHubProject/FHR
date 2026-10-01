@@ -19,6 +19,12 @@ on:
 permissions:
   contents: write
 
+# One release run per handler at a time, so two pushes can't interleave
+# their tag moves and uploads on ipynb-latest.
+concurrency:
+  group: release-handler-ipynb
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -114,19 +120,41 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Delete existing rolling release (if any)
+      # Update the rolling release in place; never delete it. Deleting the
+      # release with --cleanup-tag and immediately re-creating the same tag
+      # raced: GitHub sometimes applied the old tag's deletion after the new
+      # tag existed, which removed the new tag and unpublished the release
+      # (gltf-scene-latest and csv-latest vanished minutes after successful
+      # runs, #84). Moving the tag and replacing assets has no such window.
+      - name: Move the rolling tag to this commit
+        run: |
+          git tag -f ipynb-latest
+          git push -f origin refs/tags/ipynb-latest
+
+      - name: Create or update the rolling release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete ipynb-latest --yes --cleanup-tag 2>/dev/null || true
+          title="ipynb (latest)"
+          notes="Rolling release — always points to the latest build from main. Includes native binaries, the wasm build, and the renderer bundle."
+          if gh release view ipynb-latest >/dev/null 2>&1; then
+            gh release upload ipynb-latest dist/* --clobber
+            gh release edit ipynb-latest --title "$title" --notes "$notes" --draft=false
+          else
+            gh release create ipynb-latest dist/* --title "$title" --notes "$notes" --verify-tag
+          fi
 
-      - name: Create rolling release and upload assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ipynb-latest
-          name: "ipynb (latest)"
-          body: "Rolling release — always points to the latest build from main. Includes native binaries, the wasm build, and the renderer bundle."
-          files: dist/*
+      - name: Check the release serves every built asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          want=$(ls dist | sort)
+          have=$(gh release view ipynb-latest --json assets --jq '.assets[].name' | sort)
+          missing=$(comm -23 <(echo "$want") <(echo "$have"))
+          if [ -n "$missing" ]; then
+            echo "missing from ipynb-latest: $missing" >&2
+            exit 1
+          fi
 
   update-manifest:
     name: Update manifest build SHA

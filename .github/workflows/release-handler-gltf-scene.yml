@@ -20,6 +20,12 @@ on:
 permissions:
   contents: write
 
+# One release run per handler at a time, so two pushes can't interleave
+# their tag moves and uploads on gltf-scene-latest.
+concurrency:
+  group: release-handler-gltf-scene
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -120,19 +126,41 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Delete existing rolling release (if any)
+      # Update the rolling release in place; never delete it. Deleting the
+      # release with --cleanup-tag and immediately re-creating the same tag
+      # raced: GitHub sometimes applied the old tag's deletion after the new
+      # tag existed, which removed the new tag and unpublished the release
+      # (gltf-scene-latest and csv-latest vanished minutes after successful
+      # runs, #84). Moving the tag and replacing assets has no such window.
+      - name: Move the rolling tag to this commit
+        run: |
+          git tag -f gltf-scene-latest
+          git push -f origin refs/tags/gltf-scene-latest
+
+      - name: Create or update the rolling release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete gltf-scene-latest --yes --cleanup-tag 2>/dev/null || true
+          title="gltf-scene (latest)"
+          notes="Rolling release — always points to the latest build from main. Includes native binaries, the wasm build, and the renderer bundle."
+          if gh release view gltf-scene-latest >/dev/null 2>&1; then
+            gh release upload gltf-scene-latest dist/* --clobber
+            gh release edit gltf-scene-latest --title "$title" --notes "$notes" --draft=false
+          else
+            gh release create gltf-scene-latest dist/* --title "$title" --notes "$notes" --verify-tag
+          fi
 
-      - name: Create rolling release and upload assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: gltf-scene-latest
-          name: "gltf-scene (latest)"
-          body: "Rolling release — always points to the latest build from main. Includes native binaries, the wasm build, and the renderer bundle."
-          files: dist/*
+      - name: Check the release serves every built asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          want=$(ls dist | sort)
+          have=$(gh release view gltf-scene-latest --json assets --jq '.assets[].name' | sort)
+          missing=$(comm -23 <(echo "$want") <(echo "$have"))
+          if [ -n "$missing" ]; then
+            echo "missing from gltf-scene-latest: $missing" >&2
+            exit 1
+          fi
 
   update-manifest:
     name: Update manifest build SHA
