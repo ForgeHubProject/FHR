@@ -145,20 +145,27 @@ jobs:
           notes="Rolling release — always points to the latest build from main. Includes native binaries, the wasm build, and the renderer bundle."
           if gh release view gltf-scene-latest >/dev/null 2>&1; then
             gh release upload gltf-scene-latest dist/* --clobber
+            # --clobber only replaces same-named assets. Drop any this build no
+            # longer produces (removed or renamed outputs), after the upload so
+            # a current asset is never missing, and the release mirrors dist/.
+            gh release view gltf-scene-latest --json assets --jq '.assets[].name' |
+              while IFS= read -r asset; do
+                [ -e "dist/$asset" ] || gh release delete-asset gltf-scene-latest "$asset" --yes
+              done
             gh release edit gltf-scene-latest --title "$title" --notes "$notes" --draft=false
           else
             gh release create gltf-scene-latest dist/* --title "$title" --notes "$notes" --verify-tag
           fi
 
-      - name: Check the release serves every built asset
+      - name: Check the release matches the build exactly
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           want=$(ls dist | sort)
           have=$(gh release view gltf-scene-latest --json assets --jq '.assets[].name' | sort)
-          missing=$(comm -23 <(echo "$want") <(echo "$have"))
-          if [ -n "$missing" ]; then
-            echo "missing from gltf-scene-latest: $missing" >&2
+          if [ "$want" != "$have" ]; then
+            echo "gltf-scene-latest does not match this build (< built, > on the release):" >&2
+            diff <(echo "$want") <(echo "$have") >&2 || true
             exit 1
           fi
 
