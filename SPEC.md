@@ -482,6 +482,20 @@ names the diff's change paths address (`nodes/Sensor#1` is the second node named
 `Sensor` in the preview, by the engine's duplicate-name rule), so the gltf-scene
 viewer can mount any member's preview with no per-format mapping.
 
+**`forge-handler-<name> apply-choices`** *(optional — handlers that declare `capabilities.applyChoices`)*
+```
+stdin:  { "merged": "<base64>", "theirs": "<base64>", "take": ["nodes/Leg_BR", "mtllib"] }
+stdout: { "blob": "<base64>" }
+exit:   0 on success, 1 with { "error": "…" } on failure
+```
+
+Resolves the conflicts a `merge` left. `merged` is the merge's own result, which
+holds ours at every conflict. `take` lists the conflict paths (exactly as `merge`
+reported them) where the resolver chose theirs instead. `forge mergetool` calls
+it after the reviewer has decided each conflict. A handler must refuse, with an
+error naming the path, any choice it cannot apply faithfully; a choice silently
+skipped would read as resolved.
+
 **`forge-handler-<name> info`** *(optional but recommended)*
 ```
 stdout: { "id": "obj", "formats": [".obj"], "protocol": "1.0",
@@ -490,15 +504,17 @@ stdout: { "id": "obj", "formats": [".obj"], "protocol": "1.0",
 exit:   0 always
 ```
 
-`capabilities` and `preview` are optional; `preview` is the media type the
-`preview` call produces and is present only for handlers that have one.
+`capabilities` and `preview` are optional. `preview` is the media type the
+`preview` call produces, and `capabilities.applyChoices` says the handler answers
+`apply-choices`; both appear only for handlers that implement them.
 
 Blobs are base64-encoded to keep the transport pure JSON. The same binary works as both a CLI subprocess and a WASM module.
 
 **WASM entry points.** A `GOOS=js` build registers one global whose name starts
 with `__forgeHandler` (`__forgeHandlerGltfScene`) holding the same calls:
 `diff(base, head)`, `merge(base, ours, theirs)` and `info()` take `Uint8Array`s
-and return a JSON string (`{"error": "…"}` on failure); `preview(blob)`, when
+and return a JSON string (`{"error": "…"}` on failure), as does
+`applyChoices(merged, theirs, takeJSON)` when present; `preview(blob)`, when
 present, returns an object — `{ mediaType, blob: Uint8Array }` or `{ error }` —
 so a large preview never round-trips through base64. Go handlers get all of
 this, and the subprocess protocol above, from `packages/go/fhr`.

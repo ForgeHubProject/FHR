@@ -215,3 +215,56 @@ func TestPreview(t *testing.T) {
 		t.Fatalf("no preview: code=%d err=%q", code, errOut)
 	}
 }
+
+// applierStub takes theirs for exactly the paths it is given, and refuses any
+// path it does not know — the contract ChoiceApplier documents.
+type applierStub struct{ stub }
+
+func (a *applierStub) ApplyChoices(merged, theirs Blob, take []string) (Blob, error) {
+	out := string(merged)
+	for _, p := range take {
+		if p != "nodes/A" {
+			return nil, errors.New("unknown conflict path " + p)
+		}
+		out += "+" + string(theirs)
+	}
+	return Blob(out), nil
+}
+
+func TestApplyChoices(t *testing.T) {
+	a := &applierStub{}
+	in := `{"merged":"` + b64("m") + `","theirs":"` + b64("t") + `","take":["nodes/A"]}`
+	code, out, _ := run(t, a, in, "apply-choices")
+	if code != 0 || out != `{"blob":"`+b64("m+t")+`"}`+"\n" {
+		t.Fatalf("apply-choices: code=%d out=%q", code, out)
+	}
+
+	// An unknown path is an error, not a silent no-op.
+	code, _, errOut := run(t, a, `{"merged":"","theirs":"","take":["nodes/B"]}`, "apply-choices")
+	if code != 1 || !strings.Contains(errOut, "unknown conflict path nodes/B") {
+		t.Fatalf("unknown path: code=%d err=%q", code, errOut)
+	}
+
+	// Declared from the implementation, like preview: info and usage say so
+	// for an applier, and a handler without one cannot claim it.
+	var o bytes.Buffer
+	caps := Info{ID: "stub", Formats: []string{".stub"}, Capabilities: &Capabilities{SemanticCompare: true, SemanticMerge: true}}
+	RunCLI(a, caps, []string{"info"}, strings.NewReader(""), &o, &bytes.Buffer{})
+	if !strings.Contains(o.String(), `"applyChoices":true`) {
+		t.Fatalf("an applier must declare applyChoices: %q", o.String())
+	}
+	o.Reset()
+	lying := Info{ID: "stub", Formats: []string{".stub"}, Capabilities: &Capabilities{ApplyChoices: true}}
+	RunCLI(&stub{}, lying, []string{"info"}, strings.NewReader(""), &o, &bytes.Buffer{})
+	if strings.Contains(o.String(), "applyChoices") {
+		t.Fatalf("a handler without ApplyChoices must not declare it: %q", o.String())
+	}
+	if _, _, errOut := run(t, a, ""); !strings.Contains(errOut, "apply-choices|") {
+		t.Fatalf("usage: %q", errOut)
+	}
+
+	code, _, errOut = run(t, &stub{}, `{"merged":"","theirs":"","take":[]}`, "apply-choices")
+	if code != 1 || !strings.Contains(errOut, "stub cannot apply conflict choices") {
+		t.Fatalf("non-applier: code=%d err=%q", code, errOut)
+	}
+}
