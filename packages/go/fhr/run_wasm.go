@@ -23,6 +23,9 @@ func Run(h Handler, info Info) {
 	if p, ok := h.(Previewer); ok {
 		api.Set("preview", js.FuncOf(func(_ js.Value, args []js.Value) any { return wasmPreview(p, args) }))
 	}
+	if a, ok := h.(ChoiceApplier); ok {
+		api.Set("applyChoices", js.FuncOf(func(_ js.Value, args []js.Value) any { return wasmApplyChoices(a, args) }))
+	}
 	js.Global().Set(GlobalName(info.ID), api)
 	select {}
 }
@@ -96,4 +99,23 @@ func wasmPreview(p Previewer, args []js.Value) any {
 	result.Set("mediaType", p.PreviewMediaType())
 	result.Set("blob", arr)
 	return result
+}
+
+// applyChoices(merged, theirs, takeJSON): two Uint8Arrays and a JSON array of
+// conflict paths → {blob: base64} JSON string, or {error}.
+func wasmApplyChoices(a ChoiceApplier, args []js.Value) any {
+	if len(args) < 3 {
+		return `{"error":"applyChoices(merged, theirs, take) requires two Uint8Arrays and a JSON array of paths"}`
+	}
+	var take []string
+	if err := json.Unmarshal([]byte(args[2].String()), &take); err != nil {
+		return jsError(err)
+	}
+	out, err := a.ApplyChoices(bytesFromArg(args[0]), bytesFromArg(args[1]), take)
+	if err != nil {
+		return jsError(err)
+	}
+	return jsResult(struct {
+		Blob string `json:"blob"`
+	}{base64.StdEncoding.EncodeToString(out)})
 }

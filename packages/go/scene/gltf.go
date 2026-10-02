@@ -634,6 +634,17 @@ func jsonEqual(a, b any) bool {
 
 // ApplyChoices patches merged (which holds "ours" for every conflict) by
 // replacing values at takePaths with corresponding values from theirs.
+// ApplyChoices takes theirs for each conflict path in takePaths, on top of the
+// merged document (ours at every conflict) — what `forge mergetool` calls
+// once the reviewer has picked per conflict.
+//
+// Property choices apply: a node's translation, rotation or scale, and a
+// material's factors, alpha mode and double-sidedness. Choices that add,
+// remove or re-point a whole element (a node, material, mesh or animation, or
+// a node's mesh) are refused with an error naming the path: those move array
+// indices that other elements refer to, and nothing here renumbers them yet —
+// copying theirs' indices into this document would point at the wrong things.
+// A refused choice is resolved in an editor; it is never silently skipped.
 func (h *Handler) ApplyChoices(merged, theirs Blob, takePaths []string) (Blob, error) {
 	if len(takePaths) == 0 {
 		return merged, nil
@@ -652,38 +663,36 @@ func (h *Handler) ApplyChoices(merged, theirs Blob, takePaths []string) (Blob, e
 		return nil, fmt.Errorf("parsing theirs: %w", err)
 	}
 	for _, path := range takePaths {
-		applyChoice(docM, docT, path)
+		if err := applyChoice(docM, docT, path); err != nil {
+			return nil, err
+		}
 	}
 	return encodeBlob(docM, isGLB(merged))
 }
 
-func applyChoice(docM, docT *gltf.Document, path string) {
+func applyChoice(docM, docT *gltf.Document, path string) error {
 	// Conflict paths use the same escaped, "/"-separated form as diff paths, so
 	// they have to be unescaped before the name is matched against the document.
 	parts := splitPath(path)
 	if len(parts) < 2 {
-		return
+		return fmt.Errorf("unknown conflict path %q", path)
 	}
 	name := parts[1]
-	prop := ""
-	if len(parts) > 2 {
-		prop = parts[2]
+	if len(parts) != 3 {
+		switch parts[0] {
+		case "nodes", "materials", "meshes", "animations":
+			return fmt.Errorf("taking a whole element from theirs (%s) is not supported yet — resolve it in your editor", path)
+		}
+		return fmt.Errorf("unknown conflict path %q", path)
 	}
+	prop := parts[2]
 
 	switch parts[0] {
 	case "nodes":
 		tn := nodeByName(docT.Nodes, name)
 		mn := nodeByName(docM.Nodes, name)
-		if prop == "" {
-			if tn != nil && mn == nil {
-				docM.Nodes = append(docM.Nodes, tn)
-			} else if tn == nil && mn != nil {
-				docM.Nodes = removeNode(docM.Nodes, name)
-			}
-			return
-		}
 		if mn == nil || tn == nil {
-			return
+			return fmt.Errorf("conflict path %q names a node missing from one side", path)
 		}
 		switch prop {
 		case "translation":
@@ -692,23 +701,15 @@ func applyChoice(docM, docT *gltf.Document, path string) {
 			mn.Rotation = tn.RotationOrDefault()
 		case "scale":
 			mn.Scale = tn.ScaleOrDefault()
-		case "mesh":
-			mn.Mesh = tn.Mesh
+		default:
+			return fmt.Errorf("taking %s from theirs is not supported yet — resolve it in your editor", path)
 		}
 
 	case "materials":
 		tm := materialByName(docT.Materials, name)
 		mm := materialByName(docM.Materials, name)
-		if prop == "" {
-			if tm != nil && mm == nil {
-				docM.Materials = append(docM.Materials, tm)
-			} else if tm == nil && mm != nil {
-				docM.Materials = removeMaterial(docM.Materials, name)
-			}
-			return
-		}
 		if mm == nil || tm == nil {
-			return
+			return fmt.Errorf("conflict path %q names a material missing from one side", path)
 		}
 		tPBR := pbrOrDefault(tm)
 		switch prop {
@@ -722,8 +723,14 @@ func applyChoice(docM, docT *gltf.Document, path string) {
 			mm.AlphaMode = tm.AlphaMode
 		case "doubleSided":
 			mm.DoubleSided = tm.DoubleSided
+		default:
+			return fmt.Errorf("taking %s from theirs is not supported yet — resolve it in your editor", path)
 		}
+
+	default:
+		return fmt.Errorf("unknown conflict path %q", path)
 	}
+	return nil
 }
 
 // The *ByName/remove* helpers below resolve the same disambiguated keys the

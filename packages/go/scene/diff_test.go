@@ -779,6 +779,23 @@ func TestApplyChoicesResolvesEscapedNames(t *testing.T) {
 	}
 }
 
+// Choices that add, remove or re-point a whole element move indices other
+// elements refer to, and nothing renumbers them yet: they must be refused by
+// name — a choice silently skipped would read as resolved.
+func TestApplyChoicesRefusesWholeElementsByName(t *testing.T) {
+	doc := nodesDoc(t, map[string]any{"name": "Cube", "translation": []float64{0, 0, 0}})
+	for _, p := range []string{"nodes/Cube", "materials/Paint", "meshes/Body", "animations/Spin", "nodes/Cube/mesh", "nodes/Cube/weights", "cameras/Main"} {
+		_, err := (&Handler{}).ApplyChoices(doc, doc, []string{p})
+		if err == nil {
+			t.Errorf("%s: want an error", p)
+			continue
+		}
+		if !strings.Contains(err.Error(), p) {
+			t.Errorf("%s: the error must name the path, got %q", p, err)
+		}
+	}
+}
+
 // A second element with a duplicate name used to vanish from the merge as well:
 // it was neither compared nor conflict-reported.
 func TestMergeDuplicateNamesAreCompared(t *testing.T) {

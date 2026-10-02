@@ -44,6 +44,17 @@ type Previewer interface {
 	Preview(blob Blob) (Blob, error)
 }
 
+// ChoiceApplier is optional. After a merge left conflicts (ours kept at each),
+// it applies the resolver's decisions: for every conflict path in takePaths,
+// take theirs instead. `forge mergetool` calls it once the reviewer has chosen
+// per conflict; without it, a conflict can only be resolved by hand.
+//
+// takePaths are exactly the paths the merge reported (SemanticConflict.Path);
+// a path the handler does not recognise is an error, never silently ignored.
+type ChoiceApplier interface {
+	ApplyChoices(merged, theirs Blob, takePaths []string) (Blob, error)
+}
+
 // MediaTypeGLB is the media type of a binary glTF preview.
 const MediaTypeGLB = "model/gltf-binary"
 
@@ -67,6 +78,9 @@ type Info struct {
 type Capabilities struct {
 	SemanticCompare bool `json:"semanticCompare"`
 	SemanticMerge   bool `json:"semanticMerge"`
+	// ApplyChoices says the handler answers the `apply-choices` call. Run
+	// fills it in from the implementation (ChoiceApplier), like Preview.
+	ApplyChoices bool `json:"applyChoices,omitempty"`
 }
 
 func (i Info) withDefaults(h Handler) Info {
@@ -77,6 +91,11 @@ func (i Info) withDefaults(h Handler) Info {
 		i.Preview = p.PreviewMediaType()
 	} else {
 		i.Preview = ""
+	}
+	if i.Capabilities != nil {
+		caps := *i.Capabilities
+		_, caps.ApplyChoices = h.(ChoiceApplier)
+		i.Capabilities = &caps
 	}
 	return i
 }

@@ -271,6 +271,13 @@ func mergeNodes(b, o, t *side, conflicts *[]fhr.SemanticConflict) []*writeNode {
 		}
 	}
 
+	return buildTree(ids, decision, o, t, combinedElems)
+}
+
+// buildTree turns per-node decisions into the tree to write: each kept node
+// from the side it was decided from (or its combined elements), under its
+// parent when the parent was kept too.
+func buildTree(ids []string, decision map[string]pick, o, t *side, combinedElems map[string][]placedElem) []*writeNode {
 	built := map[string]*writeNode{}
 	var roots []*writeNode
 	for _, id := range ids {
