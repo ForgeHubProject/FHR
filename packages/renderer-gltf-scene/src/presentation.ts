@@ -120,18 +120,85 @@ export function versionLayers(input: {
   side: PaneSide;
   grammar: boolean;
   mode: PresentationMode;
+  /**
+   * "Show changes" (FHR#87). Off takes the change marks away — the tint and the
+   * ghosts of what was removed and where things moved — and leaves the model in
+   * its own materials. It does not take overlay's underlay: that is the mode
+   * itself, the previous version to read the current one against, not a mark
+   * on the current one. Defaults to on.
+   */
+  changes?: boolean;
 }): VersionLayers {
   const head = input.side === "head";
   const { grammar } = input;
+  const marks = grammar && input.changes !== false;
   return {
     head,
     baseSolid: !head,
     // The underlay is overlay's alone: it is what "how far did it move" is read
     // against, and in the other modes it is just a second translucent copy.
     baseGhost: head && grammar && input.mode === "overlay",
-    removed: head && grammar,
-    moved: head && grammar,
-    paint: grammar,
+    removed: head && marks,
+    moved: head && marks,
+    paint: marks,
+  };
+}
+
+// ── "Show changes" (FHR#87) ─────────────────────────────────────────────────────
+//
+// A layer, not a presentation: it works inside every mode, the way blink does,
+// rather than being a position on the ladder a reviewer has to leave their place
+// for. Off shows the model as it is — its own materials and textures — with the
+// change list still live: selecting a change still frames it, isolates it and
+// calls it out, because isolation hides the rest instead of recolouring it.
+
+export const SHOW_CHANGES_LABEL = "Show changes";
+export const SHOW_CHANGES_TITLE = "Paint the diff on the model, or show the model in its own materials";
+
+/**
+ * Whether changes are shown when nothing has been chosen yet. A diff with only
+ * one version — a file added or deleted, or the plain file view — paints every
+ * part the same colour, which says nothing the change list doesn't and hides
+ * what the model looks like; so it opens on the model. With both versions the
+ * paint is the point, so it opens on the diff.
+ */
+export function defaultShowChanges(input: { oneSided: boolean }): boolean {
+  return !input.oneSided;
+}
+
+/** The slice of Web Storage the preference uses — sessionStorage in a browser. */
+export type PreferenceStore = Pick<Storage, "getItem" | "setItem">;
+
+const PREFERENCE_KEY = { oneSided: "fhr3d.showChanges.oneSided", bothSides: "fhr3d.showChanges.bothSides" };
+
+/**
+ * The reviewer's choice, remembered for the session — separately for one-sided
+ * and two-sided diffs, since turning the paint on for one added file says
+ * nothing about wanting it off for the next modified one. Storage can be absent
+ * or refuse (a sandboxed iframe, a private window), so every access is guarded
+ * and a failure is just "nothing remembered".
+ */
+export function changesPreference(store: PreferenceStore | null): {
+  get(oneSided: boolean): boolean | null;
+  set(oneSided: boolean, on: boolean): void;
+} {
+  const key = (oneSided: boolean): string => (oneSided ? PREFERENCE_KEY.oneSided : PREFERENCE_KEY.bothSides);
+  return {
+    get(oneSided) {
+      try {
+        const value = store?.getItem(key(oneSided));
+        return value === "1" ? true : value === "0" ? false : null;
+      } catch {
+        return null;
+      }
+    },
+    set(oneSided, on) {
+      try {
+        store?.setItem(key(oneSided), on ? "1" : "0");
+      } catch {
+        /* nothing remembered */
+      }
+    },
   };
 }
 

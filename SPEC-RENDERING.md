@@ -173,6 +173,15 @@ intermediate frame. A renderer that offers it SHOULD make it available inside
 every presentation where both revisions are resident, rather than as a toggle
 position a reviewer has to leave their place to reach.
 
+**"Show changes" is a layer too.** A renderer that paints the diff onto the
+model SHOULD let the reviewer take the paint off and see the model in its own
+materials, inside every presentation rather than as one of them. It SHOULD open
+with the paint off when the diff has only one version (a file added or deleted,
+or the file view), where everything would be painted the same colour, and on
+otherwise. Selecting a change keeps working with the paint off: it is the
+selection, not the colour, that says which part is meant. `renderer-gltf-scene`
+does this (FHR#87).
+
 **Wipe is for renderers whose image plane is fixed** — 2D, raster, page
 diffs — where a parked boundary keeps meaning what it meant. It is deliberately
 **not** offered by `renderer-gltf-scene`: a wipe line lives in screen space and
