@@ -482,6 +482,30 @@ names the diff's change paths address (`nodes/Sensor#1` is the second node named
 `Sensor` in the preview, by the engine's duplicate-name rule), so the gltf-scene
 viewer can mount any member's preview with no per-format mapping.
 
+**`forge-handler-<name> import`** and **`export`** *(optional — handlers that declare `capabilities.import` / `capabilities.export`)*
+```
+import  stdin:  { "blob": "<base64>" }                       (the handler's own format)
+        stdout: { "mediaType": "model/gltf-binary", "blob": "<base64>" }
+export  stdin:  { "blob": "<base64 GLB>", "format": ".obj" }
+        stdout: { "blob": "<base64>" }                       (the handler's format)
+exit:   0 on success, 1 with { "error": "…" } on failure
+```
+
+Transcoding for the 3D family pivots through binary glTF: convert **X → Y** by
+`import` with X's handler, then `export` with Y's. Every 3D format therefore
+needs one importer and one exporter, not a converter per pair. `import` is
+faithful — it is the document the handler's diff runs over, with nothing dressed
+for display (that is `preview`'s job). `export` is lossy exactly where the
+target is: OBJ has no transform hierarchy, so its exporter bakes world
+transforms into vertices and keeps a material's name only; cameras, lights,
+skins, animation and morph targets are dropped.
+
+`format` is the target extension and must be one of the handler's `info.formats`;
+it may be omitted only by a handler with a single format. A handler that cannot
+produce what the glTF holds says so with an error — never a silently different
+file. A `.gltf` source must be self-contained (embedded buffers) to be imported,
+since one blob cannot bring its `.bin` files.
+
 **`forge-handler-<name> apply-choices`** *(optional — handlers that declare `capabilities.applyChoices`)*
 ```
 stdin:  { "merged": "<base64>", "theirs": "<base64>", "take": ["nodes/Leg_BR", "mtllib"] }
@@ -516,7 +540,8 @@ with `__forgeHandler` (`__forgeHandlerGltfScene`) holding the same calls:
 and return a JSON string (`{"error": "…"}` on failure), as does
 `applyChoices(merged, theirs, takeJSON)` when present; `preview(blob)`, when
 present, returns an object — `{ mediaType, blob: Uint8Array }` or `{ error }` —
-so a large preview never round-trips through base64. Go handlers get all of
+so a large preview never round-trips through base64. `import(blob)` answers the
+same shape, and `export(glb, format)` answers `{ blob: Uint8Array }` or `{ error }`. Go handlers get all of
 this, and the subprocess protocol above, from `packages/go/fhr`.
 
 ---

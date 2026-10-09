@@ -56,6 +56,10 @@ export type MergeResult = {
 export type HandlerCapabilities = {
   semanticCompare: boolean;
   semanticMerge: boolean;
+  /** Answers `import`: converts the format to a GLB, the 3D family's pivot. */
+  import?: boolean;
+  /** Answers `export`: writes a GLB out as the format (SPEC §7). */
+  export?: boolean;
 };
 
 export type IngestInput = {

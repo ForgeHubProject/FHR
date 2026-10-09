@@ -268,3 +268,64 @@ func TestApplyChoices(t *testing.T) {
 		t.Fatalf("non-applier: code=%d err=%q", code, errOut)
 	}
 }
+
+// xcode is a Handler that is also an Importer and Exporter: import upper-cases,
+// export lower-cases and tags the format, so a test can see each call ran.
+type xcode struct{ stub }
+
+func (xcode) Import(b Blob) (Blob, error) { return Blob(strings.ToUpper(string(b))), nil }
+func (xcode) Export(b Blob, format string) (Blob, error) {
+	return Blob(strings.ToLower(string(b)) + format), nil
+}
+
+func TestImportExportSubcommands(t *testing.T) {
+	code, out, errOut := run(t, &xcode{}, `{"blob":"`+b64("abc")+`"}`, "import")
+	if code != 0 || errOut != "" {
+		t.Fatalf("import: code=%d err=%q", code, errOut)
+	}
+	var imp previewOutput
+	if err := json.Unmarshal([]byte(out), &imp); err != nil || imp.MediaType != MediaTypeGLB || imp.Blob != b64("ABC") {
+		t.Fatalf("import answer: %+v err=%v", imp, err)
+	}
+
+	code, out, errOut = run(t, &xcode{}, `{"blob":"`+b64("ABC")+`","format":".stub"}`, "export")
+	if code != 0 || errOut != "" {
+		t.Fatalf("export: code=%d err=%q", code, errOut)
+	}
+	if strings.TrimSpace(out) != `{"blob":"`+b64("abc.stub")+`"}` {
+		t.Fatalf("export answer: %s", out)
+	}
+}
+
+func TestExportFormatResolution(t *testing.T) {
+	// Omitted format: fine for a single-format handler, refused for several.
+	if code, _, e := run(t, &xcode{}, `{"blob":"`+b64("A")+`"}`, "export"); code != 0 {
+		t.Fatalf("single-format default: %s", e)
+	}
+	multi := Info{ID: "multi", Formats: []string{".a", ".b"}}
+	var o, e bytes.Buffer
+	code := RunCLI(&xcode{}, multi, []string{"export"}, strings.NewReader(`{"blob":"`+b64("A")+`"}`), &o, &e)
+	if code != 1 || !strings.Contains(e.String(), "say which") {
+		t.Fatalf("ambiguous: code=%d err=%q", code, e.String())
+	}
+	code, _, errOut := run(t, &xcode{}, `{"blob":"`+b64("A")+`","format":".nope"}`, "export")
+	if code != 1 || !strings.Contains(errOut, "does not export") {
+		t.Fatalf("unknown format: code=%d err=%q", code, errOut)
+	}
+}
+
+func TestImportExportRefusedWithoutInterface(t *testing.T) {
+	for _, sub := range []string{"import", "export"} {
+		code, _, errOut := run(t, &stub{}, `{"blob":""}`, sub)
+		if code != 1 || !strings.Contains(errOut, "stub cannot") {
+			t.Errorf("%s: code=%d err=%q", sub, code, errOut)
+		}
+	}
+}
+
+func TestTranscodeChainsImportThenExport(t *testing.T) {
+	out, err := Transcode(xcode{}, xcode{}, Blob("MiXed"), ".stub")
+	if err != nil || string(out) != "mixed.stub" {
+		t.Fatalf("got %q err=%v", out, err)
+	}
+}
