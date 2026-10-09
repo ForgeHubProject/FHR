@@ -32,7 +32,14 @@ import { createBanners, textureFailureMessage, type BannerList } from "./banner.
 import { allowGhostBase, ghostBaseSkippedMessage } from "./limits.js";
 import { emptyKeys, selectionKeys, type SelectionKeys } from "./selection-keys.js";
 import { entityPath } from "./change-path.js";
-import { availableModes, createModeState, defaultMode } from "./presentation.js";
+import {
+  availableModes,
+  changesPreference,
+  createModeState,
+  defaultMode,
+  defaultShowChanges,
+  type PreferenceStore,
+} from "./presentation.js";
 import { boxSize, defaultSplit, type SplitOrientation } from "./split.js";
 import { createChrome, type Chrome } from "./chrome.js";
 import { createHeatmap } from "./heatmap.js";
@@ -236,6 +243,15 @@ export async function mount3d(
   // measured, and the first toggle pays for the rest.
   const heatmap = createHeatmap({ head, base, geometry: geometryChanges(props.diff) });
 
+  // "Show changes" (FHR#87). Offered whenever the diff painted something. It
+  // opens on the model when the diff has one version — an added or deleted
+  // file, where every part would be painted the same colour — and on the diff
+  // when it has both, unless the reviewer already chose this session.
+  const oneSided = isOneSided(props);
+  const offerShowChanges = props.mode !== "view" && !overlay.changeBox.isEmpty();
+  const preference = changesPreference(sessionStore());
+  const showChanges = offerShowChanges ? (preference.get(oneSided) ?? defaultShowChanges({ oneSided })) : true;
+
   let scene: SceneHandle | null = null;
   chrome = createChrome(host, {
     theme,
@@ -246,6 +262,12 @@ export async function mount3d(
     queue,
     info: viewInfo(structure.length, queue.length, props),
     heatmap: heatmap !== null,
+    showChanges: offerShowChanges ? showChanges : undefined,
+    onShowChanges: (on) => {
+      preference.set(oneSided, on);
+      chrome?.setShowChanges(on);
+      scene?.setShowChanges?.(on);
+    },
     onMode: (mode) => {
       if (!modeState.set(mode)) return;
       chrome?.setMode(mode);
@@ -295,6 +317,7 @@ export async function mount3d(
     overlay,
     theme,
     mode: modeState.mode,
+    showChanges,
     split,
     blink: overlay.baseSolidGroup !== null,
     headlines: hooks.headlines ?? {},
@@ -424,6 +447,25 @@ export function structureRows(
     return buildSceneGraph(parseGltf(doc), annotationKinds(props, indirect));
   } catch {
     return [];
+  }
+}
+
+/**
+ * A diff with one version: a file added (no base) or deleted (no head), the file
+ * view, or a host passing the same blob as both sides.
+ */
+export function isOneSided(props: MountProps): boolean {
+  const base = props.blobs?.base?.url;
+  const head = props.blobs?.head?.url;
+  return props.mode === "view" || !base || !head || base === head;
+}
+
+/** sessionStorage, or null where reading it is refused (a sandboxed frame). */
+function sessionStore(): PreferenceStore | null {
+  try {
+    return globalThis.sessionStorage ?? null;
+  } catch {
+    return null;
   }
 }
 

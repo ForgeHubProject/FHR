@@ -359,6 +359,32 @@ describe("measuring and painting", () => {
     expect(heatmap.on).toBe(true);
   });
 
+  it("puts back what the mesh wears NOW, after the paint changed while it was off", async () => {
+    // "Show changes" (FHR#87) swaps the diff's paint for the file's materials
+    // while the heatmap is lifted off; switching the heatmap off later must not
+    // bring back the paint the reviewer turned off.
+    const head = await side(hood(0.12));
+    const base = await side(hood(0));
+    const mesh = meshesIn(head.gltf.scene)[0]!;
+    const painted = materialOf(mesh);
+    const heatmap = createHeatmap({
+      head,
+      base,
+      geometry: geometryChanges(geometryDiff()),
+      yieldTo: immediately,
+    })!;
+    await heatmap.enable();
+    heatmap.disable();
+    expect(materialOf(mesh)).toBe(painted);
+
+    const own = painted.clone();
+    (mesh as unknown as { material: unknown }).material = own; // the paint taken off
+    await heatmap.enable();
+    expect(materialOf(mesh)).not.toBe(own);
+    heatmap.disable();
+    expect(materialOf(mesh)).toBe(own);
+  });
+
   it("still paints after an on-off-on before the first measurement landed", async () => {
     const head = await side(hood(0.12));
     const base = await side(hood(0));
