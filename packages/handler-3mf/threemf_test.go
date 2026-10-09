@@ -158,3 +158,94 @@ func TestColourRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// The production extension: a root model whose build items and components point,
+// by path, into other .model parts of the package. Object and material ids are
+// local to their part, so id 1 means two different things below.
+const rootModel = `<?xml version="1.0"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">
+ <resources>
+  <object id="1" name="Assembly"><components>
+   <component objectid="1" p:path="/3D/Objects/plate.model" transform="1 0 0 0 1 0 0 0 1 5 0 0"/>
+   <component objectid="1" p:path="/3D/Objects/plate.model" transform="1 0 0 0 1 0 0 0 1 20 0 0"/>
+  </components></object>
+ </resources>
+ <build><item objectid="1"/><item objectid="1" p:path="/3D/Objects/plate.model"/></build>
+</model>`
+
+const plateModel = `<?xml version="1.0"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+ <resources>
+  <basematerials id="1"><base name="Brass" displaycolor="#B5A642"/></basematerials>
+  <object id="1" name="Plate" pid="1" pindex="0"><mesh>
+   <vertices><vertex x="0" y="0" z="0"/><vertex x="10" y="0" z="0"/><vertex x="0" y="10" z="0"/></vertices>
+   <triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+  </mesh></object>
+ </resources>
+ <build/>
+</model>`
+
+func multiPart(t *testing.T, root, plate string) []byte {
+	t.Helper()
+	b, err := zipParts([]part{
+		{"3D/3dmodel.model", root},
+		{"3D/Objects/plate.model", plate},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestMultiPartPackage(t *testing.T) {
+	m, err := decode(multiPart(t, rootModel, plateModel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Roots) != 2 || m.Roots[0].Name != "Assembly" || m.Roots[1].Name != "Plate" {
+		t.Fatalf("roots: %+v", m.Roots)
+	}
+	asm := m.Roots[0]
+	if len(asm.Children) != 2 || asm.Children[0].Name != "Plate" || asm.Children[1].Matrix[12] != 20 {
+		t.Fatalf("components across parts: %+v", asm.Children)
+	}
+	// The material lives in the plate's part, not the root's.
+	p := asm.Children[0].Prims[0]
+	if p.Material != "Brass" || p.BaseColor == nil {
+		t.Fatalf("material from the other part: %q %v", p.Material, p.BaseColor)
+	}
+	// An item pointing straight at a part's object builds it too.
+	if len(m.Roots[1].Prims) != 1 {
+		t.Fatalf("direct item: %+v", m.Roots[1])
+	}
+	// Exported, it is one flat model again, and reads back to the same scene.
+	glb, err := h().Import(multiPart(t, rootModel, plateModel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := h().Export(glb, ".3mf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h().Import(out); err != nil {
+		t.Fatalf("our export does not parse: %v", err)
+	}
+}
+
+func TestMultiPartErrors(t *testing.T) {
+	// A path to a part the package does not have.
+	missing, _ := zipParts([]part{{"3D/3dmodel.model", rootModel}})
+	if _, err := decode(missing); err == nil || !strings.Contains(err.Error(), "no model part") {
+		t.Fatalf("missing part: %v", err)
+	}
+	// An object id the part does not define.
+	if _, err := decode(multiPart(t, strings.Replace(rootModel, `objectid="1" p:path="/3D/Objects/plate.model" transform="1 0 0 0 1 0 0 0 1 5`, `objectid="9" p:path="/3D/Objects/plate.model" transform="1 0 0 0 1 0 0 0 1 5`, 1), plateModel)); err == nil || !strings.Contains(err.Error(), "not defined") {
+		t.Fatalf("missing object: %v", err)
+	}
+	// A cycle between parts: the plate's object is a component of the root's, which holds it.
+	cycle := strings.Replace(plateModel, `<mesh>`, `<components><component objectid="1" p:path="/3D/3dmodel.model"/></components><mesh>`, 1)
+	cycle = strings.Replace(cycle, `<model unit`, `<model xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" unit`, 1)
+	if _, err := decode(multiPart(t, rootModel, cycle)); err == nil || !strings.Contains(err.Error(), "nest deeper") {
+		t.Fatalf("a cycle across parts must be refused: %v", err)
+	}
+}
