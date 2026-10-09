@@ -31,6 +31,7 @@ maintainer  = "ForgeHub Project"
 ".usdz" = { handler = "usd", build = "0000000" }
 ".3ds"  = { handler = "3ds", build = "0000000" }
 ".blend"  = { handler = "blend", build = "0000000" }
+".amf"  = { handler = "amf", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -191,6 +192,17 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/forge-handler-blend_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/forge-handler-blend.wasm"
 
+# The amf handler — rolling release `amf-latest`, overwritten on each push to
+# main that touches packages/handler-amf/ (or the shared packages/go it builds
+# on). AMF (plain or zipped) diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."amf"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -211,3 +223,4 @@ maintainer  = "ForgeHub Project"
 "usd"        = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/renderer-usd.js"
 "3ds"        = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/renderer-3ds.js"
 "blend"      = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/renderer-blend.js"
+"amf"        = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/renderer-amf.js"
