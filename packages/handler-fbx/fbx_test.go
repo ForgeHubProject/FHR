@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+	"math/rand"
 	"os"
 	"strings"
 	"testing"
@@ -298,5 +299,31 @@ func TestDiffMatchAndEmptyExport(t *testing.T) {
 	}
 	if _, err := encode(nil, ".fbx"); err == nil {
 		t.Fatal("an empty scene is an error")
+	}
+}
+
+// Malformed and hostile input must come back as errors, never panics: this runs
+// in a server-side wasm worker.
+func TestHostileInputNeverPanics(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	for _, good := range [][]byte{fixture(t, "blender-scene-yup.fbx"), []byte(asciiFBX)} {
+		try := func(b []byte) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("panic %v", r)
+				}
+			}()
+			_, _ = decode(b)
+		}
+		for n := 0; n < len(good); n += max(1, len(good)/200) {
+			try(good[:n])
+		}
+		for i := 0; i < 400; i++ {
+			b := append([]byte(nil), good...)
+			for k := 0; k < 1+rng.Intn(6); k++ {
+				b[rng.Intn(len(b))] = byte(rng.Intn(256))
+			}
+			try(b)
+		}
 	}
 }
