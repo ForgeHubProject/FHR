@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import type { HandlerCapabilities } from "@fhr/types";
 import {
   availableModes,
+  changesPreference,
   createModeState,
   defaultMode,
+  defaultShowChanges,
   HEATMAP_MODE,
   MODE_ORDER,
   versionLayers,
@@ -136,5 +138,59 @@ describe("the heatmap's home on the ladder", () => {
     // without one offers neither, so the toggle has nowhere to appear.
     expect(availableModes({ bothVersionsResident: false })).not.toContain(HEATMAP_MODE);
     expect(availableModes({ bothVersionsResident: true })).toContain(HEATMAP_MODE);
+  });
+});
+
+describe("Show changes (FHR#87)", () => {
+  it("takes the tint and the change ghosts away, in every mode", () => {
+    for (const mode of MODE_ORDER) {
+      const off = versionLayers({ side: "head", grammar: true, mode, changes: false });
+      expect(off.paint).toBe(false);
+      expect(off.removed).toBe(false);
+      expect(off.moved).toBe(false);
+      expect(off.head).toBe(true);
+    }
+  });
+
+  it("leaves overlay its underlay: that is the mode, not a mark on the model", () => {
+    expect(versionLayers({ side: "head", grammar: true, mode: "overlay", changes: false }).baseGhost).toBe(true);
+  });
+
+  it("changes nothing when on, or when not said", () => {
+    const on = versionLayers({ side: "head", grammar: true, mode: "structural", changes: true });
+    expect(on).toEqual(versionLayers({ side: "head", grammar: true, mode: "structural" }));
+    expect(on.paint).toBe(true);
+  });
+
+  it("opens on the model for a one-sided diff and on the diff otherwise", () => {
+    expect(defaultShowChanges({ oneSided: true })).toBe(false);
+    expect(defaultShowChanges({ oneSided: false })).toBe(true);
+  });
+
+  it("remembers the choice for one-sided and two-sided diffs separately", () => {
+    const data = new Map<string, string>();
+    const store = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v) };
+    const pref = changesPreference(store);
+    expect(pref.get(true)).toBeNull();
+    pref.set(true, true);
+    expect(pref.get(true)).toBe(true);
+    expect(pref.get(false)).toBeNull();
+    pref.set(false, false);
+    expect(pref.get(false)).toBe(false);
+  });
+
+  it("treats storage that is missing or refuses as nothing remembered", () => {
+    expect(changesPreference(null).get(true)).toBeNull();
+    const refusing = {
+      getItem: (): string | null => {
+        throw new Error("SecurityError");
+      },
+      setItem: (): void => {
+        throw new Error("SecurityError");
+      },
+    };
+    const pref = changesPreference(refusing);
+    expect(() => pref.set(true, true)).not.toThrow();
+    expect(pref.get(true)).toBeNull();
   });
 });

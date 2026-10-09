@@ -417,3 +417,34 @@ describe("dispose", () => {
     expect(calls.selected).toEqual([]);
   });
 });
+
+describe("the show-changes toggle (FHR#87)", () => {
+  const changesButton = (container: FakeElement): FakeElement | undefined =>
+    container.byAttr("data-show-changes", "1")[0];
+
+  it("is absent when the view has nothing painted", () => {
+    expect(changesButton(setup().container)).toBeUndefined();
+  });
+
+  it("shows its state, reports the flipped value, and follows setShowChanges", () => {
+    const asked: boolean[] = [];
+    const { container, chrome } = setup({ showChanges: false, onShowChanges: (on) => asked.push(on) });
+    const button = changesButton(container)!;
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    button.fire("click");
+    expect(asked).toEqual([true]);
+    // The mount decides; the button shows what the mount said.
+    chrome.setShowChanges(true);
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    button.fire("click");
+    expect(asked).toEqual([true, false]);
+  });
+
+  it("stays visible in every mode — it is a layer over all of them", () => {
+    const { container, chrome } = setup({ showChanges: true });
+    for (const mode of MODE_ORDER) {
+      chrome.setMode(mode);
+      expect(changesButton(container)!.getAttribute("hidden")).toBeNull();
+    }
+  });
+});

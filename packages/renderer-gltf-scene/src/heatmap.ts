@@ -391,6 +391,11 @@ export function createHeatmap(input: HeatmapInput): Heatmap | null {
             : heatMaterial(current, heatMaterials);
           swap = { before: current, heat };
           swaps.set(object, swap);
+        } else if (current !== swap.heat) {
+          // What the mesh wears may have changed while the heatmap was off — the
+          // diff's paint taken off or put back ("Show changes") — and disable()
+          // must put back what is there NOW, not what was there the first time.
+          swap.before = current;
         }
         holder.material = swap.heat;
       }

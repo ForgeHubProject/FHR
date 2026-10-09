@@ -36,6 +36,8 @@ import {
   HEATMAP_TITLE,
   MODE_LABEL,
   MODE_TITLE,
+  SHOW_CHANGES_LABEL,
+  SHOW_CHANGES_TITLE,
   type PresentationMode,
 } from "./presentation.js";
 import { SPLIT_LABEL, otherSplit, type SplitOrientation } from "./split.js";
@@ -63,6 +65,13 @@ export type ChromeOptions = {
    * would be worse than one that isn't there.
    */
   heatmap?: boolean;
+  /**
+   * The "Show changes" toggle's state (FHR#87), or absent for no toggle — a view
+   * with nothing painted (the file view, a diff with no geometry changes) has
+   * nothing for it to switch.
+   */
+  showChanges?: boolean;
+  onShowChanges?: (on: boolean) => void;
   onMode: (mode: PresentationMode) => void;
   onSplit: (orientation: SplitOrientation) => void;
   /**
@@ -96,6 +105,8 @@ export type Chrome = {
   highlightNode(name: string | null): void;
   setMode(mode: PresentationMode): void;
   setSplit(orientation: SplitOrientation): void;
+  /** Reflect "Show changes" (FHR#87) on its toggle. */
+  setShowChanges(on: boolean): void;
   /** Change path → measured deviation, for the selected change's panel row. */
   setDeviations(byPath: ReadonlyMap<string, string>): void;
   /** Re-resolve region visibility for a container width. */
@@ -131,18 +142,18 @@ function css(theme: "light" | "dark"): string {
 .fhr3d__collapse:hover { background:${hover}; }
 .fhr3d__centre { flex:1 1 auto; display:flex; flex-direction:column; min-width:0; min-height:0; }
 .fhr3d__bar { display:flex; align-items:center; gap:8px; padding:6px 8px; border-bottom:1px solid ${line}; }
-.fhr3d__info { color:${muted}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.fhr3d__opts { display:flex; align-items:center; gap:6px; margin-left:auto; }
+.fhr3d__info { color:${muted}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:0 1 auto; }
+.fhr3d__opts { display:flex; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:4px 6px; margin-left:auto; }
 .fhr3d__modes { display:flex; border:1px solid ${line}; border-radius:6px; overflow:hidden; }
-.fhr3d__mode { font:inherit; padding:3px 9px; border:none; background:transparent; color:${ink}; cursor:pointer; }
+.fhr3d__mode { font:inherit; padding:3px 9px; border:none; background:transparent; color:${ink}; cursor:pointer; white-space:nowrap; }
 .fhr3d__mode + .fhr3d__mode { border-left:1px solid ${line}; }
 .fhr3d__mode:hover { background:${hover}; }
 .fhr3d__mode[aria-pressed="true"] { background:${pick}; font-weight:600; }
-.fhr3d__splitbtn, .fhr3d__heatbtn, .fhr3d__framebtn { font:inherit; padding:3px 9px; border:1px solid ${line};
-  border-radius:6px; background:transparent; color:${ink}; cursor:pointer; }
-.fhr3d__splitbtn:hover, .fhr3d__heatbtn:hover, .fhr3d__framebtn:hover { background:${hover}; }
+.fhr3d__changesbtn, .fhr3d__splitbtn, .fhr3d__heatbtn, .fhr3d__framebtn { font:inherit; padding:3px 9px; border:1px solid ${line};
+  border-radius:6px; background:transparent; color:${ink}; cursor:pointer; white-space:nowrap; }
+.fhr3d__changesbtn:hover, .fhr3d__splitbtn:hover, .fhr3d__heatbtn:hover, .fhr3d__framebtn:hover { background:${hover}; }
 .fhr3d__splitbtn[hidden], .fhr3d__heatbtn[hidden] { display:none; }
-.fhr3d__heatbtn[aria-pressed="true"] { background:${pick}; font-weight:600; }
+.fhr3d__changesbtn[aria-pressed="true"], .fhr3d__heatbtn[aria-pressed="true"] { background:${pick}; font-weight:600; }
 .fhr3d__viewport { position:relative; flex:1 1 auto; min-height:0; overflow:hidden; }
 .fhr3d__nodes, .fhr3d__queue { flex:1 1 auto; min-height:0; overflow:auto; }
 .fhr3d__node { display:flex; align-items:center; gap:6px; padding:2px 6px; cursor:pointer;
@@ -254,6 +265,20 @@ export function createChrome(container: HTMLElement, options: ChromeOptions): Ch
   const opts = doc.createElement("div");
   opts.className = "fhr3d__opts";
   opts.setAttribute("data-options", "1");
+
+  // First in the bar, so it stays put across every mode: it is a layer over all
+  // of them (presentation.ts), not one of the positions the mode toggle offers.
+  let changesButton: HTMLElement | null = null;
+  if (options.showChanges !== undefined) {
+    const el = button("fhr3d__changesbtn", SHOW_CHANGES_LABEL, () =>
+      options.onShowChanges?.(el.getAttribute("aria-pressed") !== "true"),
+    );
+    el.setAttribute("data-show-changes", "1");
+    el.setAttribute("aria-pressed", String(options.showChanges));
+    el.setAttribute("title", SHOW_CHANGES_TITLE);
+    opts.appendChild(el);
+    changesButton = el;
+  }
 
   const modeButtons = new Map<PresentationMode, HTMLElement>();
   if (options.modes.length > 1) {
@@ -385,6 +410,9 @@ export function createChrome(container: HTMLElement, options: ChromeOptions): Ch
     },
     setMode,
     setSplit,
+    setShowChanges(on: boolean): void {
+      changesButton?.setAttribute("aria-pressed", String(on));
+    },
     setDeviations(byPath: ReadonlyMap<string, string>): void {
       queue?.setDeviations(byPath);
     },
