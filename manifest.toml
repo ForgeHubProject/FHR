@@ -18,6 +18,7 @@ maintainer  = "ForgeHub Project"
 ".csv"  = { handler = "csv", build = "af64d31" }
 ".ipynb" = { handler = "ipynb", build = "af64d31" }
 ".obj"  = { handler = "obj", build = "db4be7e" }
+".stl"  = { handler = "stl", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -68,6 +69,16 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj.wasm"
+# The stl handler — rolling release `stl-latest`, overwritten on each push to
+# main that touches packages/handler-stl/. STL parses trivially (ASCII + binary
+# triangle lists), so it ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."stl"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl.wasm"
 
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
@@ -79,3 +90,4 @@ maintainer  = "ForgeHub Project"
 "csv"        = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/renderer-csv.js"
 "ipynb"      = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/renderer-ipynb.js"
 "obj"        = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/renderer-obj.js"
+"stl"        = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/renderer-stl.js"
