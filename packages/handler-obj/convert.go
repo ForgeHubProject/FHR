@@ -179,7 +179,7 @@ func (c *converter) primitive(k primKey, elems []objElem) *gltf.Primitive {
 // would be identical for every material — which the engine's content tier
 // would read as evidence that a removed material and an added one are the same
 // material renamed. Stating nothing keeps OBJ materials matched by name alone;
-// the preview gets its appearance from dressForPreview instead.
+// the preview gets its appearance from scene.DressForPreview instead.
 func (c *converter) material(name string) int {
 	if i, ok := c.materials[name]; ok {
 		return i
@@ -187,41 +187,6 @@ func (c *converter) material(name string) int {
 	c.doc.Materials = append(c.doc.Materials, &gltf.Material{Name: name})
 	c.materials[name] = len(c.doc.Materials) - 1
 	return c.materials[name]
-}
-
-// dressForPreview gives a converted document the surface a viewer should draw:
-// a neutral, non-metallic, double-sided material everywhere (glTF's defaults are
-// fully metallic, which renders near-black without an environment map, and OBJ
-// face winding is too often inconsistent to cull back faces). Materials are
-// only restyled, and material-less primitives share one unnamed material, so
-// every node and mesh name — what the diff's paths address — is unchanged.
-func dressForPreview(doc *gltf.Document) {
-	neutral := func(m *gltf.Material) {
-		m.DoubleSided = true
-		m.PBRMetallicRoughness = &gltf.PBRMetallicRoughness{
-			BaseColorFactor: &[4]float64{0.8, 0.8, 0.8, 1},
-			MetallicFactor:  gltf.Float(0),
-			RoughnessFactor: gltf.Float(0.9),
-		}
-	}
-	for _, m := range doc.Materials {
-		neutral(m)
-	}
-	fallback := -1
-	for _, mesh := range doc.Meshes {
-		for _, p := range mesh.Primitives {
-			if p.Material != nil {
-				continue
-			}
-			if fallback < 0 {
-				m := &gltf.Material{}
-				neutral(m)
-				doc.Materials = append(doc.Materials, m)
-				fallback = len(doc.Materials) - 1
-			}
-			p.Material = gltf.Index(fallback)
-		}
-	}
 }
 
 func f32x3(v [3]float64) [3]float32 {

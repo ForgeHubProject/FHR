@@ -40,6 +40,10 @@ type FlatPrim struct {
 	// material); MaterialIndex is its index, -1 when absent.
 	Material      string
 	MaterialIndex int
+	// BaseColor is the material's base colour factor (RGBA, 0..1), nil when the
+	// material states none. Formats that colour whole surfaces (3MF) read it;
+	// per-vertex colour is Colors.
+	BaseColor *[4]float64
 	// Per-vertex data, parallel to Positions. Normals, UVs and Colors are nil
 	// when the primitive has none. Normals are unit length and in world space;
 	// UVs keep glTF's orientation (v down); Colors are RGBA in 0..1.
@@ -199,6 +203,10 @@ func flattenMesh(doc *gltf.Document, mi int, world mat4) ([]*FlatPrim, error) {
 		if p.Material != nil && *p.Material >= 0 && *p.Material < len(doc.Materials) {
 			fp.MaterialIndex = *p.Material
 			fp.Material = doc.Materials[*p.Material].Name
+			if pbr := doc.Materials[*p.Material].PBRMetallicRoughness; pbr != nil && pbr.BaseColorFactor != nil {
+				c := *pbr.BaseColorFactor
+				fp.BaseColor = &c
+			}
 		}
 
 		idx, err := primIndices(doc, p, n)

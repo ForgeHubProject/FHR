@@ -19,6 +19,8 @@ maintainer  = "ForgeHub Project"
 ".ipynb" = { handler = "ipynb", build = "af64d31" }
 ".obj"  = { handler = "obj", build = "db4be7e" }
 ".stl"  = { handler = "stl", build = "0000000" }
+".ply"  = { handler = "ply", build = "0000000" }
+".3mf"  = { handler = "3mf", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -70,8 +72,8 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj.wasm"
 # The stl handler — rolling release `stl-latest`, overwritten on each push to
-# main that touches packages/handler-stl/. STL parses trivially (ASCII + binary
-# triangle lists), so it ships the wasm build too (Tier B in-browser diff).
+# main that touches packages/handler-stl/ (or the shared packages/go it builds
+# on). STL is a triangle soup, diffed by geometry statistics. It ships the wasm build too (Tier B in-browser diff).
 [assets.handlers."stl"]
 "linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_linux-amd64"
 "linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_linux-arm64"
@@ -79,6 +81,28 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl.wasm"
+
+# The ply handler — rolling release `ply-latest`, overwritten on each push to
+# main that touches packages/handler-ply/ (or the shared packages/go it builds
+# on). PLY diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."ply"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply.wasm"
+
+# The 3mf handler — rolling release `3mf-latest`, overwritten on each push to
+# main that touches packages/handler-3mf/ (or the shared packages/go it builds
+# on). 3MF diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."3mf"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf.wasm"
 
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
@@ -91,3 +115,5 @@ maintainer  = "ForgeHub Project"
 "ipynb"      = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/renderer-ipynb.js"
 "obj"        = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/renderer-obj.js"
 "stl"        = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/renderer-stl.js"
+"ply"        = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/renderer-ply.js"
+"3mf"        = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/renderer-3mf.js"

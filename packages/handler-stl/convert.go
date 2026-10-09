@@ -7,6 +7,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/forgehubproject/fhr/packages/go/fhr"
 	"github.com/forgehubproject/fhr/packages/go/scene"
 	"github.com/qmuntal/gltf"
 	"github.com/qmuntal/gltf/modeler"
@@ -18,6 +19,27 @@ import (
 // the duplication. STL carries no units; the numbers pass through unchanged
 // (glTF reads them as metres, as every consumer of an STL must guess).
 func (h *Handler) Import(blob Blob) (Blob, error) {
+	doc, err := toDocument(blob)
+	if err != nil {
+		return nil, err
+	}
+	return encodeGLB(doc)
+}
+
+// PreviewMediaType is the GLB the preview produces.
+func (h *Handler) PreviewMediaType() string { return fhr.MediaTypeGLB }
+
+// Preview is Import dressed with a viewable surface, for the review viewport.
+func (h *Handler) Preview(blob Blob) (Blob, error) {
+	doc, err := toDocument(blob)
+	if err != nil {
+		return nil, err
+	}
+	scene.DressForPreview(doc)
+	return encodeGLB(doc)
+}
+
+func toDocument(blob Blob) (*gltf.Document, error) {
 	m, err := parseSTL(blob)
 	if err != nil {
 		return nil, err
@@ -55,6 +77,10 @@ func (h *Handler) Import(blob Blob) (Blob, error) {
 		}}}}
 		node.Mesh = gltf.Index(0)
 	}
+	return doc, nil
+}
+
+func encodeGLB(doc *gltf.Document) (Blob, error) {
 	var buf bytes.Buffer
 	enc := gltf.NewEncoder(&buf)
 	enc.AsBinary = true

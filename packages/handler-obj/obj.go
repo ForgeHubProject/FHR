@@ -54,14 +54,14 @@ func (h *Handler) Diff(base, head fhr.Blob) (fhr.StructuredDiff, error) {
 func (h *Handler) PreviewMediaType() string { return fhr.MediaTypeGLB }
 
 // Preview converts an OBJ blob to the GLB the diff was computed over, dressed
-// with a viewable surface (dressForPreview).
+// with a viewable surface (scene.DressForPreview).
 func (h *Handler) Preview(blob fhr.Blob) (fhr.Blob, error) {
 	f, err := parseOBJ(blob)
 	if err != nil {
 		return nil, err
 	}
 	doc := toGLTF(f)
-	dressForPreview(doc)
+	scene.DressForPreview(doc)
 	return encodeGLB(doc)
 }
 
