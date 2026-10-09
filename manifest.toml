@@ -32,6 +32,7 @@ maintainer  = "ForgeHub Project"
 ".3ds"  = { handler = "3ds", build = "0000000" }
 ".blend"  = { handler = "blend", build = "0000000" }
 ".amf"  = { handler = "amf", build = "0000000" }
+".wrl"  = { handler = "vrml", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -203,6 +204,17 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf.wasm"
 
+# The vrml handler — rolling release `vrml-latest`, overwritten on each push to
+# main that touches packages/handler-vrml/ (or the shared packages/go it builds
+# on). VRML97 (plain or gzip) diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."vrml"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -224,3 +236,4 @@ maintainer  = "ForgeHub Project"
 "3ds"        = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/renderer-3ds.js"
 "blend"      = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/renderer-blend.js"
 "amf"        = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/renderer-amf.js"
+"vrml"       = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/renderer-vrml.js"
