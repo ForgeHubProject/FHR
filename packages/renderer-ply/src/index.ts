@@ -8,21 +8,21 @@ declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ !== "undefined" ? __BUILD__ : "dev";
 
 /**
- * STL is a 3D family member (#67), so it renders on the gltf-scene
+ * PLY is a 3D family member (#67), so it renders on the gltf-scene
  * review surface — the linked change tree and the lazy 3D viewport — rather
  * than a viewer of its own.
  *
- * The browser never parses STL. The stl handler diffs STL by converting it to a
+ * The browser never parses PLY. The ply handler diffs PLY by converting it to a
  * glTF document, and its `preview` call returns that document as a GLB
  * (SPEC.md §7), so the viewport draws `previews` and every change path in the
  * diff names a node that exists in what it draws. With no preview from the
  * host, the change tree is the whole view.
  */
 export const sceneOptions: SceneRendererOptions = {
-  handlerId: "stl",
-  extensions: [".stl"],
+  handlerId: "ply",
+  extensions: [".ply"],
   build: BUILD,
-  chunk: "renderer-stl-3d.js",
+  chunk: "renderer-ply-3d.js",
   geometry: (props: MountProps) => props.previews,
 };
 

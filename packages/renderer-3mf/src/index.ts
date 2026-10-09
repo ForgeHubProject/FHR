@@ -8,21 +8,21 @@ declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ !== "undefined" ? __BUILD__ : "dev";
 
 /**
- * STL is a 3D family member (#67), so it renders on the gltf-scene
+ * 3MF is a 3D family member (#67), so it renders on the gltf-scene
  * review surface — the linked change tree and the lazy 3D viewport — rather
  * than a viewer of its own.
  *
- * The browser never parses STL. The stl handler diffs STL by converting it to a
+ * The browser never parses 3MF. The 3mf handler diffs 3MF by converting it to a
  * glTF document, and its `preview` call returns that document as a GLB
  * (SPEC.md §7), so the viewport draws `previews` and every change path in the
  * diff names a node that exists in what it draws. With no preview from the
  * host, the change tree is the whole view.
  */
 export const sceneOptions: SceneRendererOptions = {
-  handlerId: "stl",
-  extensions: [".stl"],
+  handlerId: "3mf",
+  extensions: [".3mf"],
   build: BUILD,
-  chunk: "renderer-stl-3d.js",
+  chunk: "renderer-3mf-3d.js",
   geometry: (props: MountProps) => props.previews,
 };
 

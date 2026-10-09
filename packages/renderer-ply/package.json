@@ -1,7 +1,7 @@
 {
-  "name": "@fhr/renderer-stl",
+  "name": "@fhr/renderer-ply",
   "version": "1.0.0",
-  "description": "FHR renderer bundle for STL diffs — the gltf-scene viewport over the stl handler's GLB preview",
+  "description": "FHR renderer bundle for PLY diffs — the gltf-scene viewport over the ply handler's GLB preview",
   "type": "module",
   "private": true,
   "fhr": {

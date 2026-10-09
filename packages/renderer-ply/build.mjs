@@ -9,7 +9,7 @@ const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"));
 
 // Same build as renderer-gltf-scene's — this bundle is that renderer's review
-// surface pointed at the stl handler's previews — and the same budgets.
+// surface pointed at the ply handler's previews — and the same budgets.
 
 /**
  * Gzip budgets per output file, from package.json's `fhr.bundleBudgetGzipBytes`
@@ -47,7 +47,7 @@ const common = {
 await build({ ...common, entryPoints: ["src/index.ts"], outfile: "dist/renderer.js" });
 
 // Heavy 3D chunk — the gltf-scene viewport, inlining three.js. Published
-// alongside the lite bundle as renderer-stl-3d.js; the lite bundle resolves it
+// alongside the lite bundle as renderer-ply-3d.js; the lite bundle resolves it
 // as a sibling (index.ts `chunk`).
 await build({ ...common, entryPoints: ["src/index-3d.ts"], outfile: "dist/renderer-3d.js" });
 

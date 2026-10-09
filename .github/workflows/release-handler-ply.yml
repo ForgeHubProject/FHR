@@ -1,4 +1,4 @@
-name: Release stl handler
+name: Release ply handler
 
 on:
   # Manual trigger — rerun the rolling release without a code change.
@@ -6,17 +6,17 @@ on:
   push:
     branches: [main]
     paths:
-      - 'packages/handler-stl/**'
+      - 'packages/handler-ply/**'
       # The shared Go SDK and the scene engine are compiled into this handler.
       - 'packages/go/**'
-      - 'packages/renderer-stl/**'
-      # renderer-stl bundles the gltf-scene review surface and viewport.
+      - 'packages/renderer-ply/**'
+      # renderer-ply bundles the gltf-scene review surface and viewport.
       - 'packages/renderer-gltf-scene/**'
       - 'packages/renderer-sdk/**'
       - 'packages/types/**'
       # Include this workflow so changes to how the release is built/published
       # actually trigger a rebuild.
-      - '.github/workflows/release-handler-stl.yml'
+      - '.github/workflows/release-handler-ply.yml'
 
 permissions:
   contents: write
@@ -30,33 +30,33 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
-            asset: forge-handler-stl_linux-amd64
+            asset: forge-handler-ply_linux-amd64
           - goos: linux
             goarch: arm64
-            asset: forge-handler-stl_linux-arm64
+            asset: forge-handler-ply_linux-arm64
           - goos: darwin
             goarch: amd64
-            asset: forge-handler-stl_darwin-amd64
+            asset: forge-handler-ply_darwin-amd64
           - goos: darwin
             goarch: arm64
-            asset: forge-handler-stl_darwin-arm64
+            asset: forge-handler-ply_darwin-arm64
           - goos: windows
             goarch: amd64
-            asset: forge-handler-stl_windows-amd64.exe
+            asset: forge-handler-ply_windows-amd64.exe
           # Browser build for client-side (Tier B) diff. Standard Go wasm.
           - goos: js
             goarch: wasm
-            asset: forge-handler-stl.wasm
+            asset: forge-handler-ply.wasm
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: packages/handler-stl/go.mod
+          go-version-file: packages/handler-ply/go.mod
 
       - name: Build
-        working-directory: packages/handler-stl
+        working-directory: packages/handler-ply
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -67,7 +67,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
-          path: packages/handler-stl/${{ matrix.asset }}
+          path: packages/handler-ply/${{ matrix.asset }}
 
   build-renderer:
     name: Build renderer bundle
@@ -88,18 +88,18 @@ jobs:
         run: |
           npm run build --workspace @fhr/types
           npm run build --workspace @fhr/renderer-sdk
-          BUILD_SHA="$(git rev-parse --short HEAD)" npm run build --workspace @fhr/renderer-stl
-          cp packages/renderer-stl/dist/renderer.js renderer-stl.js
+          BUILD_SHA="$(git rev-parse --short HEAD)" npm run build --workspace @fhr/renderer-ply
+          cp packages/renderer-ply/dist/renderer.js renderer-ply.js
           # The lite bundle lazy-imports the gltf-scene viewport chunk as a sibling.
-          cp packages/renderer-stl/dist/renderer-3d.js renderer-stl-3d.js
+          cp packages/renderer-ply/dist/renderer-3d.js renderer-ply-3d.js
 
       - name: Upload renderer artifacts
         uses: actions/upload-artifact@v4
         with:
           name: renderer-bundles
           path: |
-            renderer-stl.js
-            renderer-stl-3d.js
+            renderer-ply.js
+            renderer-ply-3d.js
 
   release:
     name: Publish rolling release
@@ -124,13 +124,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete stl-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release delete ply-latest --yes --cleanup-tag 2>/dev/null || true
 
       - name: Create rolling release and upload assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: stl-latest
-          name: "stl (latest)"
+          tag_name: ply-latest
+          name: "ply (latest)"
           body: "Rolling release — always points to the latest build from main. Includes native binaries, the wasm build, and the renderer bundle."
           files: dist/*
 
@@ -157,10 +157,10 @@ jobs:
           for attempt in 1 2 3 4 5; do
             git fetch --quiet origin main
             git reset --quiet --hard origin/main
-            sed -i 's/\(handler = "stl", build = "\)[^"]*"/\1'"$SHA"'"/' manifest.toml
+            sed -i 's/\(handler = "ply", build = "\)[^"]*"/\1'"$SHA"'"/' manifest.toml
             git add manifest.toml
             git diff --cached --quiet && exit 0
-            git commit --quiet -m "chore: update stl build SHA to $SHA"
+            git commit --quiet -m "chore: update ply build SHA to $SHA"
             git push --quiet origin HEAD:main && exit 0
             sleep $((attempt * 5))
           done
