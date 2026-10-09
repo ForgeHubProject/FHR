@@ -37,5 +37,5 @@ func TestHostileInputNeverPanics(t *testing.T) {
 func hostileSeeds(t *testing.T) [][]byte {
 	glb, _ := h().Import(pkg(t, assembly))
 	out, _ := h().Export(glb, ".3mf")
-	return [][]byte{pkg(t, assembly), out}
+	return [][]byte{pkg(t, assembly), out, multiPart(t, rootModel, plateModel)}
 }
