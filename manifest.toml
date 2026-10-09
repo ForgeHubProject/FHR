@@ -24,6 +24,7 @@ maintainer  = "ForgeHub Project"
 ".off"  = { handler = "off", build = "0000000" }
 ".dae"  = { handler = "dae", build = "0000000" }
 ".x3d"  = { handler = "x3d", build = "0000000" }
+".fbx"  = { handler = "fbx", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -140,6 +141,17 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d.wasm"
 
+# The fbx handler — rolling release `fbx-latest`, overwritten on each push to
+# main that touches packages/handler-fbx/ (or the shared packages/go it builds
+# on). FBX (binary and ASCII) diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."fbx"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -156,3 +168,4 @@ maintainer  = "ForgeHub Project"
 "off"        = "https://github.com/forgehubproject/fhr/releases/download/off-latest/renderer-off.js"
 "dae"        = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/renderer-dae.js"
 "x3d"        = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/renderer-x3d.js"
+"fbx"        = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/renderer-fbx.js"
