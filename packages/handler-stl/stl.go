@@ -5,7 +5,9 @@
 // both variants (ASCII and binary), computes per-side mesh statistics
 // (triangle count, bounding box, surface area, approximate volume, ASCII
 // solid name) and reports which of those properties changed. The output is a
-// geometry-level comparison, not a per-triangle patch.
+// geometry-level comparison, not a per-triangle patch. Its change paths are
+// "nodes/<name>/<statistic>", keyed on the one node the preview draws (the
+// solid's name, or "mesh"), so the viewer can select and fly to them.
 //
 // v0 compares whole-mesh statistics. A spatial delta (which regions changed,
 // via voxel/octree bucketing) is the planned follow-up — issue #14.
@@ -262,14 +264,14 @@ func (h *Handler) Diff(base, head Blob) (StructuredDiff, error) {
 			return StructuredDiff{}, fmt.Errorf("head: %w", err)
 		}
 		s := computeStats(m)
-		changes = append(changes, DiffChange{Path: "mesh", Kind: Added, Label: meshLabel(s), After: s.summary()})
+		changes = nodeChange(s, DiffChange{Kind: Added, After: s.summary()})
 	case len(head) == 0:
 		m, err := parseSTL(base)
 		if err != nil {
 			return StructuredDiff{}, fmt.Errorf("base: %w", err)
 		}
 		s := computeStats(m)
-		changes = append(changes, DiffChange{Path: "mesh", Kind: Removed, Label: meshLabel(s), Before: s.summary()})
+		changes = nodeChange(s, DiffChange{Kind: Removed, Before: s.summary()})
 	default:
 		bm, err := parseSTL(base)
 		if err != nil {
@@ -279,10 +281,44 @@ func (h *Handler) Diff(base, head Blob) (StructuredDiff, error) {
 		if err != nil {
 			return StructuredDiff{}, fmt.Errorf("head: %w", err)
 		}
-		changes = append(changes, diffStats(computeStats(bm), computeStats(hm))...)
+		hs := computeStats(hm)
+		if rows := diffStats(computeStats(bm), hs); len(rows) > 0 {
+			changes = nodeChange(hs, DiffChange{Kind: Modified, Children: rows})
+		}
 	}
 
 	return StructuredDiff{Version: "1.0", Format: "stl", Changes: changes}, nil
+}
+
+// nodeName is what the mesh's node is called in the GLB the handler imports and
+// previews (Import): the solid's name, or "mesh" when it has none.
+func nodeName(s meshStats) string {
+	if s.Name != "" {
+		return s.Name
+	}
+	return "mesh"
+}
+
+// escapeSegment is the change-path escaping the renderers undo: "%" and "/"
+// are percent-escaped inside one segment.
+func escapeSegment(s string) string {
+	return strings.NewReplacer("%", "%25", "/", "%2F").Replace(s)
+}
+
+// nodeChange puts a mesh-level change where the gltf-scene viewer looks for it:
+// under "nodes/<name>", the path of the node the preview draws, with every
+// statistic a field of that node ("nodes/<name>/volume"). An STL has no objects
+// of its own to name — but its preview does have one node, and keying the diff
+// on it is what lets a selected change fly to the mesh and a picked mesh select
+// its changes. The name is the head side's, since that is the preview the
+// reviewer is looking at.
+func nodeChange(s meshStats, c DiffChange) []DiffChange {
+	key := "nodes/" + escapeSegment(nodeName(s))
+	c.Path, c.Label = key, meshLabel(s)
+	for i := range c.Children {
+		c.Children[i].Path = key + "/" + c.Children[i].Path
+	}
+	return []DiffChange{{Path: "nodes", Kind: Modified, Label: "nodes", Children: []DiffChange{c}}}
 }
 
 // diffStats compares the two sides' statistics. Triangle counts compare
