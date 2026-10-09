@@ -1,8 +1,8 @@
 package main
 
 import (
-	"runtime/debug"
 	"math/rand"
+	"runtime/debug"
 	"testing"
 )
 
