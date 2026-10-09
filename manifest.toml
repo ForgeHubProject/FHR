@@ -33,6 +33,7 @@ maintainer  = "ForgeHub Project"
 ".blend"  = { handler = "blend", build = "0000000" }
 ".amf"  = { handler = "amf", build = "0000000" }
 ".wrl"  = { handler = "vrml", build = "0000000" }
+".dxf"  = { handler = "dxf", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -215,6 +216,17 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml.wasm"
 
+# The dxf handler — rolling release `dxf-latest`, overwritten on each push to
+# main that touches packages/handler-dxf/ (or the shared packages/go it builds
+# on). DXF diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."dxf"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -237,3 +249,4 @@ maintainer  = "ForgeHub Project"
 "blend"      = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/renderer-blend.js"
 "amf"        = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/renderer-amf.js"
 "vrml"       = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/renderer-vrml.js"
+"dxf"        = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/renderer-dxf.js"
