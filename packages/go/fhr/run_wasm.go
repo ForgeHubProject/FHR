@@ -23,6 +23,12 @@ func Run(h Handler, info Info) {
 	if p, ok := h.(Previewer); ok {
 		api.Set("preview", js.FuncOf(func(_ js.Value, args []js.Value) any { return wasmPreview(p, args) }))
 	}
+	if i, ok := h.(Importer); ok {
+		api.Set("import", js.FuncOf(func(_ js.Value, args []js.Value) any { return wasmImport(i, args) }))
+	}
+	if e, ok := h.(Exporter); ok {
+		api.Set("export", js.FuncOf(func(_ js.Value, args []js.Value) any { return wasmExport(info, e, args) }))
+	}
 	if a, ok := h.(ChoiceApplier); ok {
 		api.Set("applyChoices", js.FuncOf(func(_ js.Value, args []js.Value) any { return wasmApplyChoices(a, args) }))
 	}
@@ -118,4 +124,52 @@ func wasmApplyChoices(a ChoiceApplier, args []js.Value) any {
 	return jsResult(struct {
 		Blob string `json:"blob"`
 	}{base64.StdEncoding.EncodeToString(out)})
+}
+
+// import(blob): one Uint8Array → {mediaType, blob: Uint8Array} (a GLB), or
+// {error} — shaped like preview, for the same reason.
+func wasmImport(i Importer, args []js.Value) any {
+	result := js.Global().Get("Object").New()
+	if len(args) < 1 {
+		result.Set("error", "import(blob) requires one Uint8Array argument")
+		return result
+	}
+	out, err := i.Import(bytesFromArg(args[0]))
+	if err != nil {
+		result.Set("error", err.Error())
+		return result
+	}
+	arr := js.Global().Get("Uint8Array").New(len(out))
+	js.CopyBytesToJS(arr, out)
+	result.Set("mediaType", MediaTypeGLB)
+	result.Set("blob", arr)
+	return result
+}
+
+// export(glb, format): a GLB Uint8Array and the target extension → {blob:
+// Uint8Array}, or {error}. An omitted format follows the CLI's rule.
+func wasmExport(info Info, e Exporter, args []js.Value) any {
+	result := js.Global().Get("Object").New()
+	if len(args) < 1 {
+		result.Set("error", "export(glb, format) requires a Uint8Array argument")
+		return result
+	}
+	want := ""
+	if len(args) > 1 && args[1].Type() == js.TypeString {
+		want = args[1].String()
+	}
+	format, err := exportFormat(info, want)
+	if err != nil {
+		result.Set("error", err.Error())
+		return result
+	}
+	out, err := e.Export(bytesFromArg(args[0]), format)
+	if err != nil {
+		result.Set("error", err.Error())
+		return result
+	}
+	arr := js.Global().Get("Uint8Array").New(len(out))
+	js.CopyBytesToJS(arr, out)
+	result.Set("blob", arr)
+	return result
 }

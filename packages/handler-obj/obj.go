@@ -14,14 +14,12 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"path/filepath"
 	"strings"
 
 	"github.com/forgehubproject/fhr/packages/go/fhr"
 	"github.com/forgehubproject/fhr/packages/go/scene"
-	"github.com/qmuntal/gltf"
 )
 
 // Handler is the Wavefront OBJ format handler.
@@ -62,15 +60,9 @@ func (h *Handler) Preview(blob fhr.Blob) (fhr.Blob, error) {
 	if err != nil {
 		return nil, err
 	}
-	var buf bytes.Buffer
-	enc := gltf.NewEncoder(&buf)
-	enc.AsBinary = true
 	doc := toGLTF(f)
 	dressForPreview(doc)
-	if err := enc.Encode(doc); err != nil {
-		return nil, fmt.Errorf("encoding preview: %w", err)
-	}
-	return buf.Bytes(), nil
+	return encodeGLB(doc)
 }
 
 // topLabels renames the engine's top-level groups into OBJ vocabulary. Only
