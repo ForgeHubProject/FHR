@@ -87,6 +87,11 @@ export type SceneHandle = {
    * built without one.
    */
   setHeatmap?(on: boolean): void;
+  /**
+   * "Show changes" (FHR#87): the diff's paint and change ghosts on, or the model
+   * in its own materials. Works in every mode; see `versionLayers`.
+   */
+  setShowChanges?(on: boolean): void;
 };
 
 const deg2rad = (d: number): number => (d * Math.PI) / 180;
@@ -239,6 +244,8 @@ export type ModelSceneOptions = {
   theme?: Theme;
   /** Presentation to open on (presentation.ts). Default: structural. */
   mode?: PresentationMode;
+  /** Open with the diff's marks shown (default) or the model as it is (FHR#87). */
+  showChanges?: boolean;
   /** Which way side-by-side cuts the canvas. Default: columns. */
   split?: SplitOrientation;
   /** Enable the A/B blink (only meaningful when the base model loaded). */
@@ -352,6 +359,7 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
   let mode: PresentationMode = options.mode ?? "structural";
   let split: SplitOrientation = options.split ?? "columns";
   let blinking = false;
+  let showChanges = options.showChanges !== false;
 
   /**
    * Show exactly one version. What `grammar` means, and why the paint is part of
@@ -360,7 +368,7 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
    * the answer onto the scene.
    */
   const showVersion = (side: PaneSide, grammar: boolean): void => {
-    const layers = versionLayers({ side, grammar, mode });
+    const layers = versionLayers({ side, grammar, mode, changes: showChanges });
     overlay.headGroup.visible = layers.head;
     if (overlay.baseSolidGroup) overlay.baseSolidGroup.visible = layers.baseSolid;
     if (overlay.baseGhostGroup) overlay.baseGhostGroup.visible = layers.baseGhost;
@@ -760,6 +768,16 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
       // fix, not to cause. An empty scene box gets the unit box the mount opened
       // on, so the button still does something on a file with no geometry.
       flyTo.to(overlay.sceneBox.isEmpty() ? unitBox() : overlay.sceneBox);
+    },
+    setShowChanges(on: boolean): void {
+      if (on === showChanges) return;
+      // The heatmap remembers what each mesh wore when it painted and puts that
+      // back when it stops; the paint changing underneath it would have it put
+      // the wrong one back. So it comes off first, and applyMode — after the
+      // paint has changed — puts it back over what the meshes wear now.
+      if (heatmap?.on) heatmap.disable();
+      showChanges = on;
+      applyMode();
     },
     selectChange(path: string | null, selectOptions: { fly?: boolean } = {}): boolean {
       return applySelection(path, selectOptions.fly !== false);

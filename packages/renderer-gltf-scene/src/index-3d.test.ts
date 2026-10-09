@@ -7,7 +7,7 @@
 // on-screen lists can disagree about.
 
 import { describe, it, expect } from "vitest";
-import { indirectPaint, routeSelection, structureRows, type SelectionSurfaces } from "./index-3d.js";
+import { indirectPaint, isOneSided, routeSelection, structureRows, type SelectionSurfaces } from "./index-3d.js";
 import { selectionKeys } from "./selection-keys.js";
 import { buildNameIndex } from "./node-index.js";
 import type { GltfDocument } from "./gltf-parse.js";
@@ -271,5 +271,19 @@ describe("structureRows — every row the viewport paints admits it", () => {
     const props: MountProps = { mode: "diff" };
     const broken = { asset: { version: "2.0" } } as GltfDocument;
     expect(structureRows(broken, props, indirectPaint(buildNameIndex(broken), props))).toEqual([]);
+  });
+});
+
+describe("isOneSided — whether Show changes opens on the model (FHR#87)", () => {
+  const ref = (url: string) => ({ url, size: 1 });
+  it("is true for a file added, a file deleted, the file view, and the same blob twice", () => {
+    expect(isOneSided({ mode: "diff", blobs: { head: ref("/h") } })).toBe(true);
+    expect(isOneSided({ mode: "diff", blobs: { base: ref("/b") } })).toBe(true);
+    expect(isOneSided({ mode: "view", blobs: { base: ref("/b"), head: ref("/h") } })).toBe(true);
+    expect(isOneSided({ mode: "diff", blobs: { base: ref("/x"), head: ref("/x") } })).toBe(true);
+  });
+
+  it("is false for a diff with both versions", () => {
+    expect(isOneSided({ mode: "diff", blobs: { base: ref("/b"), head: ref("/h") } })).toBe(false);
   });
 });
