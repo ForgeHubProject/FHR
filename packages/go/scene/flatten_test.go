@@ -98,3 +98,19 @@ func TestSafeName(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// A document that names accessors that do not exist must be an error, not a
+// panic: Flatten runs in a server-side wasm worker on blobs anyone can push.
+func TestFlattenRejectsMissingAccessors(t *testing.T) {
+	for name, src := range map[string]string{
+		"position": `{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":7}}]}]}`,
+		"indices":  `{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":9}]}],"accessors":[{"componentType":5126,"count":1,"type":"VEC3"}]}`,
+		"normal":   `{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":5}}]}],"accessors":[{"componentType":5126,"count":1,"type":"VEC3"}]}`,
+		"node":     `{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[3]}],"nodes":[{}]}`,
+		"mesh":     `{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":4}]}`,
+	} {
+		if _, err := Flatten([]byte(src)); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
