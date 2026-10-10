@@ -31,7 +31,7 @@ maintainer  = "ForgeHub Project"
 ".usdz" = { handler = "usd", build = "ef13b6e" }
 ".3ds"  = { handler = "3ds", build = "ef13b6e" }
 ".blend"  = { handler = "blend", build = "ef13b6e" }
-".amf"  = { handler = "amf", build = "0000000" }
+".amf"  = { handler = "amf", build = "ef13b6e" }
 ".wrl"  = { handler = "vrml", build = "0000000" }
 ".dxf"  = { handler = "dxf", build = "0000000" }
 
