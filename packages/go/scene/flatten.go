@@ -68,8 +68,18 @@ func Flatten(blob Blob) ([]*FlatNode, error) {
 }
 
 // FlattenDocument is Flatten over a parsed document.
-func FlattenDocument(doc *gltf.Document) ([]*FlatNode, error) {
-	var out []*FlatNode
+//
+// A hostile or corrupt document can name an accessor, buffer view or buffer
+// that does not exist, and the glTF reader indexes those without checking. The
+// indices this file follows are checked here; anything the reader still trips
+// over is turned into an error rather than a panic, because this runs in a
+// server-side wasm worker.
+func FlattenDocument(doc *gltf.Document) (out []*FlatNode, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = nil, fmt.Errorf("the glTF is malformed: %v", r)
+		}
+	}()
 	for _, ni := range sceneRootNodes(doc) {
 		n, err := flattenNode(doc, ni, identity4, map[int]bool{})
 		if err != nil {
@@ -149,6 +159,14 @@ func flattenNode(doc *gltf.Document, ni int, parent mat4, onPath map[int]bool) (
 	return n, nil
 }
 
+// accessor is doc.Accessors[i], or an error when the document has no such one.
+func accessor(doc *gltf.Document, i int, what string) (*gltf.Accessor, error) {
+	if i < 0 || i >= len(doc.Accessors) || doc.Accessors[i] == nil {
+		return nil, fmt.Errorf("%s accessor %d does not exist", what, i)
+	}
+	return doc.Accessors[i], nil
+}
+
 func flattenMesh(doc *gltf.Document, mi int, world mat4) ([]*FlatPrim, error) {
 	if mi < 0 || mi >= len(doc.Meshes) {
 		return nil, fmt.Errorf("mesh index %d out of range", mi)
@@ -161,7 +179,11 @@ func flattenMesh(doc *gltf.Document, mi int, world mat4) ([]*FlatPrim, error) {
 		if !ok {
 			continue // nothing to draw
 		}
-		pos, err := modeler.ReadPosition(doc, doc.Accessors[posAcc], nil)
+		acc, err := accessor(doc, posAcc, "POSITION")
+		if err != nil {
+			return nil, fmt.Errorf("primitive %d: %w", pi, err)
+		}
+		pos, err := modeler.ReadPosition(doc, acc, nil)
 		if err != nil {
 			return nil, fmt.Errorf("primitive %d positions: %w", pi, err)
 		}
@@ -170,7 +192,11 @@ func flattenMesh(doc *gltf.Document, mi int, world mat4) ([]*FlatPrim, error) {
 			fp.Positions = append(fp.Positions, world.point(v))
 		}
 		if a, ok := p.Attributes[gltf.NORMAL]; ok {
-			ns, err := modeler.ReadNormal(doc, doc.Accessors[a], nil)
+			acc, err := accessor(doc, a, "NORMAL")
+			if err != nil {
+				return nil, fmt.Errorf("primitive %d: %w", pi, err)
+			}
+			ns, err := modeler.ReadNormal(doc, acc, nil)
 			if err != nil {
 				return nil, fmt.Errorf("primitive %d normals: %w", pi, err)
 			}
@@ -179,7 +205,11 @@ func flattenMesh(doc *gltf.Document, mi int, world mat4) ([]*FlatPrim, error) {
 			}
 		}
 		if a, ok := p.Attributes[gltf.TEXCOORD_0]; ok {
-			uvs, err := modeler.ReadTextureCoord(doc, doc.Accessors[a], nil)
+			acc, err := accessor(doc, a, "TEXCOORD_0")
+			if err != nil {
+				return nil, fmt.Errorf("primitive %d: %w", pi, err)
+			}
+			uvs, err := modeler.ReadTextureCoord(doc, acc, nil)
 			if err != nil {
 				return nil, fmt.Errorf("primitive %d texcoords: %w", pi, err)
 			}
@@ -188,7 +218,11 @@ func flattenMesh(doc *gltf.Document, mi int, world mat4) ([]*FlatPrim, error) {
 			}
 		}
 		if a, ok := p.Attributes[gltf.COLOR_0]; ok {
-			cs, err := modeler.ReadColor64(doc, doc.Accessors[a], nil)
+			acc, err := accessor(doc, a, "COLOR_0")
+			if err != nil {
+				return nil, fmt.Errorf("primitive %d: %w", pi, err)
+			}
+			cs, err := modeler.ReadColor64(doc, acc, nil)
 			if err != nil {
 				return nil, fmt.Errorf("primitive %d colors: %w", pi, err)
 			}
@@ -224,8 +258,11 @@ func flattenMesh(doc *gltf.Document, mi int, world mat4) ([]*FlatPrim, error) {
 func primIndices(doc *gltf.Document, p *gltf.Primitive, n int) ([]uint32, error) {
 	var idx []uint32
 	if p.Indices != nil {
-		var err error
-		if idx, err = modeler.ReadIndices(doc, doc.Accessors[*p.Indices], nil); err != nil {
+		acc, err := accessor(doc, *p.Indices, "indices")
+		if err != nil {
+			return nil, err
+		}
+		if idx, err = modeler.ReadIndices(doc, acc, nil); err != nil {
 			return nil, fmt.Errorf("indices: %w", err)
 		}
 	} else {
@@ -336,10 +373,20 @@ func (a mat4) mul(b mat4) mat4 {
 func (a mat4) point(v [3]float32) [3]float64 {
 	x, y, z := float64(v[0]), float64(v[1]), float64(v[2])
 	return [3]float64{
-		a[0]*x + a[4]*y + a[8]*z + a[12],
-		a[1]*x + a[5]*y + a[9]*z + a[13],
-		a[2]*x + a[6]*y + a[10]*z + a[14],
+		snap(a[0]*x + a[4]*y + a[8]*z + a[12]),
+		snap(a[1]*x + a[5]*y + a[9]*z + a[13]),
+		snap(a[2]*x + a[6]*y + a[10]*z + a[14]),
 	}
+}
+
+// snap zeroes what is only rounding noise. A 90° rotation leaves cos(90°) ≈
+// 6e-17 where an exact 0 belongs, and a writer would print that as a long
+// string of digits (and a diff would call it a change).
+func snap(v float64) float64 {
+	if math.Abs(v) < 1e-12 {
+		return 0
+	}
+	return v
 }
 
 // vector applies the upper 3×3 only (no translation).
