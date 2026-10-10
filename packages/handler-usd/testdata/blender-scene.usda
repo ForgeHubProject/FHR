@@ -1,0 +1,133 @@
+#usda 1.0
+(
+    defaultPrim = "root"
+    doc = "Blender v5.2.2 LTS"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "root" (
+    prepend apiSchemas = ["ColorSpaceAPI"]
+    customData = {
+        dictionary Blender = {
+            bool generated = 1
+        }
+    }
+)
+{
+    uniform token colorSpace:name = "lin_rec709_scene"
+
+    def Xform "Box"
+    {
+        custom string userProperties:blender:object_name = "Box"
+        float3 xformOp:rotateXYZ = (0, -0, 30.000002)
+        float3 xformOp:scale = (1, 2, 1)
+        double3 xformOp:translate = (2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Mesh "Cube" (
+            active = true
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform bool doubleSided = 1
+            float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+            int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+            int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 7, 6, 6, 7, 5, 4, 4, 5, 1, 0, 2, 6, 4, 0, 7, 3, 1, 5]
+            rel material:binding = </root/_materials/Red>
+            normal3f[] normals = [(-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+                interpolation = "faceVarying"
+            )
+            point3f[] points = [(-1, -1, -1), (-1, -1, 1), (-1, 1, -1), (-1, 1, 1), (1, -1, -1), (1, -1, 1), (1, 1, -1), (1, 1, 1)]
+            texCoord2f[] primvars:st = [(0.375, 0), (0.375, 1), (0.125, 0.75), (0.625, 0), (0.625, 1), (0.875, 0.75), (0.375, 0.25), (0.125, 0.5), (0.625, 0.25), (0.875, 0.5), (0.375, 0.75), (0.625, 0.75), (0.375, 0.5), (0.625, 0.5)] (
+                interpolation = "faceVarying"
+            )
+            int[] primvars:st:indices = [0, 3, 8, 6, 6, 8, 13, 12, 12, 13, 11, 10, 10, 11, 4, 1, 7, 12, 10, 2, 13, 9, 5, 11]
+            uniform token subdivisionScheme = "none"
+            custom string userProperties:blender:data_name = "Cube"
+        }
+
+        def Xform "Ball"
+        {
+            custom string userProperties:blender:object_name = "Ball"
+            float3 xformOp:rotateXYZ = (0, -0, 0)
+            float3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 3)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+            def Mesh "Icosphere" (
+                active = true
+            )
+            {
+                float3[] extent = [(-0.4472125, -0.42532, -0.5), (0.4472125, 0.42532, 0.5)]
+                int[] faceVertexCounts = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+                int[] faceVertexIndices = [0, 1, 2, 1, 0, 5, 0, 2, 3, 0, 3, 4, 0, 4, 5, 1, 5, 10, 2, 1, 6, 3, 2, 7, 4, 3, 8, 5, 4, 9, 1, 10, 6, 2, 6, 7, 3, 7, 8, 4, 8, 9, 5, 9, 10, 6, 10, 11, 7, 6, 11, 8, 7, 11, 9, 8, 11, 10, 9, 11]
+                normal3f[] normals = [(0.18759654, -0.57735366, -0.79465103), (0.18759654, -0.57735366, -0.79465103), (0.18759654, -0.57735366, -0.79465103), (0.6070646, 0, -0.7946524), (0.6070646, 0, -0.7946524), (0.6070646, 0, -0.7946524), (-0.49112207, -0.35682902, -0.7946522), (-0.49112207, -0.35682902, -0.7946522), (-0.49112207, -0.35682902, -0.7946522), (-0.49112207, 0.35682902, -0.7946522), (-0.49112207, 0.35682902, -0.7946522), (-0.49112207, 0.35682902, -0.7946522), (0.18759654, 0.57735366, -0.79465103), (0.18759654, 0.57735366, -0.79465103), (0.18759654, 0.57735366, -0.79465103), (0.9822461, 0, -0.1875968), (0.9822461, 0, -0.1875968), (0.9822461, 0, -0.1875968), (0.30353555, -0.9341715, -0.18758912), (0.30353555, -0.9341715, -0.18758912), (0.30353555, -0.9341715, -0.18758912), (-0.7946492, -0.5773594, -0.18758695), (-0.7946492, -0.5773594, -0.18758695), (-0.7946492, -0.5773594, -0.18758695), (-0.7946492, 0.5773594, -0.18758693), (-0.7946492, 0.5773594, -0.18758693), (-0.7946492, 0.5773594, -0.18758693), (0.30353555, 0.9341715, -0.18758912), (0.30353555, 0.9341715, -0.18758912), (0.30353555, 0.9341715, -0.18758912), (0.7946492, -0.5773594, 0.18758695), (0.7946492, -0.5773594, 0.18758695), (0.7946492, -0.5773594, 0.18758695), (-0.30353555, -0.9341715, 0.1875892), (-0.30353555, -0.9341715, 0.1875892), (-0.30353555, -0.9341715, 0.1875892), (-0.9822461, 0, 0.1875968), (-0.9822461, 0, 0.1875968), (-0.9822461, 0, 0.1875968), (-0.30353555, 0.9341715, 0.1875892), (-0.30353555, 0.9341715, 0.1875892), (-0.30353555, 0.9341715, 0.1875892), (0.7946492, 0.5773594, 0.18758695), (0.7946492, 0.5773594, 0.18758695), (0.7946492, 0.5773594, 0.18758695), (0.49112207, -0.35682902, 0.7946522), (0.49112207, -0.35682902, 0.7946522), (0.49112207, -0.35682902, 0.7946522), (-0.18759649, -0.57735366, 0.79465103), (-0.18759649, -0.57735366, 0.79465103), (-0.18759649, -0.57735366, 0.79465103), (-0.6070646, 0, 0.7946524), (-0.6070646, 0, 0.7946524), (-0.6070646, 0, 0.7946524), (-0.18759657, 0.5773537, 0.7946511), (-0.18759657, 0.5773537, 0.7946511), (-0.18759657, 0.5773537, 0.7946511), (0.49112207, 0.35682902, 0.7946522), (0.49112207, 0.35682902, 0.7946522), (0.49112207, 0.35682902, 0.7946522)] (
+                    interpolation = "faceVarying"
+                )
+                point3f[] points = [(0, 0, -0.5), (0.3618, -0.26286, -0.2236075), (-0.1381925, -0.42532, -0.2236075), (-0.4472125, 0, -0.2236075), (-0.1381925, 0.42532, -0.2236075), (0.3618, 0.26286, -0.2236075), (0.1381925, -0.42532, 0.2236075), (-0.3618, -0.26286, 0.2236075), (-0.3618, 0.26286, 0.2236075), (0.1381925, 0.42532, 0.2236075), (0.4472125, 0, 0.2236075), (0, 0, 0.5)]
+                texCoord2f[] primvars:st = [(0.181819, 0), (0.363637, 0), (0.909091, 0), (0.727273, 0), (0.545455, 0), (0.272728, 0.157461), (1, 0.157461), (0.09091, 0.157461), (0.818182, 0.157461), (0.636364, 0.157461), (0.454546, 0.157461), (0.181819, 0.314921), (0, 0.314921), (0.909091, 0.314921), (0.727273, 0.314921), (0.545455, 0.314921), (0.363637, 0.314921), (0.272728, 0.472382), (0.09091, 0.472382), (0.818182, 0.472382), (0.636364, 0.472382), (0.454546, 0.472382)] (
+                    interpolation = "faceVarying"
+                )
+                int[] primvars:st:indices = [0, 5, 7, 5, 1, 10, 2, 6, 8, 3, 8, 9, 4, 9, 10, 5, 10, 16, 7, 5, 11, 8, 6, 13, 9, 8, 14, 10, 9, 15, 5, 16, 11, 7, 11, 12, 8, 13, 14, 9, 14, 15, 10, 15, 16, 11, 16, 17, 12, 11, 18, 14, 13, 19, 15, 14, 20, 16, 15, 21]
+                uniform token subdivisionScheme = "none"
+                custom string userProperties:blender:data_name = "Icosphere"
+            }
+        }
+    }
+
+    def Scope "_materials"
+    {
+        def Material "Red" (
+            prepend apiSchemas = ["ColorSpaceAPI"]
+        )
+        {
+            uniform token colorSpace:name = "lin_rec709_scene"
+            token outputs:surface.connect = </root/_materials/Red/Principled_BSDF.outputs:surface>
+            custom string userProperties:blender:data_name = "Red"
+
+            def Shader "Principled_BSDF"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                float inputs:clearcoat = 0
+                float inputs:clearcoatRoughness = 0.03
+                color3f inputs:diffuseColor = (1, 0, 0)
+                float inputs:ior = 1.5
+                float inputs:metallic = 0
+                float inputs:opacity = 1
+                float inputs:roughness = 0.5
+                float inputs:specular = 0.5
+                token outputs:surface
+            }
+        }
+    }
+
+    def Xform "Floor"
+    {
+        custom string userProperties:blender:object_name = "Floor"
+        float3 xformOp:rotateXYZ = (0, -0, 0)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-3, 1, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Mesh "Plane" (
+            active = true
+        )
+        {
+            float3[] extent = [(-0.5, -0.5, 0), (0.5, 0.5, 0)]
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 3, 2]
+            normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+                interpolation = "faceVarying"
+            )
+            point3f[] points = [(-0.5, -0.5, 0), (0.5, -0.5, 0), (-0.5, 0.5, 0), (0.5, 0.5, 0)]
+            texCoord2f[] primvars:st = [(0, 0), (1, 0), (0, 1), (1, 1)] (
+                interpolation = "faceVarying"
+            )
+            int[] primvars:st:indices = [0, 1, 3, 2]
+            uniform token subdivisionScheme = "none"
+            custom string userProperties:blender:data_name = "Plane"
+        }
+    }
+}
+

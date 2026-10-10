@@ -1,0 +1,168 @@
+name: Release fbx handler
+
+on:
+  # Manual trigger — rerun the rolling release without a code change.
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - 'packages/handler-fbx/**'
+      # The shared Go SDK and the scene engine are compiled into this handler.
+      - 'packages/go/**'
+      - 'packages/renderer-fbx/**'
+      # renderer-fbx bundles the gltf-scene review surface and viewport.
+      - 'packages/renderer-gltf-scene/**'
+      - 'packages/renderer-sdk/**'
+      - 'packages/types/**'
+      # Include this workflow so changes to how the release is built/published
+      # actually trigger a rebuild.
+      - '.github/workflows/release-handler-fbx.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            asset: forge-handler-fbx_linux-amd64
+          - goos: linux
+            goarch: arm64
+            asset: forge-handler-fbx_linux-arm64
+          - goos: darwin
+            goarch: amd64
+            asset: forge-handler-fbx_darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            asset: forge-handler-fbx_darwin-arm64
+          - goos: windows
+            goarch: amd64
+            asset: forge-handler-fbx_windows-amd64.exe
+          # Browser build for client-side (Tier B) diff. Standard Go wasm.
+          - goos: js
+            goarch: wasm
+            asset: forge-handler-fbx.wasm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/handler-fbx/go.mod
+
+      - name: Build
+        working-directory: packages/handler-fbx
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -mod=mod -trimpath -ldflags="-s -w" -o ${{ matrix.asset }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: packages/handler-fbx/${{ matrix.asset }}
+
+  build-renderer:
+    name: Build renderer bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install workspace deps
+        run: npm ci
+
+      - name: Build renderer (types → sdk → renderer)
+        env:
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          npm run build --workspace @fhr/types
+          npm run build --workspace @fhr/renderer-sdk
+          BUILD_SHA="$(git rev-parse --short HEAD)" npm run build --workspace @fhr/renderer-fbx
+          cp packages/renderer-fbx/dist/renderer.js renderer-fbx.js
+          # The lite bundle lazy-imports the gltf-scene viewport chunk as a sibling.
+          cp packages/renderer-fbx/dist/renderer-3d.js renderer-fbx-3d.js
+
+      - name: Upload renderer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderer-bundles
+          path: |
+            renderer-fbx.js
+            renderer-fbx-3d.js
+
+  release:
+    name: Publish rolling release
+    needs: [build, build-renderer]
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.short }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Delete existing rolling release (if any)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete fbx-latest --yes --cleanup-tag 2>/dev/null || true
+
+      - name: Create rolling release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: fbx-latest
+          name: "fbx (latest)"
+          body: "Rolling release — always points to the latest build from main. Includes native binaries, the wasm build, and the renderer bundle."
+          files: dist/*
+
+  update-manifest:
+    name: Update manifest build SHA
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # One step, re-applied from scratch on every attempt: several handlers
+      # release at once whenever a shared package changes, and their lines are
+      # adjacent in manifest.toml, so a bare push is rejected and a rebase
+      # conflicts. Each attempt starts from the current main and rewrites only
+      # this handler's line (same as the other release workflows, #78).
+      - name: Bump build SHA in manifest.toml
+        env:
+          SHA: ${{ needs.release.outputs.sha }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git fetch --quiet origin main
+            git reset --quiet --hard origin/main
+            sed -i 's/\(handler = "fbx", build = "\)[^"]*"/\1'"$SHA"'"/' manifest.toml
+            git add manifest.toml
+            git diff --cached --quiet && exit 0
+            git commit --quiet -m "chore: update fbx build SHA to $SHA"
+            git push --quiet origin HEAD:main && exit 0
+            sleep $((attempt * 5))
+          done
+          echo "could not push the manifest bump after 5 attempts" >&2
+          exit 1
