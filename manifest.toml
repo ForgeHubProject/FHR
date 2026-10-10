@@ -20,7 +20,7 @@ maintainer  = "ForgeHub Project"
 ".obj"  = { handler = "obj", build = "db4be7e" }
 ".stl"  = { handler = "stl", build = "75aeec2" }
 ".ply"  = { handler = "ply", build = "0000000" }
-".3mf"  = { handler = "3mf", build = "0000000" }
+".3mf"  = { handler = "3mf", build = "75aeec2" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
