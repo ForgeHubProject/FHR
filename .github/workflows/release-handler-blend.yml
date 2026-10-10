@@ -21,6 +21,12 @@ on:
 permissions:
   contents: write
 
+# One release run per handler at a time, so two pushes can't interleave
+# their tag moves and uploads on blend-latest.
+concurrency:
+  group: release-handler-blend
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -120,19 +126,48 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Delete existing rolling release (if any)
+      # Update the rolling release in place; never delete it. Deleting the
+      # release with --cleanup-tag and immediately re-creating the same tag
+      # raced: GitHub sometimes applied the old tag's deletion after the new
+      # tag existed, which removed the new tag and unpublished the release
+      # (gltf-scene-latest and csv-latest vanished minutes after successful
+      # runs, #84). Moving the tag and replacing assets has no such window.
+      - name: Move the rolling tag to this commit
+        run: |
+          git tag -f blend-latest
+          git push -f origin refs/tags/blend-latest
+
+      - name: Create or update the rolling release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete blend-latest --yes --cleanup-tag 2>/dev/null || true
+          title="blend (latest)"
+          notes="Rolling release — always points to the latest build from main. Includes native binaries, the wasm build, and the renderer bundle."
+          if gh release view blend-latest >/dev/null 2>&1; then
+            gh release upload blend-latest dist/* --clobber
+            # --clobber only replaces same-named assets. Drop any this build no
+            # longer produces (removed or renamed outputs), after the upload so
+            # a current asset is never missing, and the release mirrors dist/.
+            gh release view blend-latest --json assets --jq '.assets[].name' |
+              while IFS= read -r asset; do
+                [ -e "dist/$asset" ] || gh release delete-asset blend-latest "$asset" --yes
+              done
+            gh release edit blend-latest --title "$title" --notes "$notes" --draft=false
+          else
+            gh release create blend-latest dist/* --title "$title" --notes "$notes" --verify-tag
+          fi
 
-      - name: Create rolling release and upload assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: blend-latest
-          name: "blend (latest)"
-          body: "Rolling release — always points to the latest build from main. Includes native binaries, the wasm build, and the renderer bundle."
-          files: dist/*
+      - name: Check the release matches the build exactly
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          want=$(ls dist | sort)
+          have=$(gh release view blend-latest --json assets --jq '.assets[].name' | sort)
+          if [ "$want" != "$have" ]; then
+            echo "blend-latest does not match this build (< built, > on the release):" >&2
+            diff <(echo "$want") <(echo "$have") >&2 || true
+            exit 1
+          fi
 
   update-manifest:
     name: Update manifest build SHA
