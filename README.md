@@ -43,9 +43,13 @@ fhr/
 ├── manifest.toml                    # registry index (forge source add <url>)
 ├── packages/
 │   ├── types/                       # @fhr/types — the shared contract
-│   ├── go/                          # Go SDK: wire types + subprocess/wasm entry points
+│   ├── go/                          # Go SDK: wire types + subprocess/wasm entry points,
+│   │                                #   and scene/ — the shared 3D engine (diff, flatten, Codec)
+│   ├── handler-*/                   # one module per format (csv, ipynb, gltf-scene, and the 3D family)
+│   ├── renderer-*/                  # one renderer bundle per format
 │   ├── example-handler-ts/          # skeleton: TypeScript handler (direct import)
 │   └── example-handler-native/      # skeleton: any-language handler (subprocess)
+├── docs/3d-formats.md               # the 3D family: formats, conversion, adding one
 ├── CONTRIBUTING.md
 └── SPEC.md
 ```

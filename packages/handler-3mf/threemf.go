@@ -3,6 +3,9 @@
 // item placements and base-material / colour-group colours; and writes a
 // single-model package with one object per node of the scene.
 //
+// Multi-part packages (the production extension: build items and components that
+// point into other .model parts by path) are read, with ids local to each part.
+//
 // 3MF carries a unit (millimetre by default) that glTF does not. Coordinates
 // pass through unchanged in both directions, as they do for STL, so a file's
 // numbers survive a transcode; the unit is the user's to know.
@@ -158,46 +161,20 @@ func decode(blob []byte) (*scene.Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := readPart(mf)
+	d := &decoder{files: map[string]*zip.File{}, parts: map[string]*modelPart{}}
+	for _, f := range zr.File {
+		d.files[cleanPath(f.Name)] = f
+	}
+	rootPath := cleanPath(mf.Name)
+	root, err := d.load(rootPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", mf.Name, err)
-	}
-	var m model
-	if err := xml.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", mf.Name, err)
-	}
-
-	d := &decoder{objects: map[int]*object{}, groups: map[int][]matDef{}}
-	for i := range m.Resources.Objects {
-		o := &m.Resources.Objects[i]
-		d.objects[o.ID] = o
-	}
-	for _, g := range m.Resources.BaseGroups {
-		for _, b := range g.Bases {
-			c, err := parseColor(b.Color)
-			if err != nil {
-				return nil, fmt.Errorf("material %q: %w", b.Name, err)
-			}
-			d.groups[g.ID] = append(d.groups[g.ID], matDef{name: b.Name, color: c})
-		}
-	}
-	for _, g := range m.Resources.ColorGroups {
-		for _, c := range g.Colors {
-			col, err := parseColor(c.Color)
-			if err != nil {
-				return nil, err
-			}
-			d.groups[g.ID] = append(d.groups[g.ID], matDef{color: col})
-		}
+		return nil, err
 	}
 
 	out := &scene.Model{}
-	if len(m.Build.Items) > 0 {
-		for _, it := range m.Build.Items {
-			if it.Path != "" {
-				return nil, fmt.Errorf("build item %d lives in another package part (%s): multi-part 3MF is not supported", it.ObjectID, it.Path)
-			}
-			o, err := d.object(it.ObjectID, it.Transform, 0)
+	if len(root.m.Build.Items) > 0 {
+		for _, it := range root.m.Build.Items {
+			o, err := d.object(rootPath, it.Path, it.ObjectID, it.Transform, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -207,16 +184,18 @@ func decode(blob []byte) (*scene.Model, error) {
 	}
 	// No build section: every object nothing else uses as a component.
 	used := map[int]bool{}
-	for _, o := range d.objects {
+	for _, o := range root.objects {
 		for _, c := range o.Components {
-			used[c.ObjectID] = true
+			if c.Path == "" {
+				used[c.ObjectID] = true
+			}
 		}
 	}
-	for _, o := range m.Resources.Objects {
+	for _, o := range root.m.Resources.Objects {
 		if used[o.ID] {
 			continue
 		}
-		obj, err := d.object(o.ID, "", 0)
+		obj, err := d.object(rootPath, "", o.ID, "", 0)
 		if err != nil {
 			return nil, err
 		}
@@ -225,23 +204,94 @@ func decode(blob []byte) (*scene.Model, error) {
 	return out, nil
 }
 
+func cleanPath(p string) string { return strings.TrimPrefix(p, "/") }
+
 type matDef struct {
 	name  string
 	color [4]float64 // linear RGBA
 }
 
-type decoder struct {
+// modelPart is one model part of the package: the root model, or — with the
+// production extension — another .model file that build items and components
+// point into by path. Object and material ids are local to their part.
+type modelPart struct {
+	m       model
 	objects map[int]*object
 	groups  map[int][]matDef
 }
 
-func (d *decoder) object(id int, transform string, depth int) (*scene.Object, error) {
+type decoder struct {
+	files map[string]*zip.File
+	parts map[string]*modelPart
+	loads int
+}
+
+// maxParts bounds how many model parts one package may pull in.
+const maxParts = 1024
+
+// load parses a model part once.
+func (d *decoder) load(path string) (*modelPart, error) {
+	if p := d.parts[path]; p != nil {
+		return p, nil
+	}
+	if len(d.parts) >= maxParts {
+		return nil, fmt.Errorf("the package references more than %d model parts", maxParts)
+	}
+	f := d.files[path]
+	if f == nil {
+		return nil, fmt.Errorf("the package has no model part %q", path)
+	}
+	data, err := readPart(f)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	p := &modelPart{objects: map[int]*object{}, groups: map[int][]matDef{}}
+	if err := xml.Unmarshal(data, &p.m); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	for i := range p.m.Resources.Objects {
+		o := &p.m.Resources.Objects[i]
+		p.objects[o.ID] = o
+	}
+	for _, g := range p.m.Resources.BaseGroups {
+		for _, b := range g.Bases {
+			c, err := parseColor(b.Color)
+			if err != nil {
+				return nil, fmt.Errorf("material %q: %w", b.Name, err)
+			}
+			p.groups[g.ID] = append(p.groups[g.ID], matDef{name: b.Name, color: c})
+		}
+	}
+	for _, g := range p.m.Resources.ColorGroups {
+		for _, c := range g.Colors {
+			col, err := parseColor(c.Color)
+			if err != nil {
+				return nil, err
+			}
+			p.groups[g.ID] = append(p.groups[g.ID], matDef{color: col})
+		}
+	}
+	d.parts[path] = p
+	return p, nil
+}
+
+// object builds object id of a part. A reference with a path (production
+// extension) leaves the referencing part for that one.
+func (d *decoder) object(from, ref string, id int, transform string, depth int) (*scene.Object, error) {
 	if depth > maxDepth {
 		return nil, fmt.Errorf("components nest deeper than %d (a cycle?)", maxDepth)
 	}
-	o, ok := d.objects[id]
+	path := from
+	if ref != "" {
+		path = cleanPath(ref)
+	}
+	pt, err := d.load(path)
+	if err != nil {
+		return nil, err
+	}
+	o, ok := pt.objects[id]
 	if !ok {
-		return nil, fmt.Errorf("object %d is not defined", id)
+		return nil, fmt.Errorf("object %d is not defined in %s", id, path)
 	}
 	mat, err := parseTransform(transform)
 	if err != nil {
@@ -252,17 +302,14 @@ func (d *decoder) object(id int, transform string, depth int) (*scene.Object, er
 		out.Name = "object" + strconv.Itoa(id)
 	}
 	if len(o.Triangles) > 0 {
-		prims, err := d.prims(o)
+		prims, err := pt.prims(o)
 		if err != nil {
 			return nil, fmt.Errorf("object %d: %w", id, err)
 		}
 		out.Prims = prims
 	}
 	for _, c := range o.Components {
-		if c.Path != "" {
-			return nil, fmt.Errorf("object %d: component in another package part (%s) is not supported", id, c.Path)
-		}
-		child, err := d.object(c.ObjectID, c.Transform, depth+1)
+		child, err := d.object(path, c.Path, c.ObjectID, c.Transform, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -273,7 +320,7 @@ func (d *decoder) object(id int, transform string, depth int) (*scene.Object, er
 
 // prims splits an object's triangles by material — one primitive per distinct
 // (group, index), in order of first use — each with only the vertices it uses.
-func (d *decoder) prims(o *object) ([]*scene.FlatPrim, error) {
+func (d *modelPart) prims(o *object) ([]*scene.FlatPrim, error) {
 	type key struct{ pid, idx int }
 	var order []key
 	tris := map[key][]triangle{}

@@ -48,6 +48,10 @@ func main() {
 with `replace github.com/forgehubproject/fhr/packages/go => ../go` in your
 `go.mod`. `packages/handler-csv` is the smallest worked example.
 
+**Adding a 3D format?** It is a parser and a writer, not a handler: see
+[docs/3d-formats.md](docs/3d-formats.md) — one `scene.Codec` gives you the diff, the
+preview and conversion to every other 3D format.
+
 Both paths produce the same `StructuredDiff` output. The frontend renderer
 consumes that output — it doesn't know or care which path the backend used.
 
