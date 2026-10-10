@@ -25,6 +25,11 @@ type mergeOutput struct {
 	Conflicts []SemanticConflict `json:"conflicts,omitempty"` // omitted on clean merge
 }
 
+type exportInput struct {
+	Blob   string `json:"blob"`   // base64-encoded GLB
+	Format string `json:"format"` // target extension, e.g. ".obj"
+}
+
 type applyChoicesInput struct {
 	Merged string   `json:"merged"` // base64: the merge's result, ours at every conflict
 	Theirs string   `json:"theirs"` // base64
@@ -51,7 +56,7 @@ type cliError struct{ err error }
 func RunCLI(h Handler, info Info, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	info = info.withDefaults(h)
 	if len(args) < 1 {
-		fmt.Fprintf(stderr, "usage: %s <match|diff|merge|%s%sinfo> [filepath]\n", info.binaryName(), applyUsage(h), previewUsage(info))
+		fmt.Fprintf(stderr, "usage: %s <match|diff|merge|%s%s%sinfo> [filepath]\n", info.binaryName(), applyUsage(h), previewUsage(info), transcodeUsage(h))
 		return 1
 	}
 
@@ -74,6 +79,12 @@ func RunCLI(h Handler, info Info, args []string, stdin io.Reader, stdout, stderr
 
 	case "apply-choices":
 		out, fail = cliApplyChoices(h, info, stdin)
+
+	case "import":
+		out, fail = cliImport(h, info, stdin)
+
+	case "export":
+		out, fail = cliExport(h, info, stdin)
 
 	case "info":
 		out = info
@@ -186,6 +197,82 @@ func cliApplyChoices(h Handler, info Info, stdin io.Reader) (any, *cliError) {
 	return struct {
 		Blob string `json:"blob"`
 	}{base64.StdEncoding.EncodeToString(out)}, nil
+}
+
+func cliImport(h Handler, info Info, stdin io.Reader) (any, *cliError) {
+	i, ok := h.(Importer)
+	if !ok {
+		return nil, &cliError{fmt.Errorf("%s cannot import to glTF", info.ID)}
+	}
+	var inp previewInput
+	if err := json.NewDecoder(stdin).Decode(&inp); err != nil {
+		return nil, &cliError{err}
+	}
+	blob, err := decodeBlob("input", inp.Blob)
+	if err != nil {
+		return nil, &cliError{err}
+	}
+	out, err := i.Import(blob)
+	if err != nil {
+		return nil, &cliError{err}
+	}
+	return previewOutput{MediaType: MediaTypeGLB, Blob: base64.StdEncoding.EncodeToString(out)}, nil
+}
+
+func cliExport(h Handler, info Info, stdin io.Reader) (any, *cliError) {
+	e, ok := h.(Exporter)
+	if !ok {
+		return nil, &cliError{fmt.Errorf("%s cannot export from glTF", info.ID)}
+	}
+	var inp exportInput
+	if err := json.NewDecoder(stdin).Decode(&inp); err != nil {
+		return nil, &cliError{err}
+	}
+	glb, err := decodeBlob("input", inp.Blob)
+	if err != nil {
+		return nil, &cliError{err}
+	}
+	format, err := exportFormat(info, inp.Format)
+	if err != nil {
+		return nil, &cliError{err}
+	}
+	out, err := e.Export(glb, format)
+	if err != nil {
+		return nil, &cliError{err}
+	}
+	return struct {
+		Blob string `json:"blob"`
+	}{base64.StdEncoding.EncodeToString(out)}, nil
+}
+
+// exportFormat resolves the requested target against the handler's formats.
+// An empty request is the handler's only format, or an error when it has
+// several — never a silent pick.
+func exportFormat(info Info, want string) (string, error) {
+	if want == "" {
+		if len(info.Formats) == 1 {
+			return info.Formats[0], nil
+		}
+		return "", fmt.Errorf("%s exports several formats (%v): say which", info.ID, info.Formats)
+	}
+	for _, f := range info.Formats {
+		if f == want {
+			return f, nil
+		}
+	}
+	return "", fmt.Errorf("%s does not export %q (formats: %v)", info.ID, want, info.Formats)
+}
+
+// transcodeUsage lists import/export only for handlers that have them.
+func transcodeUsage(h Handler) string {
+	var s string
+	if _, ok := h.(Importer); ok {
+		s += "import|"
+	}
+	if _, ok := h.(Exporter); ok {
+		s += "export|"
+	}
+	return s
 }
 
 func errNoPreview(info Info) error {

@@ -14,14 +14,12 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"path/filepath"
 	"strings"
 
 	"github.com/forgehubproject/fhr/packages/go/fhr"
 	"github.com/forgehubproject/fhr/packages/go/scene"
-	"github.com/qmuntal/gltf"
 )
 
 // Handler is the Wavefront OBJ format handler.
@@ -56,21 +54,15 @@ func (h *Handler) Diff(base, head fhr.Blob) (fhr.StructuredDiff, error) {
 func (h *Handler) PreviewMediaType() string { return fhr.MediaTypeGLB }
 
 // Preview converts an OBJ blob to the GLB the diff was computed over, dressed
-// with a viewable surface (dressForPreview).
+// with a viewable surface (scene.DressForPreview).
 func (h *Handler) Preview(blob fhr.Blob) (fhr.Blob, error) {
 	f, err := parseOBJ(blob)
 	if err != nil {
 		return nil, err
 	}
-	var buf bytes.Buffer
-	enc := gltf.NewEncoder(&buf)
-	enc.AsBinary = true
 	doc := toGLTF(f)
-	dressForPreview(doc)
-	if err := enc.Encode(doc); err != nil {
-		return nil, fmt.Errorf("encoding preview: %w", err)
-	}
-	return buf.Bytes(), nil
+	scene.DressForPreview(doc)
+	return encodeGLB(doc)
 }
 
 // topLabels renames the engine's top-level groups into OBJ vocabulary. Only
