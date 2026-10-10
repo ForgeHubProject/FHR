@@ -15,6 +15,7 @@
 package fhr
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 )
@@ -55,6 +56,42 @@ type ChoiceApplier interface {
 	ApplyChoices(merged, theirs Blob, takePaths []string) (Blob, error)
 }
 
+// Importer is optional. It converts one blob of the handler's format into a
+// binary glTF — the pivot every 3D format shares — faithfully: nothing is
+// dressed for display (that is Previewer's job), so what comes back is the
+// scene the diff engine sees, ready for any Exporter.
+type Importer interface {
+	Import(blob Blob) (Blob, error)
+}
+
+// Exporter is optional. It writes a binary glTF out as the handler's format.
+// format is the target extension (".obj"), which matters to handlers that own
+// several (".gltf" and ".glb"); it is always one of Info.Formats, and an
+// unknown one is an error rather than a guess.
+//
+// Export is lossy where the target is: OBJ has no transforms, cameras or PBR
+// materials, so an exporter bakes what it can and drops the rest. What it
+// cannot represent is the format's limit, not a failure.
+type Exporter interface {
+	Export(glb Blob, format string) (Blob, error)
+}
+
+// Transcode converts a blob from one handler's format to another's by pivoting
+// through glTF: src.Import, then dst.Export. It is what a host's convert call
+// runs when both handlers are loaded in-process; hosts that reach handlers as
+// subprocesses make the same two calls themselves.
+func Transcode(src Importer, dst Exporter, blob Blob, format string) (Blob, error) {
+	glb, err := src.Import(blob)
+	if err != nil {
+		return nil, fmt.Errorf("import: %w", err)
+	}
+	out, err := dst.Export(glb, format)
+	if err != nil {
+		return nil, fmt.Errorf("export: %w", err)
+	}
+	return out, nil
+}
+
 // MediaTypeGLB is the media type of a binary glTF preview.
 const MediaTypeGLB = "model/gltf-binary"
 
@@ -81,6 +118,10 @@ type Capabilities struct {
 	// ApplyChoices says the handler answers the `apply-choices` call. Run
 	// fills it in from the implementation (ChoiceApplier), like Preview.
 	ApplyChoices bool `json:"applyChoices,omitempty"`
+	// Import and Export say the handler answers the `import` / `export` calls
+	// (Importer, Exporter) — the 3D family's transcoding. Run fills them in.
+	Import bool `json:"import,omitempty"`
+	Export bool `json:"export,omitempty"`
 }
 
 func (i Info) withDefaults(h Handler) Info {
@@ -95,6 +136,8 @@ func (i Info) withDefaults(h Handler) Info {
 	if i.Capabilities != nil {
 		caps := *i.Capabilities
 		_, caps.ApplyChoices = h.(ChoiceApplier)
+		_, caps.Import = h.(Importer)
+		_, caps.Export = h.(Exporter)
 		i.Capabilities = &caps
 	}
 	return i
