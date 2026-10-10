@@ -100,9 +100,10 @@ across the family; lights and cameras are ignored, the rest is not read.
    Diff, import, export and preview come from the codec.
 2. **A renderer package** — copy `packages/renderer-ply` (a few lines: it points the
    gltf-scene review surface at the handler's preview).
-3. **`.github/workflows/release-handler-<id>.yml`** and **manifest entries** (a
-   `[formats]` line, `[assets.handlers."<id>"]`, `[assets.renderers]`). Use build SHA
-   `0000000` until the first release replaces it.
+3. **`.github/workflows/release-handler-<id>.yml`** (copy `release-handler-ply.yml`
+   and replace the id; it updates the rolling release in place, never deletes it, #84)
+   and **manifest entries** (a `[formats]` line, `[assets.handlers."<id>"]`,
+   `[assets.renderers]`). Use build SHA `0000000` until the first release replaces it.
 
 ### What a handler must do
 
