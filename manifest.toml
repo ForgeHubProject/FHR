@@ -25,10 +25,10 @@ maintainer  = "ForgeHub Project"
 ".dae"  = { handler = "dae", build = "ef13b6e" }
 ".x3d"  = { handler = "x3d", build = "0000000" }
 ".fbx"  = { handler = "fbx", build = "0000000" }
-".usd"  = { handler = "usd", build = "0000000" }
-".usda" = { handler = "usd", build = "0000000" }
-".usdc" = { handler = "usd", build = "0000000" }
-".usdz" = { handler = "usd", build = "0000000" }
+".usd"  = { handler = "usd", build = "ef13b6e" }
+".usda" = { handler = "usd", build = "ef13b6e" }
+".usdc" = { handler = "usd", build = "ef13b6e" }
+".usdz" = { handler = "usd", build = "ef13b6e" }
 ".3ds"  = { handler = "3ds", build = "0000000" }
 ".blend"  = { handler = "blend", build = "ef13b6e" }
 ".amf"  = { handler = "amf", build = "0000000" }
