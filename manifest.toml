@@ -29,6 +29,7 @@ maintainer  = "ForgeHub Project"
 ".usda" = { handler = "usd", build = "0000000" }
 ".usdc" = { handler = "usd", build = "0000000" }
 ".usdz" = { handler = "usd", build = "0000000" }
+".3ds"  = { handler = "3ds", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -167,6 +168,17 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/forge-handler-usd_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/forge-handler-usd.wasm"
 
+# The 3ds handler — rolling release `3ds-latest`, overwritten on each push to
+# main that touches packages/handler-3ds/ (or the shared packages/go it builds
+# on). 3DS diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."3ds"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -185,3 +197,4 @@ maintainer  = "ForgeHub Project"
 "x3d"        = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/renderer-x3d.js"
 "fbx"        = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/renderer-fbx.js"
 "usd"        = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/renderer-usd.js"
+"3ds"        = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/renderer-3ds.js"
