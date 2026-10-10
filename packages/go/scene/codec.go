@@ -21,7 +21,8 @@ type Codec struct {
 	Formats []string // extensions, lowercase with the dot
 	// Decode reads one file. It is never called with an empty blob.
 	Decode func(Blob) (*Model, error)
-	// Encode writes a flattened scene (Flatten) as one of Formats.
+	// Encode writes a flattened scene (Flatten) as one of Formats. Nil for a
+	// format that is read but not written; use ReadOnly for its handler.
 	Encode func(roots []*FlatNode, format string) (Blob, error)
 	// Merge is not offered: formats without stable element identity cannot be
 	// merged semantically, and forge falls back to blob-pick for them.
@@ -82,6 +83,22 @@ func (h *CodecHandler) Diff(base, head Blob) (StructuredDiff, error) {
 	}
 	return StructuredDiff{Version: "1.0", Format: h.c.ID, Changes: DiffDocuments(a, b)}, nil
 }
+
+// ReadOnly returns a handler that reads the format but declares no export — for
+// a format that cannot be written (a codec with a nil Encode). A handler whose
+// Export always fails would still advertise one, so the method has to be absent.
+func (c *Codec) ReadOnly() fhr.Handler { return readOnly{c.Handler()} }
+
+type readOnly struct{ h *CodecHandler }
+
+func (r readOnly) Match(path string) bool                 { return r.h.Match(path) }
+func (r readOnly) Diff(a, b Blob) (StructuredDiff, error) { return r.h.Diff(a, b) }
+func (r readOnly) Merge(a, b, c Blob) (Blob, *ConflictInfo, error) {
+	return r.h.Merge(a, b, c)
+}
+func (r readOnly) Import(blob Blob) (Blob, error)  { return r.h.Import(blob) }
+func (r readOnly) PreviewMediaType() string        { return r.h.PreviewMediaType() }
+func (r readOnly) Preview(blob Blob) (Blob, error) { return r.h.Preview(blob) }
 
 // Merge is unsupported; see Codec.
 func (h *CodecHandler) Merge(_, _, _ Blob) (Blob, *ConflictInfo, error) {

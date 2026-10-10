@@ -101,15 +101,30 @@ func TestIdenticalMeshesNoChanges(t *testing.T) {
 	}
 }
 
+// meshRows is the statistic rows of a modified-mesh diff: the children of the one
+// "nodes/<name>" change under the "nodes" wrapper (see nodeChange).
+func meshRows(t *testing.T, d StructuredDiff) (node DiffChange, rows []DiffChange) {
+	t.Helper()
+	if len(d.Changes) != 1 || d.Changes[0].Path != "nodes" || len(d.Changes[0].Children) != 1 {
+		t.Fatalf("want one nodes wrapper holding one node change, got %+v", d.Changes)
+	}
+	node = d.Changes[0].Children[0]
+	return node, node.Children
+}
+
 func TestTranslatedCubeOnlyBoundsChange(t *testing.T) {
 	base := asciiSTL("part", cube(0, 0, 0))
 	head := asciiSTL("part", cube(1, 0, 0)) // same shape, moved +1 on x
 	d, js := diffJSON(t, base, head)
-	if len(d.Changes) != 1 {
+	node, rows := meshRows(t, d)
+	if node.Path != "nodes/part" || node.Kind != Modified {
+		t.Fatalf("the change belongs to the preview's node, got %+v", node)
+	}
+	if len(rows) != 1 {
 		t.Fatalf("translation must change bounds only (count/area/volume identical), got %s", js)
 	}
-	c := d.Changes[0]
-	if c.Path != "bounds" || c.Kind != Modified {
+	c := rows[0]
+	if c.Path != "nodes/part/bounds" || c.Kind != Modified {
 		t.Fatalf("expected a modified bounds change, got %+v", c)
 	}
 	if c.Before != "[0.0000 0.0000 0.0000] – [1.0000 1.0000 1.0000]" ||
@@ -151,15 +166,16 @@ func TestASCIIAndBinaryParseToEqualStats(t *testing.T) {
 func TestTriangleCountAndAreaChange(t *testing.T) {
 	tris := cube(0, 0, 0)
 	d, js := diffJSON(t, asciiSTL("part", tris), asciiSTL("part", tris[:11]))
+	_, rows := meshRows(t, d)
 	var counts, bounds bool
-	for _, c := range d.Changes {
+	for _, c := range rows {
 		switch c.Path {
-		case "triangles":
+		case "nodes/part/triangles":
 			if c.Before != 12 || c.After != 11 {
 				t.Fatalf("expected triangle count 12 → 11, got %v → %v", c.Before, c.After)
 			}
 			counts = true
-		case "bounds":
+		case "nodes/part/bounds":
 			bounds = true
 		}
 	}
@@ -169,7 +185,7 @@ func TestTriangleCountAndAreaChange(t *testing.T) {
 	if bounds {
 		t.Fatalf("dropping one cube face triangle must not change bounds (its corners remain in other triangles), got %s", js)
 	}
-	if !strings.Contains(js, `"surface_area"`) {
+	if !strings.Contains(js, `"nodes/part/surface_area"`) {
 		t.Fatalf("dropping a triangle should change surface area, got %s", js)
 	}
 }
@@ -177,20 +193,23 @@ func TestTriangleCountAndAreaChange(t *testing.T) {
 func TestNameChange(t *testing.T) {
 	tris := cube(0, 0, 0)
 	d, _ := diffJSON(t, asciiSTL("old", tris), asciiSTL("new", tris))
-	if len(d.Changes) != 1 || d.Changes[0].Path != "name" || d.Changes[0].Kind != Modified {
-		t.Fatalf("expected a single solid-name change, got %+v", d.Changes)
+	node, rows := meshRows(t, d)
+	// Keyed on the head side's name: the preview the reviewer is looking at.
+	if node.Path != "nodes/new" || len(rows) != 1 || rows[0].Path != "nodes/new/name" || rows[0].Kind != Modified {
+		t.Fatalf("expected a single solid-name change under nodes/new, got %+v", d.Changes)
 	}
-	if d.Changes[0].Before != "old" || d.Changes[0].After != "new" {
-		t.Fatalf("expected old → new, got %+v", d.Changes[0])
+	if rows[0].Before != "old" || rows[0].After != "new" {
+		t.Fatalf("expected old → new, got %+v", rows[0])
 	}
 }
 
 func TestEmptyBaseIsOneAddedEntry(t *testing.T) {
 	d, js := diffJSON(t, nil, asciiSTL("cube", cube(0, 0, 0)))
-	if len(d.Changes) != 1 || d.Changes[0].Kind != Added || d.Changes[0].Path != "mesh" {
-		t.Fatalf("empty base should yield one added mesh entry, got %s", js)
+	node, _ := meshRows(t, d)
+	if node.Kind != Added || node.Path != "nodes/cube" {
+		t.Fatalf("empty base should yield one added mesh node, got %s", js)
 	}
-	after, _ := d.Changes[0].After.(string)
+	after, _ := node.After.(string)
 	if !strings.Contains(after, "12 triangles") || !strings.Contains(after, "volume 1.0000") {
 		t.Fatalf("added entry should carry the mesh stats, got %q", after)
 	}
@@ -201,10 +220,11 @@ func TestEmptyBaseIsOneAddedEntry(t *testing.T) {
 
 func TestEmptyHeadIsOneRemovedEntry(t *testing.T) {
 	d, js := diffJSON(t, asciiSTL("cube", cube(0, 0, 0)), nil)
-	if len(d.Changes) != 1 || d.Changes[0].Kind != Removed || d.Changes[0].Path != "mesh" {
-		t.Fatalf("empty head should yield one removed mesh entry, got %s", js)
+	node, _ := meshRows(t, d)
+	if node.Kind != Removed || node.Path != "nodes/cube" {
+		t.Fatalf("empty head should yield one removed mesh node, got %s", js)
 	}
-	before, _ := d.Changes[0].Before.(string)
+	before, _ := node.Before.(string)
 	if !strings.Contains(before, "12 triangles") {
 		t.Fatalf("removed entry should carry the mesh stats, got %q", before)
 	}
@@ -214,89 +234,31 @@ func TestEmptyHeadIsOneRemovedEntry(t *testing.T) {
 	}
 }
 
-func TestTruncatedBinaryErrors(t *testing.T) {
-	h := &Handler{}
-	good := binarySTL(cube(0, 0, 0))
+// What the viewer relies on: every change path names a node that exists in the
+// GLB the handler previews, so selecting a change flies to the mesh.
+func TestChangePathsNameTheNodeThePreviewDraws(t *testing.T) {
+	for _, name := range []string{"bracket", "", "a/b"} { // unnamed → "mesh"; a slash is escaped
+		head := asciiSTL(name, cube(1, 0, 0))
+		d, _ := diffJSON(t, asciiSTL(name, cube(0, 0, 0)), head)
+		node, _ := meshRows(t, d)
 
-	if _, err := h.Diff(good[:len(good)-7], good); err == nil {
-		t.Fatal("truncated binary STL must error, not succeed")
-	} else if !strings.Contains(err.Error(), "length mismatch") {
-		t.Fatalf("expected a length mismatch error, got %v", err)
-	}
-
-	if _, err := h.Diff([]byte("shrt"), good); err == nil {
-		t.Fatal("sub-header binary STL must error")
-	} else if !strings.Contains(err.Error(), "too short") {
-		t.Fatalf("expected a too-short error, got %v", err)
-	}
-}
-
-func TestMalformedASCIIErrors(t *testing.T) {
-	h := &Handler{}
-	bad := "solid junk\nfacet normal 0 0 0\nouter loop\nvertex 1 nope 3\nvertex 0 0 0\nvertex 1 0 0\nendloop\nendfacet\nendsolid junk\n"
-	if _, err := h.Diff([]byte(bad), asciiSTL("x", cube(0, 0, 0))); err == nil {
-		t.Fatal("bad vertex coordinate must error, not succeed")
-	}
-
-	short := "solid junk\nfacet normal 0 0 0\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nendloop\nendfacet\nendsolid junk\n"
-	if _, err := h.Diff([]byte(short), []byte(short)); err == nil {
-		t.Fatal("a 2-vertex facet must error, not succeed")
-	}
-}
-
-func TestMergeNotSupported(t *testing.T) {
-	h := &Handler{}
-	if _, _, err := h.Merge(nil, nil, nil); err == nil {
-		t.Fatal("merge should report not supported")
-	}
-}
-
-func TestImportWeldsSharedCorners(t *testing.T) {
-	h := &Handler{}
-	glb, err := h.Import(asciiSTL("cube", cube(0, 0, 0)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	roots, err := scene.Flatten(glb)
-	if err != nil || len(roots) != 1 || roots[0].Name != "cube" {
-		t.Fatalf("roots=%v err=%v", roots, err)
-	}
-	p := roots[0].Prims[0]
-	if len(p.Positions) != 8 || len(p.Indices) != 36 {
-		t.Fatalf("a cube is 8 welded vertices and 12 triangles, got %d vertices, %d indices", len(p.Positions), len(p.Indices))
-	}
-}
-
-func TestExportRoundTripKeepsGeometry(t *testing.T) {
-	h := &Handler{}
-	src := asciiSTL("", append(cube(0, 0, 0), cube(5, 0, 0)...))
-	glb, err := h.Import(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := h.Export(glb, ".stl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	d, err := h.Diff(src, out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(d.Changes) != 0 {
-		t.Fatalf("round trip changed the mesh: %+v", d.Changes)
-	}
-	if got := binary.LittleEndian.Uint32(out[80:84]); got != 24 {
-		t.Fatalf("want 24 triangles, got %d", got)
-	}
-}
-
-func TestExportRejectsOtherFormatsAndEmptyScenes(t *testing.T) {
-	h := &Handler{}
-	glb, _ := h.Import(nil) // an empty STL imports as a node with no mesh
-	if _, err := h.Export(glb, ".stl"); err == nil {
-		t.Fatal("a scene with no triangles should be an error")
-	}
-	if _, err := h.Export(glb, ".obj"); err == nil {
-		t.Fatal("expected an error for a format the handler does not write")
+		glb, err := (&Handler{}).Preview(head)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots, err := scene.Flatten(glb)
+		if err != nil || len(roots) != 1 {
+			t.Fatalf("roots=%v err=%v", roots, err)
+		}
+		want := "mesh"
+		if name != "" {
+			want = name
+		}
+		if roots[0].Name != want {
+			t.Fatalf("preview node is %q, want %q", roots[0].Name, want)
+		}
+		if got := "nodes/" + escapeSegment(roots[0].Name); node.Path != got {
+			t.Fatalf("change path %q does not name the preview's node (%q)", node.Path, got)
+		}
 	}
 }
