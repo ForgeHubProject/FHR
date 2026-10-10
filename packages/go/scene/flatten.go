@@ -336,10 +336,20 @@ func (a mat4) mul(b mat4) mat4 {
 func (a mat4) point(v [3]float32) [3]float64 {
 	x, y, z := float64(v[0]), float64(v[1]), float64(v[2])
 	return [3]float64{
-		a[0]*x + a[4]*y + a[8]*z + a[12],
-		a[1]*x + a[5]*y + a[9]*z + a[13],
-		a[2]*x + a[6]*y + a[10]*z + a[14],
+		snap(a[0]*x + a[4]*y + a[8]*z + a[12]),
+		snap(a[1]*x + a[5]*y + a[9]*z + a[13]),
+		snap(a[2]*x + a[6]*y + a[10]*z + a[14]),
 	}
+}
+
+// snap zeroes what is only rounding noise. A 90° rotation leaves cos(90°) ≈
+// 6e-17 where an exact 0 belongs, and a writer would print that as a long
+// string of digits (and a diff would call it a change).
+func snap(v float64) float64 {
+	if math.Abs(v) < 1e-12 {
+		return 0
+	}
+	return v
 }
 
 // vector applies the upper 3×3 only (no translation).

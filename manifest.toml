@@ -21,6 +21,9 @@ maintainer  = "ForgeHub Project"
 ".stl"  = { handler = "stl", build = "0000000" }
 ".ply"  = { handler = "ply", build = "0000000" }
 ".3mf"  = { handler = "3mf", build = "0000000" }
+".off"  = { handler = "off", build = "0000000" }
+".dae"  = { handler = "dae", build = "0000000" }
+".x3d"  = { handler = "x3d", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -104,6 +107,39 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf.wasm"
 
+# The off handler — rolling release `off-latest`, overwritten on each push to
+# main that touches packages/handler-off/ (or the shared packages/go it builds
+# on). OFF diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."off"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off.wasm"
+
+# The dae handler — rolling release `dae-latest`, overwritten on each push to
+# main that touches packages/handler-dae/ (or the shared packages/go it builds
+# on). Collada diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."dae"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae.wasm"
+
+# The x3d handler — rolling release `x3d-latest`, overwritten on each push to
+# main that touches packages/handler-x3d/ (or the shared packages/go it builds
+# on). X3D (XML encoding) diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."x3d"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -117,3 +153,6 @@ maintainer  = "ForgeHub Project"
 "stl"        = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/renderer-stl.js"
 "ply"        = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/renderer-ply.js"
 "3mf"        = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/renderer-3mf.js"
+"off"        = "https://github.com/forgehubproject/fhr/releases/download/off-latest/renderer-off.js"
+"dae"        = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/renderer-dae.js"
+"x3d"        = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/renderer-x3d.js"
