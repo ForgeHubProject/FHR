@@ -17,7 +17,7 @@ maintainer  = "ForgeHub Project"
 ".glb"  = { handler = "gltf-scene", build = "314b07a" }
 ".csv"  = { handler = "csv", build = "314b07a" }
 ".ipynb" = { handler = "ipynb", build = "ef13b6e" }
-".obj"  = { handler = "obj", build = "314b07a" }
+".obj"  = { handler = "obj", build = "ef13b6e" }
 ".stl"  = { handler = "stl", build = "ef13b6e" }
 ".ply"  = { handler = "ply", build = "ef13b6e" }
 ".3mf"  = { handler = "3mf", build = "ef13b6e" }
