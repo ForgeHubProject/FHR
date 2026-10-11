@@ -38,7 +38,7 @@ maintainer  = "ForgeHub Project"
 ".yml"  = { handler = "yaml", build = "ef9ece5" }
 ".svg"  = { handler = "svg", build = "780312f" }
 ".wav"  = { handler = "wav", build = "c7aa8ab" }
-".geojson" = { handler = "geojson", build = "0000000" }
+".geojson" = { handler = "geojson", build = "b25efbf" }
 ".png"  = { handler = "png", build = "0000000" }
 ".jpg"  = { handler = "jpeg", build = "0000000" }
 ".jpeg" = { handler = "jpeg", build = "0000000" }
