@@ -1,6 +1,6 @@
 # FHR — Forge Handler Repository Specification
 
-> Version: 1.2 · Status: Draft
+> Version: 1.3 · Status: Draft
 
 This document is the authoritative specification for the FHR ecosystem. It covers the full contract between Forge (the CLI), ForgeHub (the web platform), and FHR packages (format handler + renderer bundles).
 
@@ -344,7 +344,7 @@ type ConflictInfo = {
 };
 
 type SemanticConflict = {
-  path: string;   // e.g. "nodes[2].translation"
+  path: string;   // e.g. "nodes/Cube.001/translation" — see "Change paths" below
   ours: unknown;
   theirs: unknown;
 };
@@ -364,7 +364,7 @@ interface ArtifactHandler {
 ```ts
 type DiffChange = {
   path: string;
-  kind: "added" | "removed" | "modified";
+  kind: "added" | "removed" | "modified" | "renamed" | "reparented";
   label?: string;
   before?: unknown;
   after?: unknown;
@@ -377,6 +377,62 @@ type StructuredDiff = {
   changes: DiffChange[];
 };
 ```
+
+**`renamed`** — one entity that kept its identity and changed its name. `path` and `label` use the entity's **new** name (a consumer selecting by path is always addressing the file in front of it); `before` is the bare old name and `after` the new name plus the evidence the handler matched on, e.g. `Fender (matched by content, ~91% similar)`. Anything else that changed at the same time hangs off it as a child, so a rename plus a move is one change with the move under it.
+
+**`reparented`** — one node that kept its identity and moved to a different parent (#42). `path` and `label` use the node's own (head) key; `before` is the old parent's **key** in the base file and `after` the new parent's key in the head file, plus the pairing evidence when the pair was made by a non-trivial tier (the same parenthetical convention as `renamed`, e.g. `Door_L (matched by structure)`) — parent keys, not bare names, matching what the existing `parent` child row prints. It **wraps** that row rather than replacing it: the `nodes/X/parent` child (kind `modified`, before/after = old/new parent key) stays underneath, so a consumer that predates the kind still sees the move. Precedence follows `renamed`'s rule that a rename plus a move is one change: when the pair is also a rename, the node-level kind stays `renamed` and the parent row hangs under it — `reparented` is emitted only when the name did not change. Any other simultaneous property changes hang under the `reparented` row as children. Nodes only: materials, meshes and animations have no parent.
+
+**`path` identifies one change.** No two changes in a diff share a path, and a consumer may key on it. Renames make that worth stating, because they break the assumption that a name identifies an element across a pair of revisions: the previous version's `Wheel` can be deleted while an unrelated element is renamed *to* `Wheel`, which is two changes about two different objects that a name-keyed consumer would merge — losing the deletion. A handler whose two sides collide on a key disambiguates the **base-side** one (`nodes/Wheel#1`, the same `#` disambiguator duplicate names take) and leaves `label` as the element's key in its own file, so a label still resolves against the revision its change is about.
+
+`ChangeKind` is an **open** union in practice: it may gain members without a `version` or `fhrVersion` bump, and consumers must carry a kind they do not recognise rather than drop it (count it in summaries, render it with a neutral marker). The `@fhr/renderer-sdk` change tree does exactly this, which is why `renamed` needed no SDK change to appear in a summary bar.
+
+### Change paths — the `/`-separated scheme
+
+Every `DiffChange.path` and `SemanticConflict.path` is one string naming the thing that changed, fully qualified from the document root down to the changed property. The reference handler (`packages/handler-gltf-scene`) writes them as segments joined by `/`:
+
+```
+nodes/Mirror_L/translation
+materials/Paint/baseColorTexture
+animations/Spin/channels/0/output
+```
+
+A segment is a **human-meaningful key**, not an offset into a parse tree: a collection name (`nodes`), then an element's key in the *head* document — its name (`Mirror_L`), the `#`-disambiguated form when two elements share one (`Wheel#1`), or a synthetic index key when the element has no name at all (`node[3]`) — then a property, or a positional index where the format itself is positional (`channels/0`, `primitives/0`).
+
+**Escaping is minimal by design.** Within a segment exactly two characters are percent-escaped — `%` → `%25` and `/` → `%2F` — and nothing else. `.` in particular is left alone, and that is the point: glTF names are free-form UTF-8 in which a dot is ubiquitous (Blender emits `Cube.001`), so the `.` separator this handler started with made the commonest name in the wild unparseable (#41). A name that genuinely contains a slash survives as `nodes/rig%2Fhand`, and `%` is escaped only because it is the escape character. The path is the machine key; `label` always carries the raw, unescaped name, so no UI ever displays an escaped form.
+
+**A path is an opaque, stable identifier — not a parseable tree.** It has exactly two jobs: it identifies one change within one diff (above), and it is the selection key in both directions across the renderer boundary — `RendererEvent.select` outbound, `MountProps.selectedChangePath` inbound ([SPEC-RENDERING §2](./SPEC-RENDERING.md)). Hierarchy on the wire is carried by `children`, never by the path string, so a **generic** consumer groups and keys on paths and must not split them: `@fhr/renderer-sdk`'s change tree treats a path as an opaque string and takes its shape from `children` alone. A renderer MAY read structure out of a path when it ships *with* the handler that wrote it — backend and frontend are versioned together per release (§11), which makes the scheme an internal detail of that one pair rather than a cross-handler contract. `renderer-gltf-scene`'s `change-path.ts` does exactly that, to turn a picked 3D node back into the same selection key the handler emitted.
+
+**Flat dotted paths stay conformant.** A simple structured-data handler (json, yaml, toml) that emits `servers.0.port` conforms and needs no migration: its key space is flat, its keys cannot contain the separator, and nothing walks the string. The requirements on any scheme are only the ones above — unique within a diff, stable across runs over the same pair of blobs, and the same key the paired renderer selects on. Handlers for **hierarchical formats, or for any format whose names are free-form**, SHOULD use the `/`-scheme: it is the one that survives a name containing the separator, and it is what a reviewer reads in a change list.
+
+### Stable entity identity — the `fhr_uid` convention
+
+Resolves [#47](https://github.com/ForgeHubProject/FHR/issues/47).
+
+Many artifact formats have **no identity mechanism**: elements are addressed by array index, and a `name` is optional, non-unique, and routinely rewritten by pipeline tools. Matching purely on name means the commonest edit in a review — renaming something — reads as one element deleted and an unrelated one added. glTF is the case in hand: Khronos acknowledges the gap ([glTF#2337](https://github.com/KhronosGroup/glTF/issues/2337), [#1713](https://github.com/KhronosGroup/glTF/issues/1713)), and the glTF 2.1 proposal ([#2585](https://github.com/KhronosGroup/glTF/issues/2585)) lists an unshipped "Unique IDs" explainer.
+
+**The convention.** An entity may carry an opaque, stable identifier under its format's free-form annotation slot. For glTF that is `extras`:
+
+```json
+{ "name": "Fender", "mesh": 2, "extras": { "fhr_uid": "b6f1c2e4-8a1d-4c93-9f0e-2d7a5c1b8e30" } }
+```
+
+| | |
+|---|---|
+| **Key** | `fhr_uid`, directly under `extras`. Applies to nodes, meshes and materials today; animations are the same idea and follow. |
+| **Value** | An opaque non-empty string. A UUIDv4 is the recommended shape, but nothing reads into it — handlers compare for equality and nothing else. Anything that is not a non-empty string is not an id (`extras` is author data, and a number under this key is someone else's field that happens to collide). |
+| **Lifecycle** | Written **once**, when the entity is created, and never regenerated on edit — that is the whole property. Renaming, moving, re-parenting, re-meshing, re-exporting must all leave it alone. A clone must get a **new** id; reusing one is the documented BIM failure mode. |
+| **Who writes it** | Authoring tools and stamping utilities, not FHR handlers. A handler **reads** ids and never invents, rewrites or removes one — a diff must not mutate the thing it is comparing. Blender round-trips custom properties through glTF `extras` on both export and import, so an authored id survives the standard pipeline with no exporter changes. |
+| **Scope** | Unique within one file. Ids are not expected to be globally unique or to survive a re-author from scratch. |
+
+**How it is used.** Ids are the first tier of a cascade, strongest evidence first: **id → name → exact content → scored content → structure → array position**. Same id + different name is a rename, never a delete plus an add. Nothing depends on ids being present: a document with none matches on name, and then on content. The name tier applies only to elements that *have* a name — a synthetic index key (`node[3]`) is a position, not a name, and matching on it is what made one insertion falsely “modify” every unnamed element after it (#42). Unnamed leftovers pair instead on content: exactly, when two elements’ full stated signatures are identical and the pairing is unique on both sides (ambiguity never pairs, and a signature containing an unverifiable index-derived reference is disqualified outright); then by the scored signature match, open to unnamed and mixed named/unnamed pairs; then — for node trees — by structure, GumTree-style: an identical subtree (names, stated content and shape, hashed and then verified by a walk) anchors whole when the match is unique on both sides, and a container whose descendants already paired follows them when at least two of them agree, the Dice score clears 50%, the two sides do not state *different* meshes (a swapped mesh stays a removal plus an addition, whatever the descendants say), and the match is the strict mutual best; a subtree still unmatched under an already-paired parent pairs with its counterpart when the whole subtree is content-identical and unique among that parent's leftover children on each side (the parent's identity disambiguates twin subtrees that are identical file-wide) — evidence stated as `matched by structure[, ~N% of descendants shared]`; and as a last resort two unnamed leftovers at the *same* array index are assumed to be the same element, which keeps an element edited in place reporting under its own index. **Unnamed elements pair, but are never labeled `renamed`**: when both sides are unnamed there is no name to have changed, so the pairing is reported as a modification — a name present on one side only is a real edit and is reported as the rename it is. Geometry content is compared in a canonical quantized form for *matching only* (vertex order and sub-precision float jitter from a re-export are noise there); the diff’s own geometry rows keep exact byte hashes and still report such jitter.
+
+**Degradation.** An id duplicated on one side is untrusted past its first occurrence — the same rule this spec's handlers already apply to duplicated names — and the rest of the claimants fall through to the weaker tiers. A rename that a duplicated id produced says so in its `after` value, so the guess is visible rather than silent. Absent, empty and non-string ids are simply not ids.
+
+**Relation to glTF 2.1 and to names.** [The position put by @aaronfranke on #47](https://github.com/ForgeHubProject/FHR/issues/47#issuecomment-5106755096) is that the forthcoming `uid` property has a fallback rule: an object with no `uid` whose `name` is file-unique against all other names and ids, and which avoids the reserved characters `"` `#` `*` `.` `:` `|` `?` `@` `<` `>` `{` `}` `[` `]` `/` `\` `%` and controls, *is* identified by that name — so unique ids can be used today with no new property at all. FHR adopts that where it costs nothing: the cascade's second tier **is** the name, so a document that writes identity-bearing names matches exactly with no `extras` at all, and tools that cannot write `extras` should prefer names that satisfy those rules. (FHR's own duplicate-name disambiguator uses `#`, a reserved character, so a generated key can never collide with a uid-conformant name.)
+
+FHR keeps `fhr_uid` as the first tier anyway, for one reason: a name is the thing the user edits. It is displayed, typed, and changed constantly — which is precisely the event this whole mechanism exists to survive — and pipeline tools rewrite or drop names as a matter of course (`gltf-transform`'s `dedup()` merges same-content elements regardless of name by default). An identifier that doubles as the display name cannot be stable and human-editable at the same time. So: `fhr_uid` when it is there, a unique name when it is not.
+
+`extras` is preferred over `KHR_xmp_json_ld` (per-node XMP with `xmpMM:DocumentID`/`InstanceID`) for v1 on simplicity and round-tripping alone; XMP remains the standards-blessed carrier for anyone who needs it. When glTF 2.1 ships `uid`, it becomes tier 0 ahead of `fhr_uid` and this convention becomes the legacy carrier — a strictly additive migration, since both are read-only equality checks.
 
 ### Forge CLI subprocess protocol
 
@@ -407,13 +463,86 @@ exit:   0 on success
            → Forge falls back to blob-pick, same as plain git
 ```
 
+**`forge-handler-<name> preview`** *(optional — only handlers that declare `preview` in `info`)*
+```
+stdin:  { "blob": "<base64>" }
+stdout: { "mediaType": "model/gltf-binary", "blob": "<base64>" }
+exit:   0 on success, 1 with { "error": "…" } on failure
+```
+
+A format the browser cannot draw from its own bytes converts one blob into one
+it can. The preview is derived data: a host computes it on demand and may cache
+it keyed by blob id and handler build, and never stores it beside the source
+file — the file in the repository stays the only source of truth.
+
+For the 3D family the preview is a GLB, and the handler that produces it
+computes its diff over the *same* glTF document (packages/go/scene
+`DiffDocuments`). The element names in the preview are therefore exactly the
+names the diff's change paths address (`nodes/Sensor#1` is the second node named
+`Sensor` in the preview, by the engine's duplicate-name rule), so the gltf-scene
+viewer can mount any member's preview with no per-format mapping.
+
+**`forge-handler-<name> import`** and **`export`** *(optional — handlers that declare `capabilities.import` / `capabilities.export`)*
+```
+import  stdin:  { "blob": "<base64>" }                       (the handler's own format)
+        stdout: { "mediaType": "model/gltf-binary", "blob": "<base64>" }
+export  stdin:  { "blob": "<base64 GLB>", "format": ".obj" }
+        stdout: { "blob": "<base64>" }                       (the handler's format)
+exit:   0 on success, 1 with { "error": "…" } on failure
+```
+
+Transcoding for the 3D family pivots through binary glTF: convert **X → Y** by
+`import` with X's handler, then `export` with Y's. Every 3D format therefore
+needs one importer and one exporter, not a converter per pair. `import` is
+faithful — it is the document the handler's diff runs over, with nothing dressed
+for display (that is `preview`'s job). `export` is lossy exactly where the
+target is: OBJ has no transform hierarchy, so its exporter bakes world
+transforms into vertices and keeps a material's name only; cameras, lights,
+skins, animation and morph targets are dropped.
+
+`format` is the target extension and must be one of the handler's `info.formats`;
+it may be omitted only by a handler with a single format. A handler that cannot
+produce what the glTF holds says so with an error — never a silently different
+file. A `.gltf` source must be self-contained (embedded buffers) to be imported,
+since one blob cannot bring its `.bin` files.
+
+**`forge-handler-<name> apply-choices`** *(optional — handlers that declare `capabilities.applyChoices`)*
+```
+stdin:  { "merged": "<base64>", "theirs": "<base64>", "take": ["nodes/Leg_BR", "mtllib"] }
+stdout: { "blob": "<base64>" }
+exit:   0 on success, 1 with { "error": "…" } on failure
+```
+
+Resolves the conflicts a `merge` left. `merged` is the merge's own result, which
+holds ours at every conflict. `take` lists the conflict paths (exactly as `merge`
+reported them) where the resolver chose theirs instead. `forge mergetool` calls
+it after the reviewer has decided each conflict. A handler must refuse, with an
+error naming the path, any choice it cannot apply faithfully; a choice silently
+skipped would read as resolved.
+
 **`forge-handler-<name> info`** *(optional but recommended)*
 ```
-stdout: { "id": "gltf-scene", "version": "1.0.0", "formats": [".glb", ".gltf"], "protocol": "1.0" }
+stdout: { "id": "obj", "formats": [".obj"], "protocol": "1.0",
+          "capabilities": { "semanticCompare": true, "semanticMerge": false },
+          "preview": "model/gltf-binary" }
 exit:   0 always
 ```
 
+`capabilities` and `preview` are optional. `preview` is the media type the
+`preview` call produces, and `capabilities.applyChoices` says the handler answers
+`apply-choices`; both appear only for handlers that implement them.
+
 Blobs are base64-encoded to keep the transport pure JSON. The same binary works as both a CLI subprocess and a WASM module.
+
+**WASM entry points.** A `GOOS=js` build registers one global whose name starts
+with `__forgeHandler` (`__forgeHandlerGltfScene`) holding the same calls:
+`diff(base, head)`, `merge(base, ours, theirs)` and `info()` take `Uint8Array`s
+and return a JSON string (`{"error": "…"}` on failure), as does
+`applyChoices(merged, theirs, takeJSON)` when present; `preview(blob)`, when
+present, returns an object — `{ mediaType, blob: Uint8Array }` or `{ error }` —
+so a large preview never round-trips through base64. `import(blob)` answers the
+same shape, and `export(glb, format)` answers `{ blob: Uint8Array }` or `{ error }`. Go handlers get all of
+this, and the subprocess protocol above, from `packages/go/fhr`.
 
 ---
 
@@ -630,6 +759,7 @@ forge formats add .myext --source my-org
 | Community FHR loading | `<iframe>` + postMessage |
 | `plain-text` | Built into Forge; not an FHR package |
 | First migration | `gltf-scene` (Phase 1) |
+| Stable entity identity for formats with none (#47) | Resolved. `extras.fhr_uid`: an opaque, write-once string, read (never written) by handlers, first tier of an id → name → content cascade, duplicates untrusted past the first occurrence. See [§7](#7-backend-handler-contract). Names stay the second tier, which is also the glTF 2.1 explainer's own name-as-uid fallback; migrates to glTF 2.1 `uid` additively when it ships. |
 
 ### Still open **[HUMAN DECISION]**
 
