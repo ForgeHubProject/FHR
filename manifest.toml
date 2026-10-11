@@ -36,6 +36,7 @@ maintainer  = "ForgeHub Project"
 ".dxf"  = { handler = "dxf", build = "fec51f0" }
 ".yaml" = { handler = "yaml", build = "ef9ece5" }
 ".yml"  = { handler = "yaml", build = "ef9ece5" }
+".svg"  = { handler = "svg", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -240,6 +241,17 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml.wasm"
 
+# The svg handler — rolling release `svg-latest`, overwritten on each push to
+# main that touches packages/handler-svg/. XML parses everywhere, so it ships
+# the wasm build too (Tier B in-browser diff).
+[assets.handlers."svg"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -264,3 +276,4 @@ maintainer  = "ForgeHub Project"
 "vrml"       = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/renderer-vrml.js"
 "dxf"        = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/renderer-dxf.js"
 "yaml"       = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/renderer-yaml.js"
+"svg"        = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/renderer-svg.js"
