@@ -33,7 +33,7 @@ maintainer  = "ForgeHub Project"
 ".blend"  = { handler = "blend", build = "8ad7052" }
 ".amf"  = { handler = "amf", build = "fec51f0" }
 ".wrl"  = { handler = "vrml", build = "fec51f0" }
-".dxf"  = { handler = "dxf", build = "8ad7052" }
+".dxf"  = { handler = "dxf", build = "fec51f0" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
