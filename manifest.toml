@@ -38,6 +38,7 @@ maintainer  = "ForgeHub Project"
 ".yml"  = { handler = "yaml", build = "ef9ece5" }
 ".svg"  = { handler = "svg", build = "780312f" }
 ".wav"  = { handler = "wav", build = "c7aa8ab" }
+".geojson" = { handler = "geojson", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -264,6 +265,17 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/forge-handler-wav_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/forge-handler-wav.wasm"
 
+# The geojson handler — rolling release `geojson-latest`, overwritten on each
+# push to main that touches packages/handler-geojson/. GeoJSON is plain JSON,
+# so it ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."geojson"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/forge-handler-geojson_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/forge-handler-geojson_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/forge-handler-geojson_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/forge-handler-geojson_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/forge-handler-geojson_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/forge-handler-geojson.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -290,3 +302,4 @@ maintainer  = "ForgeHub Project"
 "yaml"       = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/renderer-yaml.js"
 "svg"        = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/renderer-svg.js"
 "wav"        = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/renderer-wav.js"
+"geojson"    = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/renderer-geojson.js"
