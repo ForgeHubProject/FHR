@@ -19,6 +19,8 @@ export default defineRenderer({
   handlerId: "geojson",
   extensions: [".geojson"],
   build: BUILD,
+  // Draws diffs only: a single file stays with the host's own viewer.
+  modes: ["diff"],
   render(container: HTMLElement, props: MountProps) {
     renderDiffTree(container, props);
   },

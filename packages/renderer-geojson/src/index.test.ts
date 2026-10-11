@@ -8,4 +8,8 @@ describe("geojson renderer bundle", () => {
     expect(bundle.fhrVersion).toBe(1);
     expect(typeof bundle.mount).toBe("function");
   });
+
+  it("declares the modes it draws (SPEC-RENDERING §2b)", () => {
+    expect(bundle.modes).toEqual(["diff"]);
+  });
 });
