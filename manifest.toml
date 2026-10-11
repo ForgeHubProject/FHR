@@ -32,7 +32,7 @@ maintainer  = "ForgeHub Project"
 ".3ds"  = { handler = "3ds", build = "8ad7052" }
 ".blend"  = { handler = "blend", build = "8ad7052" }
 ".amf"  = { handler = "amf", build = "8ad7052" }
-".wrl"  = { handler = "vrml", build = "8ad7052" }
+".wrl"  = { handler = "vrml", build = "fec51f0" }
 ".dxf"  = { handler = "dxf", build = "8ad7052" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
