@@ -1,0 +1,200 @@
+name: Release json handler
+
+on:
+  # Manual trigger — rerun the rolling release without a code change.
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - 'packages/handler-json/**'
+      # The shared Go SDK is compiled into this handler's binaries.
+      - 'packages/go/**'
+      - 'packages/renderer-json/**'
+      - 'packages/renderer-sdk/**'
+      - 'packages/types/**'
+      # Include this workflow so changes to how the release is built/published
+      # actually trigger a rebuild.
+      - '.github/workflows/release-handler-json.yml'
+
+permissions:
+  contents: write
+
+# One release run per handler at a time, so two pushes can't interleave
+# their tag moves and uploads on json-latest.
+concurrency:
+  group: release-handler-json
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            asset: forge-handler-json_linux-amd64
+          - goos: linux
+            goarch: arm64
+            asset: forge-handler-json_linux-arm64
+          - goos: darwin
+            goarch: amd64
+            asset: forge-handler-json_darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            asset: forge-handler-json_darwin-arm64
+          - goos: windows
+            goarch: amd64
+            asset: forge-handler-json_windows-amd64.exe
+          # Browser build for client-side (Tier B) diff. Standard Go wasm.
+          - goos: js
+            goarch: wasm
+            asset: forge-handler-json.wasm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/handler-json/go.mod
+
+      - name: Build
+        working-directory: packages/handler-json
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -mod=mod -trimpath -ldflags="-s -w" -o ${{ matrix.asset }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: packages/handler-json/${{ matrix.asset }}
+
+  build-renderer:
+    name: Build renderer bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install workspace deps
+        run: npm ci
+
+      - name: Build renderer (types → sdk → renderer)
+        env:
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          npm run build --workspace @fhr/types
+          npm run build --workspace @fhr/renderer-sdk
+          BUILD_SHA="$(git rev-parse --short HEAD)" npm run build --workspace @fhr/renderer-json
+          cp packages/renderer-json/dist/renderer.js renderer-json.js
+
+      - name: Upload renderer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderer-json.js
+          path: renderer-json.js
+
+  release:
+    name: Publish rolling release
+    needs: [build, build-renderer]
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.short }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Update the rolling release in place; never delete it. Deleting the
+      # release with --cleanup-tag and immediately re-creating the same tag
+      # raced: GitHub sometimes applied the old tag's deletion after the new
+      # tag existed, which removed the new tag and unpublished the release
+      # (gltf-scene-latest and csv-latest vanished minutes after successful
+      # runs, #84). Moving the tag and replacing assets has no such window.
+      - name: Move the rolling tag to this commit
+        run: |
+          git tag -f json-latest
+          git push -f origin refs/tags/json-latest
+
+      - name: Create or update the rolling release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="json (latest)"
+          notes="Rolling release — always points to the latest build from main. Includes native binaries, the wasm build, and the renderer bundle."
+          if gh release view json-latest >/dev/null 2>&1; then
+            gh release upload json-latest dist/* --clobber
+            # --clobber only replaces same-named assets. Drop any this build no
+            # longer produces (removed or renamed outputs), after the upload so
+            # a current asset is never missing, and the release mirrors dist/.
+            gh release view json-latest --json assets --jq '.assets[].name' |
+              while IFS= read -r asset; do
+                [ -e "dist/$asset" ] || gh release delete-asset json-latest "$asset" --yes
+              done
+            gh release edit json-latest --title "$title" --notes "$notes" --draft=false
+          else
+            gh release create json-latest dist/* --title "$title" --notes "$notes" --verify-tag
+          fi
+
+      - name: Check the release matches the build exactly
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          want=$(ls dist | sort)
+          have=$(gh release view json-latest --json assets --jq '.assets[].name' | sort)
+          if [ "$want" != "$have" ]; then
+            echo "json-latest does not match this build (< built, > on the release):" >&2
+            diff <(echo "$want") <(echo "$have") >&2 || true
+            exit 1
+          fi
+
+  update-manifest:
+    name: Update manifest build SHA
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # One step, re-applied from scratch on every attempt. Every handler's
+      # release bumps this same file, and a change to a shared package
+      # (packages/go, the SDK, the types) releases several handlers at once, so
+      # main routinely moves under this job and a bare push was rejected as
+      # non-fast-forward. Rebasing the bump commit is no answer either: the
+      # handlers' lines are adjacent in manifest.toml, which git treats as a
+      # conflict. So each attempt starts from the current main and rewrites
+      # only this handler's line.
+      - name: Bump build SHA in manifest.toml
+        env:
+          SHA: ${{ needs.release.outputs.sha }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git fetch --quiet origin main
+            git reset --quiet --hard origin/main
+            sed -i 's/\(handler = "json", build = "\)[^"]*"/\1'"$SHA"'"/' manifest.toml
+            git add manifest.toml
+            git diff --cached --quiet && exit 0
+            git commit --quiet -m "chore: update json build SHA to $SHA"
+            git push --quiet origin HEAD:main && exit 0
+            sleep $((attempt * 5))
+          done
+          echo "could not push the manifest bump after 5 attempts" >&2
+          exit 1

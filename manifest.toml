@@ -44,6 +44,7 @@ maintainer  = "ForgeHub Project"
 ".jpeg" = { handler = "jpeg", build = "1e5101a" }
 ".gif"  = { handler = "gif", build = "1e5101a" }
 ".toml" = { handler = "toml", build = "2dac01a" }
+".json" = { handler = "json", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -326,6 +327,17 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/forge-handler-toml_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/forge-handler-toml.wasm"
 
+# The json handler — rolling release `json-latest`, overwritten on each push to
+# main that touches packages/handler-json/. JSON parses with the stdlib, so it
+# ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."json"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -357,3 +369,4 @@ maintainer  = "ForgeHub Project"
 "jpeg"       = "https://github.com/forgehubproject/fhr/releases/download/jpeg-latest/renderer-jpeg.js"
 "gif"        = "https://github.com/forgehubproject/fhr/releases/download/gif-latest/renderer-gif.js"
 "toml"       = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/renderer-toml.js"
+"json"       = "https://github.com/forgehubproject/fhr/releases/download/json-latest/renderer-json.js"
