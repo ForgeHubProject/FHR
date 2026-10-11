@@ -8,4 +8,8 @@ describe("csv renderer bundle", () => {
     expect(bundle.fhrVersion).toBe(1);
     expect(typeof bundle.mount).toBe("function");
   });
+
+  it("draws diffs only, so a host keeps its own viewer for a single file", () => {
+    expect(bundle.modes).toEqual(["diff"]);
+  });
 });

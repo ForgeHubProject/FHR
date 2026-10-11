@@ -57,6 +57,7 @@ export default {
   fhrVersion: 1,
   handlerId: "gltf-scene",
   build: "20260709-f1dd134",          // same content-hash build as the binaries
+  modes: ["view", "diff"],            // optional: the modes it draws (absent = all three)
   mount(el: HTMLElement, props: MountProps): { update(p: MountProps): void; unmount(): void };
 };
 
@@ -82,6 +83,17 @@ state pushes the same key back in through `selectedChangePath`. The key is a
 "/"-separated, with `%` and `/` percent-escaped inside a segment
 (`nodes/Cube.001/translation`). `undefined` means "the host isn't driving
 selection"; `null` means "nothing selected".
+
+**`modes` says what the bundle draws.** A renderer built for diffs, such as a
+change tree for a text format, has nothing better to show for a single file than
+the host's own viewer, which already has syntax highlighting, line links and
+blame. It lists `modes: ["diff"]`, and a host SHOULD then show that file with its
+own viewer rather than mount the bundle in `view`. Absent means all three, which
+is what every bundle built before the field meant, so older bundles keep working
+unchanged. The field is additive; `fhrVersion` stays 1. A host that predates it
+still mounts `view`; bundles built with `@fhr/renderer-sdk` answer an unlisted
+`view` with the file's text, never an empty panel. An unlisted `diff` or `merge`
+still reaches the renderer, which always has a diff to draw.
 
 **`update()` is allowed to be cheap.** The lifecycle a renderer gets from
 `@fhr/renderer-sdk`'s `defineRenderer` tears down and redraws on every prop push
