@@ -39,10 +39,10 @@ maintainer  = "ForgeHub Project"
 ".svg"  = { handler = "svg", build = "780312f" }
 ".wav"  = { handler = "wav", build = "c7aa8ab" }
 ".geojson" = { handler = "geojson", build = "b25efbf" }
-".png"  = { handler = "png", build = "0000000" }
-".jpg"  = { handler = "jpeg", build = "0000000" }
-".jpeg" = { handler = "jpeg", build = "0000000" }
-".gif"  = { handler = "gif", build = "0000000" }
+".png"  = { handler = "png", build = "1e5101a" }
+".jpg"  = { handler = "jpeg", build = "1e5101a" }
+".jpeg" = { handler = "jpeg", build = "1e5101a" }
+".gif"  = { handler = "gif", build = "1e5101a" }
 ".toml" = { handler = "toml", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
