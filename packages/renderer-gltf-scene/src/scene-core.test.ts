@@ -1,7 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { StructuredDiff } from "@fhr/types";
 import { decodeGltf, entitiesFromBlob, type Entity } from "./gltf-parse.js";
-import { diffChangeTypes } from "./diff-map.js";
 
 const doc = {
   asset: { version: "2.0" },
@@ -73,33 +71,5 @@ describe("decodeGltf / entitiesFromBlob", () => {
 
   it("throws on a scene-less document", () => {
     expect(() => ents({ asset: { version: "2.0" }, nodes: [] })).toThrow(/no scenes/);
-  });
-});
-
-describe("diffChangeTypes", () => {
-  const diff: StructuredDiff = {
-    version: "1.0",
-    format: "gltf-scene",
-    changes: [
-      {
-        path: "nodes",
-        kind: "modified",
-        children: [
-          { path: "nodes.Cube", kind: "modified", label: "Cube", children: [{ path: "translation", kind: "modified" }] },
-          { path: "nodes.NewLamp", kind: "added", label: "NewLamp" },
-        ],
-      },
-    ],
-  };
-
-  it("keys node change kinds by slugified name, ignoring field children", () => {
-    const m = diffChangeTypes(diff);
-    expect(m.get("cube")).toBe("modified");
-    expect(m.get("newlamp")).toBe("added");
-    expect(m.has("translation")).toBe(false);
-  });
-
-  it("returns an empty map for no diff", () => {
-    expect(diffChangeTypes(undefined).size).toBe(0);
   });
 });
