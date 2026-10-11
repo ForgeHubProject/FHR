@@ -19,7 +19,33 @@ export default defineRenderer({
   handlerId: "wav",
   extensions: [".wav"],
   build: BUILD,
+  // A single file is drawn too: hosts have no player of their own for audio.
+  modes: ["view", "diff"],
   render(container: HTMLElement, props: MountProps) {
+    if (props.mode === "view") return renderPlayer(container, props);
     renderDiffTree(container, props);
   },
 });
+
+/**
+ * One file: the browser's own audio player on the head blob, which the host
+ * serves same-origin. WAV (PCM) plays natively in every current browser.
+ */
+export function renderPlayer(container: HTMLElement, props: MountProps): void {
+  const doc = container.ownerDocument;
+  const url = props.blobs?.head?.url;
+  const wrap = doc.createElement("div");
+  wrap.className = "fhr-wav";
+  wrap.style.cssText = "padding:16px;";
+  if (!url) {
+    wrap.textContent = "No file provided.";
+  } else {
+    const audio = doc.createElement("audio");
+    audio.setAttribute("controls", "");
+    audio.setAttribute("preload", "metadata");
+    audio.setAttribute("src", url);
+    audio.style.cssText = "width:100%;max-width:40rem;";
+    wrap.appendChild(audio);
+  }
+  container.appendChild(wrap);
+}
