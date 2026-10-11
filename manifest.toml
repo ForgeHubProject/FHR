@@ -34,6 +34,7 @@ maintainer  = "ForgeHub Project"
 ".amf"  = { handler = "amf", build = "8ad7052" }
 ".wrl"  = { handler = "vrml", build = "8ad7052" }
 ".dxf"  = { handler = "dxf", build = "8ad7052" }
+".json" = { handler = "json", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -227,6 +228,17 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf.wasm"
 
+# The json handler — rolling release `json-latest`, overwritten on each push to
+# main that touches packages/handler-json/. JSON parses with the stdlib, so it
+# ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."json"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -250,3 +262,4 @@ maintainer  = "ForgeHub Project"
 "amf"        = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/renderer-amf.js"
 "vrml"       = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/renderer-vrml.js"
 "dxf"        = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/renderer-dxf.js"
+"json"       = "https://github.com/forgehubproject/fhr/releases/download/json-latest/renderer-json.js"
