@@ -39,6 +39,10 @@ maintainer  = "ForgeHub Project"
 ".svg"  = { handler = "svg", build = "780312f" }
 ".wav"  = { handler = "wav", build = "c7aa8ab" }
 ".geojson" = { handler = "geojson", build = "b25efbf" }
+".png"  = { handler = "png", build = "0000000" }
+".jpg"  = { handler = "jpeg", build = "0000000" }
+".jpeg" = { handler = "jpeg", build = "0000000" }
+".gif"  = { handler = "gif", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -276,6 +280,39 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/forge-handler-geojson_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/forge-handler-geojson.wasm"
 
+# The png handler — rolling release `png-latest`, overwritten on each push to
+# main that touches packages/handler-png/. It reads only the PNG header
+# (image/png DecodeConfig, stdlib), so it ships the wasm build too.
+[assets.handlers."png"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/png-latest/forge-handler-png_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/png-latest/forge-handler-png_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/png-latest/forge-handler-png_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/png-latest/forge-handler-png_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/png-latest/forge-handler-png_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/png-latest/forge-handler-png.wasm"
+
+# The jpeg handler — rolling release `jpeg-latest`, overwritten on each push
+# to main that touches packages/handler-jpeg/. It reads only the JPEG header
+# (image/jpeg DecodeConfig, stdlib), so it ships the wasm build too.
+[assets.handlers."jpeg"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/jpeg-latest/forge-handler-jpeg_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/jpeg-latest/forge-handler-jpeg_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/jpeg-latest/forge-handler-jpeg_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/jpeg-latest/forge-handler-jpeg_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/jpeg-latest/forge-handler-jpeg_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/jpeg-latest/forge-handler-jpeg.wasm"
+
+# The gif handler — rolling release `gif-latest`, overwritten on each push to
+# main that touches packages/handler-gif/. It reads only the GIF header
+# (image/gif DecodeConfig, stdlib), so it ships the wasm build too.
+[assets.handlers."gif"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/gif-latest/forge-handler-gif_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/gif-latest/forge-handler-gif_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/gif-latest/forge-handler-gif_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/gif-latest/forge-handler-gif_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/gif-latest/forge-handler-gif_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/gif-latest/forge-handler-gif.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -303,3 +340,6 @@ maintainer  = "ForgeHub Project"
 "svg"        = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/renderer-svg.js"
 "wav"        = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/renderer-wav.js"
 "geojson"    = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/renderer-geojson.js"
+"png"        = "https://github.com/forgehubproject/fhr/releases/download/png-latest/renderer-png.js"
+"jpeg"       = "https://github.com/forgehubproject/fhr/releases/download/jpeg-latest/renderer-jpeg.js"
+"gif"        = "https://github.com/forgehubproject/fhr/releases/download/gif-latest/renderer-gif.js"
