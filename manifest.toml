@@ -34,8 +34,8 @@ maintainer  = "ForgeHub Project"
 ".amf"  = { handler = "amf", build = "fec51f0" }
 ".wrl"  = { handler = "vrml", build = "fec51f0" }
 ".dxf"  = { handler = "dxf", build = "fec51f0" }
-".yaml" = { handler = "yaml", build = "0000000" }
-".yml"  = { handler = "yaml", build = "0000000" }
+".yaml" = { handler = "yaml", build = "ef9ece5" }
+".yml"  = { handler = "yaml", build = "ef9ece5" }
 ".svg"  = { handler = "svg", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
