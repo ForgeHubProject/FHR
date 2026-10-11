@@ -261,5 +261,14 @@ export interface RendererBundle {
   readonly extensions: string[];
   /** Content-hash build this bundle was released under (matches binary + wasm). */
   readonly build?: string;
+  /**
+   * The modes this bundle draws itself (SPEC-RENDERING §2b). Absent means all
+   * three, which is what every bundle built before the field meant. A host
+   * SHOULD show a mode the bundle does not list with its own viewer: a renderer
+   * that only draws diffs leaves a single text file to the host's code view.
+   * A bundle mounted in an unlisted `view` anyway shows the file's text, never
+   * an empty panel.
+   */
+  readonly modes?: readonly RendererMode[];
   mount(el: HTMLElement, props: MountProps): RendererInstance;
 }

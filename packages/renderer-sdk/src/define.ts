@@ -1,4 +1,5 @@
-import type { MountProps, RendererBundle, RendererInstance } from "@fhr/types";
+import type { MountProps, RendererBundle, RendererInstance, RendererMode } from "@fhr/types";
+import { renderSourceView } from "./source.js";
 
 /** Optional teardown returned by a render pass. */
 export type RenderCleanup = void | (() => void);
@@ -48,6 +49,14 @@ export type DefineRendererOptions = {
   render: RenderFn;
   /** See UpdateFn. Omit for the default teardown-and-redraw on every push. */
   update?: UpdateFn;
+  /**
+   * The modes `render` draws. Omit when it draws all three. A renderer that only
+   * draws diffs lists `["diff"]`: hosts then show a single file with their own
+   * viewer, and a host that mounts an unlisted `view` anyway gets the file's
+   * text instead of `render`. An unlisted `diff` or `merge` still reaches
+   * `render`, which always has a diff to draw.
+   */
+  modes?: RendererMode[];
 };
 
 /**
@@ -56,11 +65,15 @@ export type DefineRendererOptions = {
  * consumers call the returned bundle's mount() without knowing what's inside.
  */
 export function defineRenderer(opts: DefineRendererOptions): RendererBundle {
+  const modes = opts.modes ? [...opts.modes] : undefined;
+  // A `view` the renderer does not draw gets the file's text (see `modes`).
+  const floored = (p: MountProps): boolean => p.mode === "view" && modes !== undefined && !modes.includes("view");
   return {
     fhrVersion: 1,
     handlerId: opts.handlerId,
     extensions: opts.extensions,
     build: opts.build,
+    ...(modes ? { modes } : {}),
     mount(el: HTMLElement, props: MountProps): RendererInstance {
       let cleanup: RenderCleanup;
       // The props the visible DOM was last built or patched for — what an
@@ -70,13 +83,14 @@ export function defineRenderer(opts: DefineRendererOptions): RendererBundle {
       const draw = (p: MountProps) => {
         if (typeof cleanup === "function") cleanup();
         el.replaceChildren();
-        cleanup = opts.render(el, p);
+        cleanup = floored(p) ? renderSourceView(el, p) : opts.render(el, p);
         applied = p;
       };
       draw(props);
       return {
         update: (p: MountProps) => {
-          if (opts.update && opts.update(el, p, applied) !== false) {
+          // The hook only ever patches what `render` built.
+          if (opts.update && !floored(p) && !floored(applied) && opts.update(el, p, applied) !== false) {
             applied = p;
             return;
           }

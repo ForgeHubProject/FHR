@@ -8,4 +8,5 @@ export { formatChange, parseNumeric, formatLength, trimNumber } from "./format.j
 export type { FormattedChange, FormatOptions, ValueClass, Swatch, Numeric } from "./format.js";
 
 export { renderDiffTree, stepIntent } from "./dom.js";
+export { renderSourceView } from "./source.js";
 export type { DiffTreeOptions, DiffTreeHandle } from "./dom.js";
