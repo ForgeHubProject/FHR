@@ -1,0 +1,58 @@
+package fhr
+
+// Wire types — match @fhr/types and the StructuredDiff JSON schema (SPEC.md).
+// Every handler in this repo uses these, so a kind added here is a kind every
+// handler can emit; nothing is copied per format.
+
+// Blob is raw file content.
+type Blob = []byte
+
+// ChangeKind describes the nature of a semantic change.
+type ChangeKind string
+
+const (
+	Added    ChangeKind = "added"
+	Removed  ChangeKind = "removed"
+	Modified ChangeKind = "modified"
+	// Renamed is one element that kept its identity and changed its name (#47).
+	// Additive: the wire version stays "1.0", and a consumer that has never heard
+	// of this kind is required to carry it through rather than drop it — see the
+	// SDK's countKinds, which counts unknown kinds by design.
+	Renamed ChangeKind = "renamed"
+	// Reparented is one node that kept its identity and moved to a different
+	// parent (#42). Additive, same rules as Renamed. It wraps the existing
+	// `<node>/parent` child row rather than replacing it, so consumers that
+	// predate the kind still see the move; when a pair is also a rename the
+	// node-level kind stays Renamed and the parent row hangs under it —
+	// #59's rule that a rename plus a move is ONE change.
+	Reparented ChangeKind = "reparented"
+)
+
+// DiffChange is one semantic unit of change within a StructuredDiff.
+type DiffChange struct {
+	Path     string       `json:"path"`
+	Kind     ChangeKind   `json:"kind"`
+	Label    string       `json:"label,omitempty"`
+	Before   any          `json:"before,omitempty"`
+	After    any          `json:"after,omitempty"`
+	Children []DiffChange `json:"children,omitempty"`
+}
+
+// StructuredDiff is the wire format returned by Diff.
+type StructuredDiff struct {
+	Version string       `json:"version"`
+	Format  string       `json:"format"`
+	Changes []DiffChange `json:"changes"`
+}
+
+// SemanticConflict is one unresolvable conflict at a semantic path.
+type SemanticConflict struct {
+	Path   string `json:"path"`
+	Ours   any    `json:"ours"`
+	Theirs any    `json:"theirs"`
+}
+
+// ConflictInfo collects all conflicts from a 3-way merge.
+type ConflictInfo struct {
+	Conflicts []SemanticConflict `json:"conflicts"`
+}
