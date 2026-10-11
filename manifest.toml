@@ -36,7 +36,7 @@ maintainer  = "ForgeHub Project"
 ".dxf"  = { handler = "dxf", build = "fec51f0" }
 ".yaml" = { handler = "yaml", build = "ef9ece5" }
 ".yml"  = { handler = "yaml", build = "ef9ece5" }
-".svg"  = { handler = "svg", build = "0000000" }
+".svg"  = { handler = "svg", build = "780312f" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
