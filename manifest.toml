@@ -13,10 +13,27 @@ maintainer  = "ForgeHub Project"
 # whether a re-download is needed.
 
 [formats]
-".gltf" = { handler = "gltf-scene", build = "e520cc6" }
-".glb"  = { handler = "gltf-scene", build = "e520cc6" }
-".yaml" = { handler = "yaml", build = "0000000" }
-".yml"  = { handler = "yaml", build = "0000000" }
+".gltf" = { handler = "gltf-scene", build = "fec51f0" }
+".glb"  = { handler = "gltf-scene", build = "fec51f0" }
+".csv"  = { handler = "csv", build = "fec51f0" }
+".ipynb" = { handler = "ipynb", build = "fec51f0" }
+".obj"  = { handler = "obj", build = "fec51f0" }
+".stl"  = { handler = "stl", build = "fec51f0" }
+".ply"  = { handler = "ply", build = "fec51f0" }
+".3mf"  = { handler = "3mf", build = "fec51f0" }
+".off"  = { handler = "off", build = "8ad7052" }
+".dae"  = { handler = "dae", build = "fec51f0" }
+".x3d"  = { handler = "x3d", build = "fec51f0" }
+".fbx"  = { handler = "fbx", build = "fec51f0" }
+".usd"  = { handler = "usd", build = "fec51f0" }
+".usda" = { handler = "usd", build = "fec51f0" }
+".usdc" = { handler = "usd", build = "fec51f0" }
+".usdz" = { handler = "usd", build = "fec51f0" }
+".3ds"  = { handler = "3ds", build = "8ad7052" }
+".blend"  = { handler = "blend", build = "8ad7052" }
+".amf"  = { handler = "amf", build = "fec51f0" }
+".wrl"  = { handler = "vrml", build = "fec51f0" }
+".dxf"  = { handler = "dxf", build = "fec51f0" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -34,16 +51,181 @@ maintainer  = "ForgeHub Project"
 # native binaries above.
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene.wasm"
 
-# The yaml handler — rolling release `yaml-latest`, overwritten on each push to
-# main that touches packages/handler-yaml/. YAML parses in pure Go, so it ships
+# The csv handler — rolling release `csv-latest`, overwritten on each push to
+# main that touches packages/handler-csv/. CSV parses everywhere, so it ships
 # the wasm build too (Tier B in-browser diff).
-[assets.handlers."yaml"]
-"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml_linux-amd64"
-"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml_linux-arm64"
-"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml_darwin-amd64"
-"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml_darwin-arm64"
-"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml_windows-amd64.exe"
-"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml.wasm"
+[assets.handlers."csv"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/forge-handler-csv_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/forge-handler-csv_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/forge-handler-csv_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/forge-handler-csv_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/forge-handler-csv_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/forge-handler-csv.wasm"
+
+# The ipynb handler — rolling release `ipynb-latest`, overwritten on each push
+# to main that touches packages/handler-ipynb/. Notebooks are JSON, so it ships
+# the wasm build too (Tier B in-browser diff).
+[assets.handlers."ipynb"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb.wasm"
+
+# The obj handler — rolling release `obj-latest`, overwritten on each push to
+# main that touches packages/handler-obj/ (or the shared packages/go it builds
+# on). It diffs by converting OBJ to glTF for the shared scene engine, and its
+# wasm build also serves the GLB preview (SPEC.md §7 `preview`).
+[assets.handlers."obj"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj.wasm"
+# The stl handler — rolling release `stl-latest`, overwritten on each push to
+# main that touches packages/handler-stl/ (or the shared packages/go it builds
+# on). STL is a triangle soup, diffed by geometry statistics. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."stl"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl.wasm"
+
+# The ply handler — rolling release `ply-latest`, overwritten on each push to
+# main that touches packages/handler-ply/ (or the shared packages/go it builds
+# on). PLY diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."ply"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply.wasm"
+
+# The 3mf handler — rolling release `3mf-latest`, overwritten on each push to
+# main that touches packages/handler-3mf/ (or the shared packages/go it builds
+# on). 3MF diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."3mf"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf.wasm"
+
+# The off handler — rolling release `off-latest`, overwritten on each push to
+# main that touches packages/handler-off/ (or the shared packages/go it builds
+# on). OFF diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."off"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off.wasm"
+
+# The dae handler — rolling release `dae-latest`, overwritten on each push to
+# main that touches packages/handler-dae/ (or the shared packages/go it builds
+# on). Collada diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."dae"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae.wasm"
+
+# The x3d handler — rolling release `x3d-latest`, overwritten on each push to
+# main that touches packages/handler-x3d/ (or the shared packages/go it builds
+# on). X3D (XML encoding) diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."x3d"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d.wasm"
+
+# The fbx handler — rolling release `fbx-latest`, overwritten on each push to
+# main that touches packages/handler-fbx/ (or the shared packages/go it builds
+# on). FBX (binary and ASCII) diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."fbx"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx.wasm"
+
+# The usd handler — rolling release `usd-latest`, overwritten on each push to
+# main that touches packages/handler-usd/ (or the shared packages/go it builds
+# on). USD (text, crate and package) diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."usd"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/forge-handler-usd_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/forge-handler-usd_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/forge-handler-usd_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/forge-handler-usd_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/forge-handler-usd_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/forge-handler-usd.wasm"
+
+# The 3ds handler — rolling release `3ds-latest`, overwritten on each push to
+# main that touches packages/handler-3ds/ (or the shared packages/go it builds
+# on). 3DS diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."3ds"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds.wasm"
+
+# The blend handler — rolling release `blend-latest`, overwritten on each push to
+# main that touches packages/handler-blend/ (or the shared packages/go it builds
+# on). Blender .blend files are read (never written) and diff as the glTF scene they hold. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."blend"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/forge-handler-blend_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/forge-handler-blend_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/forge-handler-blend_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/forge-handler-blend_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/forge-handler-blend_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/forge-handler-blend.wasm"
+
+# The amf handler — rolling release `amf-latest`, overwritten on each push to
+# main that touches packages/handler-amf/ (or the shared packages/go it builds
+# on). AMF (plain or zipped) diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."amf"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf.wasm"
+
+# The vrml handler — rolling release `vrml-latest`, overwritten on each push to
+# main that touches packages/handler-vrml/ (or the shared packages/go it builds
+# on). VRML97 (plain or gzip) diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."vrml"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml.wasm"
+
+# The dxf handler — rolling release `dxf-latest`, overwritten on each push to
+# main that touches packages/handler-dxf/ (or the shared packages/go it builds
+# on). DXF diffs as the glTF scene it converts to. It ships the wasm build too (Tier B in-browser diff).
+[assets.handlers."dxf"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf.wasm"
 
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
@@ -52,4 +234,19 @@ maintainer  = "ForgeHub Project"
 
 [assets.renderers]
 "gltf-scene" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/renderer-gltf-scene.js"
-"yaml"       = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/renderer-yaml.js"
+"csv"        = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/renderer-csv.js"
+"ipynb"      = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/renderer-ipynb.js"
+"obj"        = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/renderer-obj.js"
+"stl"        = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/renderer-stl.js"
+"ply"        = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/renderer-ply.js"
+"3mf"        = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/renderer-3mf.js"
+"off"        = "https://github.com/forgehubproject/fhr/releases/download/off-latest/renderer-off.js"
+"dae"        = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/renderer-dae.js"
+"x3d"        = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/renderer-x3d.js"
+"fbx"        = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/renderer-fbx.js"
+"usd"        = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/renderer-usd.js"
+"3ds"        = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/renderer-3ds.js"
+"blend"      = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/renderer-blend.js"
+"amf"        = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/renderer-amf.js"
+"vrml"       = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/renderer-vrml.js"
+"dxf"        = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/renderer-dxf.js"

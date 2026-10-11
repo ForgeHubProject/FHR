@@ -297,3 +297,9 @@ Cargo.lock
 
 # End of https://www.toptal.com/developers/gitignore/api/dotenv,node,rust,go,goland
 
+
+### FHR ###
+# `go build` inside a handler package drops a binary named after the directory,
+# and the release workflow builds forge-handler-<id>_<os>-<arch> there too.
+packages/handler-*/handler-*
+packages/handler-*/forge-handler-*
