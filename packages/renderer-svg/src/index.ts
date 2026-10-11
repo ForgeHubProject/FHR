@@ -20,6 +20,8 @@ export default defineRenderer({
   handlerId: "svg",
   extensions: [".svg"],
   build: BUILD,
+  // Draws diffs only: a single file stays with the host's own viewer.
+  modes: ["diff"],
   render(container: HTMLElement, props: MountProps) {
     renderDiffTree(container, props);
   },
