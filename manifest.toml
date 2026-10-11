@@ -34,6 +34,9 @@ maintainer  = "ForgeHub Project"
 ".amf"  = { handler = "amf", build = "fec51f0" }
 ".wrl"  = { handler = "vrml", build = "fec51f0" }
 ".dxf"  = { handler = "dxf", build = "fec51f0" }
+".yaml" = { handler = "yaml", build = "ef9ece5" }
+".yml"  = { handler = "yaml", build = "ef9ece5" }
+".svg"  = { handler = "svg", build = "0000000" }
 ".wav"  = { handler = "wav", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
@@ -228,6 +231,28 @@ maintainer  = "ForgeHub Project"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf.wasm"
 
+# The yaml handler — rolling release `yaml-latest`, overwritten on each push to
+# main that touches packages/handler-yaml/. YAML parses in pure Go, so it ships
+# the wasm build too (Tier B in-browser diff).
+[assets.handlers."yaml"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/forge-handler-yaml.wasm"
+
+# The svg handler — rolling release `svg-latest`, overwritten on each push to
+# main that touches packages/handler-svg/. XML parses everywhere, so it ships
+# the wasm build too (Tier B in-browser diff).
+[assets.handlers."svg"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg_windows-amd64.exe"
+"wasm"          = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg.wasm"
+
 # The wav handler — rolling release `wav-latest`, overwritten on each push to
 # main that touches packages/handler-wav/. The RIFF header parses with plain
 # stdlib byte reads, so it ships the wasm build too (Tier B in-browser diff).
@@ -262,4 +287,6 @@ maintainer  = "ForgeHub Project"
 "amf"        = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/renderer-amf.js"
 "vrml"       = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/renderer-vrml.js"
 "dxf"        = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/renderer-dxf.js"
+"yaml"       = "https://github.com/forgehubproject/fhr/releases/download/yaml-latest/renderer-yaml.js"
+"svg"        = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/renderer-svg.js"
 "wav"        = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/renderer-wav.js"
