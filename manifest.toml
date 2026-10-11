@@ -42,7 +42,7 @@ maintainer  = "ForgeHub Project"
 ".png"  = { handler = "png", build = "1e5101a" }
 ".jpg"  = { handler = "jpeg", build = "1e5101a" }
 ".jpeg" = { handler = "jpeg", build = "1e5101a" }
-".gif"  = { handler = "gif", build = "0000000" }
+".gif"  = { handler = "gif", build = "1e5101a" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
