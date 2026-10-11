@@ -1,7 +1,7 @@
 {
-  "name": "@fhr/renderer-image-meta",
+  "name": "@fhr/renderer-jpeg",
   "version": "1.0.0",
-  "description": "FHR renderer bundle for raster image metadata diffs",
+  "description": "FHR renderer bundle for JPEG images",
   "type": "module",
   "private": true,
   "scripts": {

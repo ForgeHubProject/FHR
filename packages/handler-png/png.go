@@ -1,39 +1,29 @@
-// Package main is a format-aware handler for raster images (.png, .jpg,
-// .jpeg, .gif). It produces a metadata-level semantic diff — dimensions,
-// decoded format, color model, byte size — which reads far better than
-// "binary files differ".
+// Package main is the PNG handler (.png). It produces a
+// metadata-level semantic diff (dimensions, color model, byte size), which
+// reads far better than "binary files differ".
 //
-// Only image.DecodeConfig is used (header-only decode, stdlib codecs
-// registered via blank imports): no pixel data is ever decoded, so the
-// handler is fast, allocation-light, and wasm-safe. Perceptual / pixel-region
-// diffing and EXIF fields are planned follow-ups — see issue #28.
+// Only png.DecodeConfig is used: the header is read and no pixel data is
+// decoded, so the handler is fast, allocation-light and wasm-safe. A file that
+// is not really a PNG (whatever its extension says) is refused with the
+// codec's error, naming the side, rather than diffed as something else.
 package main
 
 import (
 	"bytes"
 	"fmt"
-	"image"
 	"image/color"
+	"image/png"
 	"path/filepath"
 	"strings"
-
-	// Register the stdlib codecs with image.DecodeConfig. Decoding stays
-	// header-only; these imports never pull pixel data.
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
 )
 
-// Handler is the raster image metadata handler.
+// Handler is the PNG metadata handler.
 type Handler struct{}
 
-// imageExts are the extensions this handler claims, matched case-insensitively.
-var imageExts = []string{".png", ".jpg", ".jpeg", ".gif"}
-
-// Match returns true for .png / .jpg / .jpeg / .gif files.
+// Match returns true for .png files, case-insensitively.
 func (h *Handler) Match(path string) bool {
 	ext := filepath.Ext(path)
-	for _, e := range imageExts {
+	for _, e := range exts {
 		if strings.EqualFold(ext, e) {
 			return true
 		}
@@ -43,7 +33,6 @@ func (h *Handler) Match(path string) bool {
 
 // imageMeta is the decoded metadata for one side of a diff.
 type imageMeta struct {
-	format     string // decoded format ("png", "jpeg", "gif") — not the extension
 	width      int
 	height     int
 	colorModel string
@@ -54,14 +43,13 @@ func (m imageMeta) dimensions() string {
 	return fmt.Sprintf("%dx%d", m.width, m.height)
 }
 
-// decodeMeta reads only the image header (image.DecodeConfig) — never pixels.
+// decodeMeta reads only the PNG header, never pixels.
 func decodeMeta(blob Blob) (imageMeta, error) {
-	cfg, format, err := image.DecodeConfig(bytes.NewReader(blob))
+	cfg, err := png.DecodeConfig(bytes.NewReader(blob))
 	if err != nil {
-		return imageMeta{}, fmt.Errorf("decoding image header: %w", err)
+		return imageMeta{}, fmt.Errorf("decoding PNG header: %w", err)
 	}
 	return imageMeta{
-		format:     format,
 		width:      cfg.Width,
 		height:     cfg.Height,
 		colorModel: colorModelName(cfg.ColorModel),
@@ -69,8 +57,7 @@ func decodeMeta(blob Blob) (imageMeta, error) {
 	}, nil
 }
 
-// colorModelName maps well-known stdlib color models to readable names.
-// Anything unrecognized (custom models from third-party codecs) is "other".
+// colorModelName maps the stdlib color models to readable names.
 func colorModelName(m color.Model) string {
 	switch m {
 	case color.RGBAModel:
@@ -123,7 +110,7 @@ func sizeString(n int) string {
 	return fmt.Sprintf("%d bytes (%s)", n, humanSize(n))
 }
 
-// Diff produces a metadata-level semantic diff of two image blobs. An empty
+// Diff produces a metadata-level semantic diff of two PNG blobs. An empty
 // blob on either side is the added/deleted-file case (all metadata added /
 // removed). Metadata equal but bytes different yields exactly one "content"
 // change, so a pixel-only edit never diffs as empty.
@@ -166,13 +153,12 @@ func (h *Handler) Diff(base, head Blob) (StructuredDiff, error) {
 func metaFields(m imageMeta) []struct{ path, label, value string } {
 	return []struct{ path, label, value string }{
 		{"dimensions", "dimensions", m.dimensions()},
-		{"format", "format", m.format},
 		{"colorModel", "color model", m.colorModel},
 		{"byteSize", "byte size", sizeString(m.size)},
 	}
 }
 
-// sideChanges reports every metadata field of one side as added or removed —
+// sideChanges reports every metadata field of one side as added or removed:
 // the new-file / deleted-file case, with the side's stats as values.
 func sideChanges(m imageMeta, kind ChangeKind) []DiffChange {
 	fields := metaFields(m)
@@ -189,9 +175,7 @@ func sideChanges(m imageMeta, kind ChangeKind) []DiffChange {
 	return ch
 }
 
-// diffMeta compares two sides' metadata field by field. The decoded format is
-// diffed (not the extension) — an extension can lie, and a PNG renamed to
-// .jpg is exactly the kind of change worth surfacing.
+// diffMeta compares two sides' metadata field by field.
 func diffMeta(base, head imageMeta, sameBytes bool) []DiffChange {
 	ch := []DiffChange{}
 	bf, hf := metaFields(base), metaFields(head)
@@ -208,7 +192,7 @@ func diffMeta(base, head imageMeta, sameBytes bool) []DiffChange {
 		})
 	}
 	if len(ch) == 0 && !sameBytes {
-		// All metadata equal, but the bytes changed — a pixel-level edit that
+		// All metadata equal, but the bytes changed: a pixel-level edit that
 		// header inspection can't describe. Say so rather than diffing empty.
 		ch = append(ch, DiffChange{
 			Path:   "content",
@@ -221,8 +205,8 @@ func diffMeta(base, head imageMeta, sameBytes bool) []DiffChange {
 	return ch
 }
 
-// Merge is not yet supported for image-meta (v0 is diff-only) — Forge falls
-// back to blob-pick, same as plain git. See issue #28 for follow-ups.
+// Merge is not supported (diff-only): forge falls back to picking a side,
+// as plain git does.
 func (h *Handler) Merge(_, _, _ Blob) (Blob, *ConflictInfo, error) {
-	return nil, nil, fmt.Errorf("semantic merge is not yet supported for image-meta")
+	return nil, nil, fmt.Errorf("semantic merge is not supported for png")
 }
