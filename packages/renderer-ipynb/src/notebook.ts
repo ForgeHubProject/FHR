@@ -240,6 +240,9 @@ export function renderOutput(make: Make, out: Output): El {
 
 // ── the notebook ─────────────────────────────────────────────────────────────
 
+// The host page may reset element styles (Tailwind's preflight strips heading
+// sizes, list markers and paragraph margins), so the Markdown's look is set
+// here rather than left to the browser's defaults.
 const CSS = `
 .fhr-nbv { font: 14px/1.6 ui-sans-serif, system-ui, sans-serif; color: #1f2328; padding: 8px 16px 16px; }
 .fhr-nbv[data-theme="dark"] { color: #e6edf3; }
@@ -254,9 +257,25 @@ const CSS = `
 .fhr-nbv__error { background: rgba(248,81,73,0.12); }
 .fhr-nbv__img { max-width: 100%; height: auto; background: #fff; }
 .fhr-nbv__html { width: 100%; height: 160px; border: 0; background: #fff; }
-.fhr-nbv__md h1, .fhr-nbv__md h2 { border-bottom: 1px solid #d1d9e0; padding-bottom: .2em; }
+.fhr-nbv__md p, .fhr-nbv__md .fhr-nbv__list, .fhr-nbv__md .fhr-nbv__pre, .fhr-nbv__md .fhr-nbv__quote { margin: 0 0 12px; }
+.fhr-nbv__h { margin: 20px 0 10px; font-weight: 600; line-height: 1.25; }
+h1.fhr-nbv__h { font-size: 2em; }
+h2.fhr-nbv__h { font-size: 1.5em; }
+h3.fhr-nbv__h { font-size: 1.25em; }
+h4.fhr-nbv__h { font-size: 1em; }
+h5.fhr-nbv__h { font-size: .875em; }
+h6.fhr-nbv__h { font-size: .85em; color: #59636e; }
+.fhr-nbv[data-theme="dark"] h6.fhr-nbv__h { color: #9198a1; }
+.fhr-nbv__md h1, .fhr-nbv__md h2 { border-bottom: 1px solid #d1d9e0; padding-bottom: .3em; }
 .fhr-nbv[data-theme="dark"] .fhr-nbv__md h1, .fhr-nbv[data-theme="dark"] .fhr-nbv__md h2 { border-color: #3d444d; }
+.fhr-nbv__list { padding-left: 2em; }
+ul.fhr-nbv__list { list-style: disc; }
+ol.fhr-nbv__list { list-style: decimal; }
+.fhr-nbv__list li + li { margin-top: .25em; }
+.fhr-nbv__md hr { height: 0; border: 0; border-top: 2px solid #d1d9e0; margin: 20px 0; }
+.fhr-nbv[data-theme="dark"] .fhr-nbv__md hr { border-color: #3d444d; }
 .fhr-nbv__md > :first-child { margin-top: 0; }
+.fhr-nbv__md > :last-child { margin-bottom: 0; }
 .fhr-nbv__icode { font: 85% ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: rgba(129,139,152,0.15); padding: .1em .35em; border-radius: 4px; }
 .fhr-nbv__quote { border-left: 3px solid #d1d9e0; padding-left: 12px; color: #59636e; }
 .fhr-nbv a { color: #0969da; }
