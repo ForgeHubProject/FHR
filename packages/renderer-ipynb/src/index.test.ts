@@ -11,8 +11,8 @@ describe("ipynb renderer bundle", () => {
     expect(typeof bundle.mount).toBe("function");
   });
 
-  it("draws diffs only, so a host keeps its own viewer for a single file", () => {
-    expect(bundle.modes).toEqual(["diff"]);
+  it("draws a single notebook as well as diffs (FHR#112)", () => {
+    expect(bundle.modes).toEqual(["view", "diff"]);
   });
 });
 
