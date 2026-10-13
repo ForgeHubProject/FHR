@@ -51,7 +51,13 @@ export function safeHref(url: string): string | null {
  */
 export function appendInline(make: Make, parent: El, text: string, images: (name: string) => string | null): void {
   // Order matters: code spans first (nothing inside them is Markdown).
-  const re = /`([^`]+)`|!\[([^\]]*)\]\(([^)\s]+)[^)]*\)|\[([^\]]+)\]\(([^)\s]+)[^)]*\)|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|_([^_\s][^_]*)_/g;
+  // A URL may hold one level of balanced parentheses (Wikipedia's "Foo_(bar)",
+  // or "javascript:alert('z')" which must not leave a stray ")" behind).
+  const url = String.raw`((?:[^()\s]|\([^()\s]*\))+)`;
+  const re = new RegExp(
+    String.raw`\`([^\`]+)\`|!\[([^\]]*)\]\(` + url + String.raw`(?:\s+"[^"]*")?\)|\[([^\]]+)\]\(` + url + String.raw`(?:\s+"[^"]*")?\)|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|_([^_\s][^_]*)_`,
+    "g",
+  );
   let at = 0;
   for (const m of text.matchAll(re)) {
     if (m.index! > at) parent.append(text.slice(at, m.index));

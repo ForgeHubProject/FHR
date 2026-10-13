@@ -68,6 +68,13 @@ describe("markdownToDom", () => {
     expect(safeHref(" JavaScript:alert(1)")).toBeNull();
   });
 
+  it("keeps balanced parentheses inside a URL, and leaves no stray ones behind", () => {
+    const md = markdownToDom(make, "[wiki](https://en.wikipedia.org/wiki/Foo_(bar)) and [bad](javascript:alert('z')).");
+    const links = all(md as unknown as Node).filter((n) => n.tag === "a");
+    expect(links.map((a) => a.attrs["href"])).toEqual(["https://en.wikipedia.org/wiki/Foo_(bar)"]);
+    expect(textOf(md)).toBe("wiki and bad.");
+  });
+
   it("an image shows only from the cell's own attachments, never fetched from elsewhere", () => {
     const att = (ref: string) => (ref === "attachment:plot.png" ? "data:image/png;base64,AAA" : null);
     const md = markdownToDom(make, "![plot](attachment:plot.png) ![remote](https://tracker.example/p.gif)", att);
