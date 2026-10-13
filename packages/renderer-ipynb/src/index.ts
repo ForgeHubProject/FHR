@@ -1,6 +1,7 @@
 import { defineRenderer } from "@fhr/renderer-sdk";
 import type { DiffChange, MountProps } from "@fhr/types";
 import { foldUnchanged, lineDiff, type DiffLine } from "./linediff.js";
+import { renderNotebookView } from "./notebook.js";
 
 // Replaced at bundle-build time with the release's short commit SHA (see
 // build.mjs). Guarded with typeof so importing the source directly (e.g. in a
@@ -9,17 +10,19 @@ declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ !== "undefined" ? __BUILD__ : "dev";
 
 /**
- * Renderer for Jupyter notebook diffs. Each changed cell is a card, and inside
- * it the cell's source and outputs are line-diffed like a small text file:
- * which cells were added, removed, moved or edited, and what changed in each.
+ * Renderer for Jupyter notebooks. A single notebook is drawn as one (cells,
+ * prompts, outputs; notebook.ts). In a diff each changed cell is a card, and
+ * inside it the cell's source and outputs are line-diffed like a small text
+ * file: which cells were added, removed, moved or edited, and what changed.
  */
 export default defineRenderer({
   handlerId: "ipynb",
   extensions: [".ipynb"],
   build: BUILD,
-  // Draws diffs only: a single file stays with the host's own viewer.
-  modes: ["diff"],
+  // A single notebook is drawn as a notebook (FHR#112); a diff, cell by cell.
+  modes: ["view", "diff"],
   render(container: HTMLElement, props: MountProps) {
+    if (props.mode === "view") return renderNotebookView(container, props);
     return renderNotebookDiff(container, props);
   },
 });
