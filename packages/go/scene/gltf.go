@@ -211,6 +211,11 @@ func (h *Handler) Merge(base, ours, theirs Blob) (Blob, *ConflictInfo, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("parsing theirs: %w", err)
 	}
+	// One form for every placement, so a side that moved a matrix-placed node
+	// is merged like one that moved a TRS node, not silently dropped.
+	normalizeTransforms(docBase)
+	normalizeTransforms(docOurs)
+	normalizeTransforms(docTheirs)
 
 	var conflicts []SemanticConflict
 
@@ -335,6 +340,21 @@ func merge3Node(bn, on, tn *gltf.Node, name string, conflicts *[]SemanticConflic
 		}
 	} else if nearEq3(ourSc, baseSc) && !nearEq3(theirSc, baseSc) {
 		out.Scale = theirSc
+	}
+
+	// What is left as a matrix after normalizeTransforms is a shear: merged whole.
+	baseM := gltf.DefaultMatrix
+	if bn != nil {
+		baseM = bn.MatrixOrDefault()
+	}
+	ourM, theirM := on.MatrixOrDefault(), tn.MatrixOrDefault()
+	if !nearEqMat(ourM, baseM) && !nearEqMat(theirM, baseM) && !nearEqMat(ourM, theirM) {
+		*conflicts = append(*conflicts, SemanticConflict{
+			Path: joinPath("nodes", name, "matrix"), Ours: fmtMat(ourM), Theirs: fmtMat(theirM),
+		})
+	} else if nearEqMat(ourM, baseM) && !nearEqMat(theirM, baseM) {
+		out.Matrix = theirM
+		out.Translation, out.Rotation, out.Scale = tn.TranslationOrDefault(), tn.RotationOrDefault(), tn.ScaleOrDefault()
 	}
 
 	baseMesh := ptrLabel(func() *int {
@@ -662,6 +682,8 @@ func (h *Handler) ApplyChoices(merged, theirs Blob, takePaths []string) (Blob, e
 	if err != nil {
 		return nil, fmt.Errorf("parsing theirs: %w", err)
 	}
+	normalizeTransforms(docM)
+	normalizeTransforms(docT)
 	for _, path := range takePaths {
 		if err := applyChoice(docM, docT, path); err != nil {
 			return nil, err
@@ -701,6 +723,9 @@ func applyChoice(docM, docT *gltf.Document, path string) error {
 			mn.Rotation = tn.RotationOrDefault()
 		case "scale":
 			mn.Scale = tn.ScaleOrDefault()
+		case "matrix":
+			mn.Matrix = tn.MatrixOrDefault()
+			mn.Translation, mn.Rotation, mn.Scale = tn.TranslationOrDefault(), tn.RotationOrDefault(), tn.ScaleOrDefault()
 		default:
 			return fmt.Errorf("taking %s from theirs is not supported yet — resolve it in your editor", path)
 		}
@@ -810,7 +835,12 @@ func (h *Handler) Diff(base, head Blob) (StructuredDiff, error) {
 // (nodes/<name>/..., materials/<name>/..., meshes/<name>/...; SPEC.md), keyed
 // by the documents' element names. A converter controls those names, so it
 // controls what the paths say.
+//
+// A node placed by a matrix is compared as the translation, rotation and scale
+// the matrix is, so both documents are normalised in place first (trs.go).
 func DiffDocuments(docA, docB *gltf.Document) []DiffChange {
+	normalizeTransforms(docA)
+	normalizeTransforms(docB)
 	// The referenced collections are matched first and shared, because a reference
 	// can only be compared by identity once its referent's pairing is in hand
 	// (collectionMatch.same): a node names a mesh and a primitive names a material.
@@ -1302,6 +1332,14 @@ func diffNodeProps(aIx *nodeIndex, ai int, bIx *nodeIndex, bi int, path string, 
 		changes = append(changes, DiffChange{
 			Path: childPath(path, "scale"), Label: "scale",
 			Kind: Modified, Before: fmtVec3(blenderScale(sa)), After: fmtVec3(blenderScale(sb)),
+		})
+	}
+	// A matrix normalizeTransforms left alone (a shear) has no TRS to compare, so
+	// it is compared whole: never ignored.
+	if ma, mb := a.MatrixOrDefault(), b.MatrixOrDefault(); !nearEqMat(ma, mb) {
+		changes = append(changes, DiffChange{
+			Path: childPath(path, "matrix"), Label: "matrix",
+			Kind: Modified, Before: fmtMat(ma), After: fmtMat(mb),
 		})
 	}
 	// The mesh, like the parent, by identity: renaming a mesh must not report every
@@ -2332,6 +2370,14 @@ func nearEq3(a, b [3]float64) bool {
 func nearEq4(a, b [4]float64) bool {
 	return nearEq(a[0], b[0]) && nearEq(a[1], b[1]) && nearEq(a[2], b[2]) && nearEq(a[3], b[3])
 }
+func nearEqMat(a, b [16]float64) bool {
+	for i := range a {
+		if !nearEq(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
 
 // blenderTranslation converts glTF XYZ to Blender coordinate space.
 // Blender X = glTF X,  Blender Y = −glTF Z,  Blender Z = glTF Y
@@ -2418,6 +2464,15 @@ func fmtVec3(v [3]float64) string {
 
 func fmtVec4(v [4]float64) string {
 	return fmt.Sprintf("[%s %s %s %s]", fmtF(v[0]), fmtF(v[1]), fmtF(v[2]), fmtF(v[3]))
+}
+
+// fmtMat writes a matrix column-major, as glTF stores it.
+func fmtMat(m [16]float64) string {
+	parts := make([]string, len(m))
+	for i, v := range m {
+		parts[i] = fmtF(v)
+	}
+	return "[" + strings.Join(parts, " ") + "]"
 }
 
 // fmtCount groups a count in thousands. Vertex counts run to six and seven
