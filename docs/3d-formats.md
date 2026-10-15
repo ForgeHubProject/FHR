@@ -40,7 +40,7 @@ write what the scene holds says so with an error.
 | PLY | `.ply` | ✓ ASCII, binary LE/BE | ✓ binary LE | numbers pass through | Blender |
 | 3MF | `.3mf` | ✓ incl. multi-part | ✓ | numbers pass through | hand-written |
 | OFF | `.off` | ✓ | ✓ | numbers pass through | hand-written |
-| Collada | `.dae` | ✓ | ✓ | Z-up handled; unit not applied | hand-written |
+| Collada | `.dae` | ✓ | ✓ | Z-up handled; **unit applied** | hand-written |
 | X3D (XML) | `.x3d` | ✓ | ✓ | Y-up, metres | hand-written |
 | VRML97 | `.wrl` | ✓ plain + gzip | ✓ | Y-up, metres | hand-written |
 | FBX | `.fbx` | ✓ binary + ASCII | ✓ binary 7.4 | Z-up handled; **unit applied** | Blender |
@@ -52,8 +52,8 @@ write what the scene holds says so with an error.
 
 "Units applied" means the file's numbers become glTF's metres on read and the writer
 declares metres. "Pass through" means they are copied unchanged — the format has no
-declared unit (STL, OBJ, PLY, OFF, 3DS) or the handler does not yet apply it (3MF,
-Collada). That inconsistency is known and tracked; do not rely on it.
+declared unit (STL, OBJ, PLY, OFF, 3DS) or the handler does not yet apply it
+(3MF). That inconsistency is known and tracked; do not rely on it.
 
 **"Checked against"** says what the handler was tested with beyond its own round
 trips. Blender 5.x and `ezdxf` are real readers: their output was used as fixtures

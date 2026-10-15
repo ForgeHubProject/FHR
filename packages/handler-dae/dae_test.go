@@ -162,7 +162,9 @@ func TestMalformed(t *testing.T) {
 		"bad vcount":     geo(`<polylist count="1"><input semantic="VERTEX" source="#v" offset="0"/><vcount>5</vcount><p>0 1 2</p></polylist>`),
 		"node cycle": `<COLLADA><library_nodes><node id="a"><instance_node url="#a"/></node></library_nodes>
 <library_visual_scenes><visual_scene id="S"><node id="r"><instance_node url="#a"/></node></visual_scene></library_visual_scenes></COLLADA>`,
-		"skew": `<COLLADA><library_visual_scenes><visual_scene id="S"><node id="r"><skew>1 2 3 4 5 6 7</skew></node></visual_scene></library_visual_scenes></COLLADA>`,
+		"zero unit": `<COLLADA><asset><unit meter="0"/></asset></COLLADA>`,
+		"bad unit":  `<COLLADA><asset><unit meter="cm"/></asset></COLLADA>`,
+		"skew":      `<COLLADA><library_visual_scenes><visual_scene id="S"><node id="r"><skew>1 2 3 4 5 6 7</skew></node></visual_scene></library_visual_scenes></COLLADA>`,
 	}
 	for name, src := range cases {
 		if _, err := decode([]byte(src)); err == nil {
@@ -182,5 +184,111 @@ func TestDiffMatchAndExportErrors(t *testing.T) {
 	}
 	if _, err := encode(nil, ".dae"); err == nil {
 		t.Fatal("an empty scene is an error")
+	}
+}
+
+// bounds is the world-space box of everything a GLB draws.
+func bounds(t *testing.T, glb []byte) (lo, hi [3]float64) {
+	t.Helper()
+	roots, err := scene.Flatten(glb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo = [3]float64{math.Inf(1), math.Inf(1), math.Inf(1)}
+	hi = [3]float64{math.Inf(-1), math.Inf(-1), math.Inf(-1)}
+	scene.Walk(roots, func(n *scene.FlatNode, _ int) {
+		for _, p := range n.Prims {
+			for _, v := range p.Positions {
+				for i := 0; i < 3; i++ {
+					lo[i], hi[i] = math.Min(lo[i], v[i]), math.Max(hi[i], v[i])
+				}
+			}
+		}
+	})
+	return
+}
+
+// withUnit is the sample in another unit: <unit meter="…"> on its asset.
+func withUnit(meter string) string {
+	return strings.Replace(sample, "<asset>", `<asset><unit name="u" meter="`+meter+`"/>`, 1)
+}
+
+// The bug this pins (FHR#104): a centimetre document came in 100× too big. The
+// sample's plate is 4 × 3 units, and Shifted sits 10 units along x (then turned
+// 90° by Holder, so along y).
+func TestDeclaredUnitBecomesMetres(t *testing.T) {
+	for _, c := range []struct {
+		meter string
+		unit  float64
+	}{{"", 1}, {"1", 1}, {"0.01", 0.01}, {"0.0254", 0.0254}, {"0.001", 0.001}} {
+		src := sample
+		if c.meter != "" {
+			src = withUnit(c.meter)
+		}
+		m, err := decode([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A node's own placement is in metres, not only the world-space size.
+		if got := m.Roots[1].Children[0].Matrix[12]; math.Abs(got-10*c.unit) > 1e-12 {
+			t.Errorf("meter=%q: Shifted's translation is %v, want %v", c.meter, got, 10*c.unit)
+		}
+		glb, err := h().Import([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		lo, hi := bounds(t, glb)
+		// Plate 0..4 × 0..3, and Shifted's copy turned to -3..0 × 10..14.
+		want := [2][3]float64{{-3 * c.unit, 0, 0}, {4 * c.unit, 14 * c.unit, 0}}
+		for i := 0; i < 3; i++ {
+			if math.Abs(lo[i]-want[0][i]) > 1e-6*c.unit || math.Abs(hi[i]-want[1][i]) > 1e-6*c.unit {
+				t.Fatalf("meter=%q: bounds %v..%v, want %v..%v", c.meter, lo, hi, want[0], want[1])
+			}
+		}
+	}
+}
+
+// Z_UP and a unit together: rotated and scaled.
+func TestUnitAndZUpTogether(t *testing.T) {
+	src := strings.Replace(withUnit("0.01"), "<up_axis>Y_UP", "<up_axis>Z_UP", 1)
+	glb, err := h().Import([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo, hi := bounds(t, glb)
+	// Y-up from Z-up: (x, y, z) → (x, z, -y); in metres.
+	if math.Abs(hi[0]-0.04) > 1e-7 || math.Abs(lo[2]+0.14) > 1e-7 || math.Abs(hi[1]) > 1e-9 {
+		t.Fatalf("bounds %v..%v", lo, hi)
+	}
+}
+
+// The writer declares metres, so a centimetre document survives a transcode at
+// its real size, and a second import/export changes nothing.
+func TestUnitRoundTrip(t *testing.T) {
+	glb, err := h().Import([]byte(withUnit("0.01")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := h().Export(glb, ".dae")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `<unit name="meter" meter="1"/>`) {
+		t.Fatalf("export does not declare metres:\n%s", out)
+	}
+	back, err := h().Import(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo1, hi1 := bounds(t, glb)
+	lo2, hi2 := bounds(t, back)
+	for i := 0; i < 3; i++ {
+		if math.Abs(lo1[i]-lo2[i]) > 1e-7 || math.Abs(hi1[i]-hi2[i]) > 1e-7 {
+			t.Fatalf("round trip changed the size: %v..%v → %v..%v", lo1, hi1, lo2, hi2)
+		}
+	}
+	out2, err := h().Export(back, ".dae")
+	if err != nil || !bytes.Equal(out, out2) {
+		t.Fatalf("export is not stable across import/export (err=%v)", err)
 	}
 }
