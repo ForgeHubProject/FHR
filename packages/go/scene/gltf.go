@@ -299,8 +299,8 @@ func merge3Node(bn, on, tn *gltf.Node, name string, conflicts *[]SemanticConflic
 		} else {
 			*conflicts = append(*conflicts, SemanticConflict{
 				Path:   joinPath("nodes", name, "translation"),
-				Ours:   fmtVec3(blenderTranslation(ourTr)),
-				Theirs: fmtVec3(blenderTranslation(theirTr)),
+				Ours:   fmtLenVec3(blenderTranslation(ourTr)),
+				Theirs: fmtLenVec3(blenderTranslation(theirTr)),
 			})
 		}
 	} else if nearEq3(ourTr, baseTr) && !nearEq3(theirTr, baseTr) {
@@ -1289,7 +1289,7 @@ func diffNodeProps(aIx *nodeIndex, ai int, bIx *nodeIndex, bi int, path string, 
 	if ta, tb := a.TranslationOrDefault(), b.TranslationOrDefault(); !nearEq3(ta, tb) {
 		changes = append(changes, DiffChange{
 			Path: childPath(path, "translation"), Label: "translation",
-			Kind: Modified, Before: fmtVec3(blenderTranslation(ta)), After: fmtVec3(blenderTranslation(tb)),
+			Kind: Modified, Before: fmtLenVec3(blenderTranslation(ta)), After: fmtLenVec3(blenderTranslation(tb)),
 		})
 	}
 	if ra, rb := a.RotationOrDefault(), b.RotationOrDefault(); !nearEq4(ra, rb) {
@@ -1331,7 +1331,7 @@ func nodePropsOneSide(ix *nodeIndex, i int, path string, kind ChangeKind) []Diff
 		add("parent", p)
 	}
 	if t := n.TranslationOrDefault(); !nearEq3(t, gltf.DefaultTranslation) {
-		add("translation", fmtVec3(blenderTranslation(t)))
+		add("translation", fmtLenVec3(blenderTranslation(t)))
 	}
 	if r := n.RotationOrDefault(); !nearEq4(r, gltf.DefaultRotation) {
 		add("rotation", fmtRot(r))
@@ -1796,12 +1796,12 @@ func diffPrimitive(ap, bp *gltf.Primitive, a, b meshSide, path string, mats coll
 	aSize, aOK := primitiveExtent(aPos)
 	bSize, bOK := primitiveExtent(bPos)
 	if aOK && bOK && !nearEq3(aSize, bSize) {
-		emit("bounds", fmtVec3(aSize), fmtVec3(bSize)+" ("+dominantAxisDelta(aSize, bSize)+")")
+		emit("bounds", fmtLenVec3(aSize), fmtLenVec3(bSize)+" ("+dominantAxisDelta(aSize, bSize)+")")
 	}
 	if positionChanged {
 		if aC, ok := primitiveCentroid(a.doc, aPos); ok {
 			if bC, ok := primitiveCentroid(b.doc, bPos); ok && !nearEq3(aC, bC) {
-				emit("centroid", fmtVec3(aC), fmtVec3(bC)+" (moved "+fmtDistance(aC, bC)+")")
+				emit("centroid", fmtLenVec3(aC), fmtLenVec3(bC)+" (moved "+fmtDistance(aC, bC)+")")
 			}
 		}
 	}
@@ -2416,6 +2416,34 @@ func fmtVec3(v [3]float64) string {
 	return fmt.Sprintf("[%s %s %s]", fmtF(v[0]), fmtF(v[1]), fmtF(v[2]))
 }
 
+// fmtLen formats a length in metres for a reader: two decimals as fmtF writes,
+// and more where the value has them, down to eps (10 µm), so every change this
+// diff can detect also shows. A 3 mm part edit is "+0.003", not "+0.00", and a
+// model with real units (a 20 mm 3MF part, an AMF in millimetres) diffs in
+// numbers that mean something. Decimals stop at about six significant digits,
+// past which float32 positions carry noise, not geometry.
+//
+// Display only: identity signatures keep fmtF, whose coarser rounding is part
+// of how nodes are paired, and must not move with this.
+func fmtLen(v float64) string {
+	decimals := 5
+	for m := math.Abs(v); m >= 10 && decimals > 2; m /= 10 {
+		decimals--
+	}
+	s := strconv.FormatFloat(v, 'f', decimals, 64)
+	for strings.HasSuffix(s, "0") && len(s)-strings.IndexByte(s, '.') > 3 {
+		s = s[:len(s)-1]
+	}
+	if strings.Trim(s, "-0.") == "" {
+		return "0.00"
+	}
+	return s
+}
+
+func fmtLenVec3(v [3]float64) string {
+	return fmt.Sprintf("[%s %s %s]", fmtLen(v[0]), fmtLen(v[1]), fmtLen(v[2]))
+}
+
 func fmtVec4(v [4]float64) string {
 	return fmt.Sprintf("[%s %s %s %s]", fmtF(v[0]), fmtF(v[1]), fmtF(v[2]), fmtF(v[3]))
 }
@@ -2464,17 +2492,13 @@ func dominantAxisDelta(before, after [3]float64) string {
 	if d >= 0 {
 		sign = "+"
 	}
-	return sign + fmtF(d) + " " + axes[best]
+	return sign + fmtLen(d) + " " + axes[best]
 }
 
-// fmtDistance formats a distance between two points. It carries one more decimal
-// than fmtF because it is the only value here that is meaningful at a scale
-// finer than the dimensions around it: a centroid shift of a few millimetres on
-// a metre-scale model is a real edit, and fmtF's two decimals would print it as
-// "0.00".
+// fmtDistance formats a distance between two points, as a length.
 func fmtDistance(a, b [3]float64) string {
 	d := math.Sqrt((b[0]-a[0])*(b[0]-a[0]) + (b[1]-a[1])*(b[1]-a[1]) + (b[2]-a[2])*(b[2]-a[2]))
-	return strconv.FormatFloat(d, 'f', 3, 64)
+	return fmtLen(d)
 }
 
 func ptrLabel(p *int, prefix string) string {
