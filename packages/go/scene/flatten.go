@@ -342,9 +342,13 @@ func SafeName(name, fallback string, i int) string {
 	return name
 }
 
+// unit3 scales v to length one. A vector already of length one to float32's
+// precision is returned as it is: dividing it by a length a hair off 1 only
+// moves its last bit, and doing that on every read made a normal drift each
+// time a file went through an import and export.
 func unit3(v [3]float64) [3]float64 {
 	l := math.Sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2])
-	if l == 0 {
+	if l == 0 || math.Abs(l-1) < 1e-6 {
 		return v
 	}
 	return [3]float64{v[0] / l, v[1] / l, v[2] / l}

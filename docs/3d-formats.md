@@ -70,9 +70,13 @@ matters most.
 - **Composition and external files:** USD references/payloads/sublayers/variant
   sets, VRML `Inline`/`PROTO`, `.gltf` with an external `.bin`, 3MF parts that are
   missing from the package.
-- **Geometry with no mesh in the file:** USD `Sphere`/`Cone`/…, X3D/VRML `Sphere`/
-  `Extrusion`/…, DXF ACIS solids (`3DSOLID`, `BODY`, …), Blender curves/text/
-  metaballs/grease pencil/volumes. STEP has no handler for this reason.
+- **Geometry with no mesh in the file:** USD `Sphere`/`Cone`/…, X3D/VRML
+  `Extrusion`/`ElevationGrid`/NURBS, DXF ACIS solids (`3DSOLID`, `BODY`, …), Blender
+  curves/text/metaballs/grease pencil/volumes. STEP has no handler for this reason.
+  X3D/VRML `Sphere`, `Cone` and `Cylinder` are the exception: they are made into
+  triangles at a fixed resolution (32 slices around, 16 bands on a sphere), so the
+  same file always gives the same mesh and an unchanged one never diffs. Their
+  `Text` is left out, like DXF's, as annotation rather than geometry.
 - **Versions it cannot read:** `.blend` before 5.0 (a different mesh layout), binary
   DXF, DWG.
 
