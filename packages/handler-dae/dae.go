@@ -6,8 +6,10 @@
 // are not read. It writes a Y-up, metre document with one geometry per drawn
 // node, in world space.
 //
-// Coordinates are not rescaled: a document's <unit> is not applied, as with
-// STL and 3MF. A Z_UP document is rotated to glTF's Y-up at its roots.
+// A document's <unit meter="…"> is applied: its numbers become glTF's metres,
+// vertices and the translation of every node's transform, so each node's own
+// placement is in metres too. A Z_UP document is rotated to glTF's Y-up at its
+// roots.
 package main
 
 import (
@@ -72,6 +74,7 @@ type doc struct {
 	effects    map[string]*[4]float64
 	nodes      map[string]*scene.XMLNode
 	zUp        bool
+	unit       float64 // metres per document unit
 }
 
 func decode(blob []byte) (*scene.Model, error) {
@@ -82,10 +85,19 @@ func decode(blob []byte) (*scene.Model, error) {
 	if root.Name != "COLLADA" {
 		return nil, fmt.Errorf("not a Collada document: root element is <%s>", root.Name)
 	}
-	d := &doc{geometries: map[string]*geometry{}, materials: map[string]*material{}, effects: map[string]*[4]float64{}, nodes: map[string]*scene.XMLNode{}}
+	d := &doc{geometries: map[string]*geometry{}, materials: map[string]*material{}, effects: map[string]*[4]float64{}, nodes: map[string]*scene.XMLNode{}, unit: 1}
 	if a := root.Child("asset"); a != nil {
 		if u := a.Child("up_axis"); u != nil && strings.EqualFold(u.Text, "Z_UP") {
 			d.zUp = true
+		}
+		if u := a.Child("unit"); u != nil {
+			if v, ok := u.Attr["meter"]; ok {
+				m, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+				if err != nil || !(m > 0) || math.IsInf(m, 0) {
+					return nil, fmt.Errorf("bad <unit meter=%q>", v)
+				}
+				d.unit = m
+			}
 		}
 	}
 	if lib := root.Child("library_effects"); lib != nil {
@@ -404,7 +416,7 @@ func (d *doc) prim(g *geometry, pg *primGroup) (*scene.FlatPrim, error) {
 		if pi < 0 || pi+3 > len(posSrc.data) {
 			return 0, fmt.Errorf("vertex index %d is out of range", key[vertexIn.offset])
 		}
-		fp.Positions = append(fp.Positions, [3]float64{posSrc.data[pi], posSrc.data[pi+1], posSrc.data[pi+2]})
+		fp.Positions = append(fp.Positions, [3]float64{posSrc.data[pi] * d.unit, posSrc.data[pi+1] * d.unit, posSrc.data[pi+2] * d.unit})
 		if nSrc != nil && nSrc.stride >= 3 {
 			v, err := get(normalIn, nSrc, 3)
 			if err != nil {
@@ -550,6 +562,9 @@ func (d *doc) node(n *scene.XMLNode, depth int) (*scene.Object, error) {
 	m, err := nodeMatrix(n)
 	if err != nil {
 		return nil, fmt.Errorf("node %q: %w", name, err)
+	}
+	if m != nil && d.unit != 1 { // the translation is a length; rotation and scale are not
+		m[12], m[13], m[14] = m[12]*d.unit, m[13]*d.unit, m[14]*d.unit
 	}
 	o.Matrix = m
 	for _, ig := range n.Children("instance_geometry") {
