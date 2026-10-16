@@ -173,8 +173,8 @@ func (b *docBuilder) node(o *Object) (int, error) {
 		name = fmt.Sprintf("object%d", idx)
 	}
 	n := &gltf.Node{Name: name}
-	if o.Matrix != nil && *o.Matrix != [16]float64(identity4) {
-		n.Matrix = *o.Matrix
+	if o.Matrix != nil {
+		setTransform(n, *o.Matrix)
 	}
 	b.doc.Nodes = append(b.doc.Nodes, n)
 	if len(o.Prims) > 0 {
