@@ -318,9 +318,9 @@ func TestDiffGeometrySculptWithUnchangedTopology(t *testing.T) {
 		t.Errorf("bounds should name the axis that grew, got %s", valueOf(bounds))
 	}
 	centroid := mustChange(t, d, "meshes/Hood/primitives/0/centroid")
-	if !strings.Contains(fmt.Sprint(centroid.After), "moved 0.012") {
-		// 0.75 spread over 64 vertices.
-		t.Errorf("centroid = %s, want a 0.012 shift", valueOf(centroid))
+	if !strings.Contains(fmt.Sprint(centroid.After), "moved 0.01172") {
+		// 0.75 spread over 64 vertices: 0.01171875, to the 10 µm the diff resolves.
+		t.Errorf("centroid = %s, want a 0.01172 shift", valueOf(centroid))
 	}
 }
 
@@ -742,5 +742,28 @@ func benchmarkDiffGeometry(b *testing.B, changed bool) {
 		if _, err := h.Diff(baseBlob, headBlob); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// Lengths print at the precision the diff compares at (eps, 10 µm), so a change
+// it reports is a change a reader can see — with two decimals as the floor, so
+// metre-scale values read as they always have.
+func TestFmtLen(t *testing.T) {
+	for _, c := range []struct {
+		v    float64
+		want string
+	}{
+		{0, "0.00"}, {1, "1.00"}, {60, "60.00"}, {-2.5, "-2.50"},
+		{0.003, "0.003"}, {0.02, "0.02"}, {0.01171875, "0.01172"},
+		{0.000004, "0.00"}, {-0.000001, "0.00"}, {0.00001, "0.00001"},
+		{float64(float32(0.03)), "0.03"}, {float64(float32(0.508)), "0.508"},
+		{12.34567, "12.3457"}, {123.4567, "123.457"}, {1234.567, "1234.57"}, {100000.5, "100000.50"},
+	} {
+		if got := fmtLen(c.v); got != c.want {
+			t.Errorf("fmtLen(%v) = %q, want %q", c.v, got, c.want)
+		}
+	}
+	if got := dominantAxisDelta([3]float64{0.06, 0.005, 0.04}, [3]float64{0.06, 0.008, 0.04}); got != "+0.003 Y" {
+		t.Errorf("a 3 mm growth: %q", got)
 	}
 }
