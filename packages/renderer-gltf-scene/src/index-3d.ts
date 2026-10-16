@@ -12,6 +12,7 @@
 //   scene-graph outline (a box per node)            Draco/KTX2, sibling .bin, …
 //   a sentence explaining why there's no picture    unreadable bytes
 
+import type { LengthUnit } from "@fhr/renderer-sdk";
 import type { ChangeKind, MountProps } from "@fhr/types";
 import { decodeGltf, parseGltf, type GltfDocument } from "./gltf-parse.js";
 import {
@@ -77,6 +78,8 @@ export type SceneHooks = {
    * `selectChange` call and the two never disagree about where the reviewer is.
    */
   onStep?: (delta: number) => void;
+  /** What the file's lengths are in: metres, or no unit stated (FormatOptions). */
+  lengthUnit?: LengthUnit;
 };
 
 /**
@@ -316,6 +319,7 @@ export async function mount3d(
   scene = mountModelScene(chrome.viewport, {
     overlay,
     theme,
+    lengthUnit: hooks.lengthUnit,
     mode: modeState.mode,
     showChanges,
     split,
@@ -332,7 +336,7 @@ export async function mount3d(
     // to find the part on screen and hover it.
     onHeatmap: (summary) => {
       const byPath = new Map<string, string>();
-      for (const [path, value] of summary.byPath) byPath.set(path, formatDeviation(value));
+      for (const [path, value] of summary.byPath) byPath.set(path, formatDeviation(value, hooks.lengthUnit));
       chrome?.setDeviations(byPath);
     },
     onPick: (path) => {

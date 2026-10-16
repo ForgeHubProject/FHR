@@ -24,6 +24,8 @@ export const sceneOptions: SceneRendererOptions = {
   build: BUILD,
   chunk: "renderer-stl-3d.js",
   geometry: (props: MountProps) => props.previews,
+  // The file states no unit: show its numbers, not "metres" (FHR#67).
+  lengthUnit: "none",
 };
 
 export default defineSceneRenderer(sceneOptions);

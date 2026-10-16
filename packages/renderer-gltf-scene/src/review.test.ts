@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import type { StructuredDiff } from "@fhr/types";
 import { entityPath, nodeNameOfPath, pathOfNodeName, segmentCount, unescapeSegment, escapeSegment } from "./change-path.js";
-import { entityStops, formatGltfChange, headline, headlines } from "./review.js";
+import { entityStops, formatGltfChange, headline, headlines, sceneFormatter } from "./review.js";
 
 const carDiff: StructuredDiff = {
   version: "1.0",
@@ -158,6 +158,13 @@ describe("headline (the one viewport callout's text)", () => {
 
   it("names the movement and its magnitude", () => {
     expect(of("nodes/Wheel_FL")).toBe("moved 50 mm");
+  });
+
+  it("gives a unitless format's movement as a bare number, not metres (FHR#67)", () => {
+    const stops = entityStops(carDiff);
+    const wheel = stops.find((s) => s.row.path === "nodes/Wheel_FL")!;
+    expect(headline(wheel, sceneFormatter("none"))).toBe("moved 0.05");
+    expect(headlines(stops, sceneFormatter("none"))["nodes/Wheel_FL"]).toBe("moved 0.05");
   });
 
   it("says removed for a deletion, without inventing a number", () => {
