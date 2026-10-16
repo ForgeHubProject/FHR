@@ -18,7 +18,7 @@ maintainer  = "ForgeHub Project"
 ".csv"  = { handler = "csv", build = "fec51f0" }
 ".ipynb" = { handler = "ipynb", build = "1172622" }
 ".obj"  = { handler = "obj", build = "b2cb5b3" }
-".stl"  = { handler = "stl", build = "fec51f0" }
+".stl"  = { handler = "stl", build = "b2cb5b3" }
 ".ply"  = { handler = "ply", build = "b2cb5b3" }
 ".3mf"  = { handler = "3mf", build = "b2cb5b3" }
 ".off"  = { handler = "off", build = "b2cb5b3" }
