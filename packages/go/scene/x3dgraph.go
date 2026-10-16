@@ -289,9 +289,14 @@ func (r *x3dReader) shape(n *XMLNode) (*FlatPrim, error) {
 				color = &c
 				material = m.Attr["DEF"]
 			}
-		case "IndexedFaceSet", "IndexedTriangleSet", "TriangleSet", "IndexedLineSet", "PointSet", "Box":
+		case "IndexedFaceSet", "IndexedTriangleSet", "TriangleSet", "IndexedLineSet", "PointSet", "Box",
+			"Sphere", "Cone", "Cylinder",
+			"IndexedTriangleStripSet", "IndexedTriangleFanSet", "TriangleStripSet", "TriangleFanSet", "QuadSet", "IndexedQuadSet":
 			geo = k
-		case "Sphere", "Cone", "Cylinder", "Extrusion", "ElevationGrid", "IndexedTriangleStripSet", "IndexedTriangleFanSet", "TriangleStripSet", "TriangleFanSet", "QuadSet", "IndexedQuadSet", "NurbsPatchSurface", "Text":
+		case "Text":
+			// Annotation, not geometry: left out, as the DXF handler leaves out
+			// its text, rather than refusing the whole file over a label.
+		case "Extrusion", "ElevationGrid", "NurbsPatchSurface":
 			return nil, fmt.Errorf("geometry <%s> is not supported", k.Name)
 		}
 	}
@@ -345,6 +350,10 @@ func (r *x3dReader) geometry(geo *XMLNode) (*FlatPrim, error) {
 		}
 		return x3dBox(s[0]/2, s[1]/2, s[2]/2), nil
 	}
+	switch geo.Name {
+	case "Sphere", "Cone", "Cylinder":
+		return x3dRecipe(geo)
+	}
 	pts, err := r.vec(geo, "Coordinate", "point", 3)
 	if err != nil {
 		return nil, err
@@ -383,6 +392,10 @@ func (r *x3dReader) geometry(geo *XMLNode) (*FlatPrim, error) {
 		}
 		for i := range pts {
 			fp.Indices = append(fp.Indices, uint32(i))
+		}
+	case "IndexedTriangleStripSet", "IndexedTriangleFanSet", "TriangleStripSet", "TriangleFanSet", "QuadSet", "IndexedQuadSet":
+		if fp.Indices, err = x3dStripIndices(geo, len(pts)); err != nil {
+			return nil, err
 		}
 	}
 
@@ -513,7 +526,7 @@ func (r *x3dReader) geometry(geo *XMLNode) (*FlatPrim, error) {
 			// Some corners had the attribute and some did not: drop it rather than misalign.
 			fp.Normals, fp.UVs, fp.Colors = nil, nil, nil
 		}
-	} else { // TriangleSet, PointSet: positions are the stream
+	} else { // TriangleSet, PointSet, the strip, fan and quad sets: positions are the stream
 		for _, p := range pts {
 			fp.Positions = append(fp.Positions, [3]float64{p[0], p[1], p[2]})
 		}
@@ -539,6 +552,12 @@ func (r *x3dReader) geometry(geo *XMLNode) (*FlatPrim, error) {
 	}
 	if len(fp.Indices) == 0 {
 		return nil, nil
+	}
+	switch geo.Name {
+	case "IndexedTriangleStripSet", "IndexedTriangleFanSet", "TriangleStripSet", "TriangleFanSet", "QuadSet", "IndexedQuadSet":
+		// Their points are used in index order, not point order: renumber, so a
+		// round trip through an export numbers them the same (x3dFirstUse).
+		fp = x3dFirstUse(fp)
 	}
 	return fp, nil
 }
