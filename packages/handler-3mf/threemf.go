@@ -10,6 +10,11 @@
 // numbers to glTF's metres — vertices and the translation of every transform,
 // so each node's own placement is in metres, not only the world-space size —
 // and writing converts back to millimetres, the unit slicers expect.
+//
+// 3MF is Z-up (the build plate is the XY plane); glTF is Y-up. Reading turns
+// every vertex and transform into Y-up, (x, y, z) → (x, z, −y), not only the
+// roots, so a part's own placement reads in the same axes as the world; writing
+// turns them back. Both are exact: a permutation and a sign.
 package main
 
 import (
@@ -324,6 +329,7 @@ func (d *decoder) object(from, ref string, id int, transform string, depth int) 
 	if err != nil {
 		return nil, fmt.Errorf("object %d: %w", id, err)
 	}
+	yUpMatrix(mat)
 	out := &scene.Object{Name: o.Name, Matrix: mat}
 	if out.Name == "" {
 		out.Name = "object" + strconv.Itoa(id)
@@ -396,7 +402,7 @@ func (d *modelPart) prims(o *object) ([]*scene.FlatPrim, error) {
 					i = uint32(len(p.Positions))
 					remap[v] = i
 					vt := o.Vertices[v]
-					p.Positions = append(p.Positions, [3]float64{vt.X * d.unit, vt.Y * d.unit, vt.Z * d.unit})
+					p.Positions = append(p.Positions, yUp([3]float64{vt.X * d.unit, vt.Y * d.unit, vt.Z * d.unit}))
 				}
 				p.Indices = append(p.Indices, i)
 			}
@@ -432,6 +438,47 @@ func parseTransform(s string, unit float64) (*[16]float64, error) {
 		v[6], v[7], v[8], 0,
 		v[9] * unit, v[10] * unit, v[11] * unit, 1,
 	}, nil
+}
+
+// Z-up to Y-up is the rotation that takes axis i to axis yAxis[i] with sign
+// ySign[i]: x stays x, y becomes −z, z becomes y.
+var (
+	yAxis = [3]int{0, 2, 1}
+	ySign = [3]float64{1, -1, 1}
+)
+
+// flip is −v without a negative zero, so equal inputs give equal bytes.
+func flip(v float64) float64 { return 0 - v }
+
+// yUp turns a 3MF (Z-up) point into glTF's Y-up: (x, y, z) → (x, z, −y).
+func yUp(v [3]float64) [3]float64 { return [3]float64{v[0], v[2], flip(v[1])} }
+
+// zUp is yUp undone: (x, y, z) → (x, −z, y).
+func zUp(v [3]float64) [3]float64 { return [3]float64{v[0], flip(v[2]), v[1]} }
+
+// yUpMatrix turns a Z-up transform into the same transform in Y-up, R·m·Rᵀ, in
+// place: rotation, scale and translation all in glTF's axes.
+func yUpMatrix(m *[16]float64) {
+	if m == nil {
+		return
+	}
+	var out [16]float64
+	out[15] = 1
+	for c := 0; c < 3; c++ {
+		for r := 0; r < 3; r++ {
+			v := m[c*4+r] * ySign[r] * ySign[c]
+			if v == 0 {
+				v = 0
+			}
+			out[yAxis[c]*4+yAxis[r]] = v
+		}
+		t := m[12+c] * ySign[c]
+		if t == 0 {
+			t = 0
+		}
+		out[12+yAxis[c]] = t
+	}
+	*m = out
 }
 
 // parseColor reads #RRGGBB or #RRGGBBAA (sRGB) as linear RGBA, the space glTF's
@@ -483,7 +530,7 @@ func hexColor(c [4]float64) string {
 }
 
 // encode writes the scene as a 3MF package: one object per node that draws
-// triangles (world-space geometry in millimetres, so no transforms to carry),
+// triangles (world-space geometry, Z-up, in millimetres, so no transforms to carry),
 // one build item each, and a basematerials group for the surfaces that name a
 // material or state a colour. Lines and points have no 3MF form and are dropped.
 func encode(roots []*scene.FlatNode, _ string) ([]byte, error) {
@@ -529,6 +576,7 @@ func encode(roots []*scene.FlatNode, _ string) ([]byte, error) {
 			mi := matOf(p)
 			base := nv
 			for _, v := range p.Positions {
+				v = zUp(v)
 				fmt.Fprintf(&vb, "     <vertex x=\"%s\" y=\"%s\" z=\"%s\"/>\n", mm(v[0]), mm(v[1]), mm(v[2]))
 				nv++
 			}
