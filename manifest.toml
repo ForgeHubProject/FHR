@@ -33,7 +33,7 @@ maintainer  = "ForgeHub Project"
 ".blend"  = { handler = "blend", build = "b2cb5b3" }
 ".amf"  = { handler = "amf", build = "b2cb5b3" }
 ".wrl"  = { handler = "vrml", build = "fb9fd88" }
-".dxf"  = { handler = "dxf", build = "b2cb5b3" }
+".dxf"  = { handler = "dxf", build = "fb9fd88" }
 ".svg"  = { handler = "svg", build = "fb9fd88" }
 ".wav"  = { handler = "wav", build = "fb9fd88" }
 ".geojson" = { handler = "geojson", build = "2196083" }
