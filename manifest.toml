@@ -22,7 +22,7 @@ maintainer  = "ForgeHub Project"
 ".ply"  = { handler = "ply", build = "fb9fd88" }
 ".3mf"  = { handler = "3mf", build = "fb9fd88" }
 ".off"  = { handler = "off", build = "fb9fd88" }
-".dae"  = { handler = "dae", build = "b2cb5b3" }
+".dae"  = { handler = "dae", build = "fb9fd88" }
 ".x3d"  = { handler = "x3d", build = "fb9fd88" }
 ".fbx"  = { handler = "fbx", build = "b2cb5b3" }
 ".usd"  = { handler = "usd", build = "fb9fd88" }
