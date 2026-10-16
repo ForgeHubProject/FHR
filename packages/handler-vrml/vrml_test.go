@@ -143,7 +143,6 @@ func TestRefusedByName(t *testing.T) {
 		"proto":       "#VRML V2.0 utf8\nPROTO Foo [ ] { Group { } }\n",
 		"externproto": "#VRML V2.0 utf8\nEXTERNPROTO Foo [ ] \"foo.wrl\"\n",
 		"inline":      "#VRML V2.0 utf8\nInline { url \"other.wrl\" }\n",
-		"sphere":      "#VRML V2.0 utf8\nShape { geometry Sphere { radius 1 } }\n",
 		"extrusion":   "#VRML V2.0 utf8\nShape { geometry Extrusion { } }\n",
 	}
 	for name, src := range cases {
@@ -220,5 +219,49 @@ func TestDefNamesAreLegalAndUnique(t *testing.T) {
 	c := defName("3d.part", "node", 2, used)
 	if a != "Left_Wheel" || b != "Left_Wheel_2" || c != "_3d_part" {
 		t.Fatalf("%q %q %q", a, b, c)
+	}
+}
+
+// VRML shares X3D's reader, so its recipes are made into triangles too
+// (FHR#102), with VRML's TRUE/FALSE, and Text is left out.
+func TestRecipesAndText(t *testing.T) {
+	src := "#VRML V2.0 utf8\n" +
+		"Shape { geometry Sphere { radius 2 } }\n" +
+		"Shape { geometry Cone { bottomRadius 1 height 2 bottom FALSE } }\n" +
+		"Shape { geometry Cylinder { radius 1 height 2 top FALSE } }\n" +
+		"Shape { geometry Text { string \"label\" } }\n"
+	m, err := decode([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	drawn := 0
+	for _, r := range m.Roots {
+		drawn += len(r.Prims)
+	}
+	if drawn != 3 {
+		t.Fatalf("want the sphere, cone and cylinder drawn and the text left out; got %d primitives", drawn)
+	}
+	// FALSE is honoured: the cone has no base, so nothing faces straight down.
+	for _, n := range m.Roots[1].Prims[0].Normals {
+		if n[1] < -0.99 {
+			t.Fatalf("a cone with bottom FALSE has a base normal %v", n)
+		}
+	}
+	// Made shapes survive an export and a second import/export unchanged.
+	glb, err := h().Import([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := h().Export(glb, ".wrl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := h().Import(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2, err := h().Export(back, ".wrl")
+	if err != nil || !bytes.Equal(out, out2) {
+		t.Fatalf("export not stable (err=%v)", err)
 	}
 }
