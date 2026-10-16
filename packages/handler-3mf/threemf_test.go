@@ -3,7 +3,10 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"fmt"
 	"io"
+	"math"
+	"math/rand"
 	"strings"
 	"testing"
 
@@ -45,8 +48,10 @@ func TestDecodeAssemblyMaterialsAndTransforms(t *testing.T) {
 	if len(m.Roots) != 1 || m.Roots[0].Name != "Pair" || len(m.Roots[0].Children) != 2 {
 		t.Fatalf("want one Pair root with two children, got %+v", m.Roots)
 	}
+	// The 20 mm offset, in metres: a node's own placement is converted, not only
+	// the world-space size, so a diff of it reads in real units.
 	second := m.Roots[0].Children[1]
-	if second.Matrix == nil || second.Matrix[12] != 20 {
+	if second.Matrix == nil || math.Abs(second.Matrix[12]-0.02) > 1e-12 {
 		t.Fatalf("component transform lost: %v", second.Matrix)
 	}
 	plate := m.Roots[0].Children[0]
@@ -121,6 +126,7 @@ func TestMalformed(t *testing.T) {
 		"bad colour":   pkg(t, `<model><resources><basematerials id="1"><base name="x" displaycolor="red"/></basematerials></resources></model>`),
 		"bad xform":    pkg(t, `<model><resources><object id="1"><mesh><vertices/><triangles/></mesh></object></resources><build><item objectid="1" transform="1 2 3"/></build></model>`),
 		"cycle":        pkg(t, `<model><resources><object id="1"><components><component objectid="1"/></components></object></resources><build><item objectid="1"/></build></model>`),
+		"bad unit":     pkg(t, strings.Replace(assembly, `unit="millimeter"`, `unit="parsec"`, 1)),
 		"external ref": pkg(t, `<model><resources><object id="1"><components><component objectid="2" path="/3D/other.model"/></components></object></resources><build><item objectid="1"/></build></model>`),
 	}
 	for name, b := range cases {
@@ -206,7 +212,7 @@ func TestMultiPartPackage(t *testing.T) {
 		t.Fatalf("roots: %+v", m.Roots)
 	}
 	asm := m.Roots[0]
-	if len(asm.Children) != 2 || asm.Children[0].Name != "Plate" || asm.Children[1].Matrix[12] != 20 {
+	if len(asm.Children) != 2 || asm.Children[0].Name != "Plate" || math.Abs(asm.Children[1].Matrix[12]-0.02) > 1e-12 {
 		t.Fatalf("components across parts: %+v", asm.Children)
 	}
 	// The material lives in the plate's part, not the root's.
@@ -247,5 +253,143 @@ func TestMultiPartErrors(t *testing.T) {
 	cycle = strings.Replace(cycle, `<model unit`, `<model xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" unit`, 1)
 	if _, err := decode(multiPart(t, rootModel, cycle)); err == nil || !strings.Contains(err.Error(), "nest deeper") {
 		t.Fatalf("a cycle across parts must be refused: %v", err)
+	}
+}
+
+// cube is a 3MF model of one axis-aligned cube of the given edge, in `unit`; with
+// unit "" the model states none, so the specification's millimetre applies.
+func cube(unit string, edge float64) string {
+	attr := ""
+	if unit != "" {
+		attr = ` unit="` + unit + `"`
+	}
+	var v strings.Builder
+	for i := 0; i < 8; i++ {
+		fmt.Fprintf(&v, `<vertex x="%g" y="%g" z="%g"/>`, float64(i&1)*edge, float64(i>>1&1)*edge, float64(i>>2&1)*edge)
+	}
+	return `<?xml version="1.0"?>
+<model` + attr + ` xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+ <resources><object id="1" name="Cube"><mesh><vertices>` + v.String() + `</vertices><triangles>
+  <triangle v1="0" v2="2" v3="1"/><triangle v1="1" v2="2" v3="3"/><triangle v1="4" v2="5" v3="6"/><triangle v1="5" v2="7" v3="6"/>
+  <triangle v1="0" v2="1" v3="4"/><triangle v1="1" v2="5" v3="4"/><triangle v1="2" v2="6" v3="3"/><triangle v1="3" v2="6" v3="7"/>
+  <triangle v1="0" v2="4" v3="2"/><triangle v1="2" v2="4" v3="6"/><triangle v1="1" v2="3" v3="5"/><triangle v1="3" v2="7" v3="5"/>
+ </triangles></mesh></object></resources>
+ <build><item objectid="1"/></build>
+</model>`
+}
+
+// bounds is the world-space box of everything a GLB draws.
+func bounds(t *testing.T, glb []byte) (lo, hi [3]float64) {
+	t.Helper()
+	roots, err := scene.Flatten(glb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo = [3]float64{math.Inf(1), math.Inf(1), math.Inf(1)}
+	hi = [3]float64{math.Inf(-1), math.Inf(-1), math.Inf(-1)}
+	scene.Walk(roots, func(n *scene.FlatNode, _ int) {
+		for _, p := range n.Prims {
+			for _, v := range p.Positions {
+				for i := 0; i < 3; i++ {
+					lo[i], hi[i] = math.Min(lo[i], v[i]), math.Max(hi[i], v[i])
+				}
+			}
+		}
+	})
+	return
+}
+
+// The bug this pins (FHR#103): a 20 mm cube came in as a 20 m one.
+func TestDeclaredUnitBecomesMetres(t *testing.T) {
+	for _, c := range []struct {
+		unit string
+		want float64 // the cube's edge in metres
+	}{
+		{"", 0.02}, {"millimeter", 0.02}, {"micron", 20e-6}, {"centimeter", 0.2},
+		{"inch", 0.508}, {"foot", 6.096}, {"meter", 20}, {"MilliMeter", 0.02},
+	} {
+		lo, hi := bounds(t, mustImport(t, pkg(t, cube(c.unit, 20))))
+		for i := 0; i < 3; i++ {
+			if edge := hi[i] - lo[i]; math.Abs(edge-c.want) > c.want*1e-6 {
+				t.Errorf("unit %q: edge %d is %g m, want %g", c.unit, i, edge, c.want)
+			}
+		}
+	}
+}
+
+// A part's numbers are in that part's unit, and a component's transform in the
+// unit of the part that writes it: a 10 cm plate placed 20 mm along x.
+func TestMultiPartUnitsMix(t *testing.T) {
+	plateCM := strings.Replace(plateModel, `unit="millimeter"`, `unit="centimeter"`, 1)
+	m, err := decode(multiPart(t, rootModel, plateCM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	glb, err := h().Import(multiPart(t, strings.Replace(rootModel, `<build><item objectid="1"/><item objectid="1" p:path="/3D/Objects/plate.model"/></build>`, `<build><item objectid="1"/></build>`, 1), plateCM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Roots) != 2 {
+		t.Fatalf("roots: %+v", m.Roots)
+	}
+	lo, hi := bounds(t, glb)
+	// Two plates, at 5 mm and 20 mm, each 10 cm wide.
+	if math.Abs(lo[0]-0.005) > 1e-7 || math.Abs(hi[0]-0.12) > 1e-7 || math.Abs(hi[1]-0.1) > 1e-7 {
+		t.Fatalf("bounds %v..%v, want x 0.005..0.12 and y up to 0.1", lo, hi)
+	}
+}
+
+// Writing converts metres to millimetres, the unit slicers assume, so a
+// transcode keeps physical size.
+func TestExportWritesMillimetres(t *testing.T) {
+	glb := mustImport(t, pkg(t, cube("inch", 20)))
+	out, err := h().Export(glb, ".3mf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(out), int64(len(out)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := modelFile(zr)
+	data, _ := readPart(f)
+	for _, want := range []string{`unit="millimeter"`, `x="508"`} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("export missing %s:\n%s", want, data)
+		}
+	}
+	lo1, hi1 := bounds(t, glb)
+	lo2, hi2 := bounds(t, mustImport(t, out))
+	for i := 0; i < 3; i++ {
+		if math.Abs(lo1[i]-lo2[i]) > 1e-6 || math.Abs(hi1[i]-hi2[i]) > 1e-6 {
+			t.Fatalf("round trip changed the size: %v..%v → %v..%v", lo1, hi1, lo2, hi2)
+		}
+	}
+}
+
+// Millimetres → metres (float32 in the GLB) → millimetres must settle on the
+// first export: the second import/export writes the same bytes.
+func TestUnitConversionIsStable(t *testing.T) {
+	r := rand.New(rand.NewSource(103))
+	var v, tri strings.Builder
+	for i := 0; i < 300; i++ {
+		c := func() float64 { return float64(r.Intn(2_000_000)-1_000_000) / 1000 } // ±1000 mm, to the micron
+		fmt.Fprintf(&v, `<vertex x="%g" y="%g" z="%g"/>`, c(), c(), c())
+		if i >= 2 {
+			fmt.Fprintf(&tri, `<triangle v1="%d" v2="%d" v3="%d"/>`, i-2, i-1, i)
+		}
+	}
+	model := `<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1"><mesh><vertices>` +
+		v.String() + `</vertices><triangles>` + tri.String() + `</triangles></mesh></object></resources><build><item objectid="1"/></build></model>`
+	out, err := h().Export(mustImport(t, pkg(t, model)), ".3mf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := h().Export(mustImport(t, out), ".3mf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out, back) {
+		t.Fatal("export is not stable across a second import/export")
 	}
 }
