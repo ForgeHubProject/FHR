@@ -38,8 +38,8 @@ maintainer  = "ForgeHub Project"
 ".wav"  = { handler = "wav", build = "c7aa8ab" }
 ".geojson" = { handler = "geojson", build = "b25efbf" }
 ".png"  = { handler = "png", build = "2196083" }
-".jpg"  = { handler = "jpeg", build = "1e5101a" }
-".jpeg" = { handler = "jpeg", build = "1e5101a" }
+".jpg"  = { handler = "jpeg", build = "2196083" }
+".jpeg" = { handler = "jpeg", build = "2196083" }
 ".gif"  = { handler = "gif", build = "1e5101a" }
 ".toml" = { handler = "toml", build = "2dac01a" }
 ".json" = { handler = "json", build = "54dc1b6" }
