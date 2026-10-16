@@ -6,9 +6,10 @@
 // Multi-part packages (the production extension: build items and components that
 // point into other .model parts by path) are read, with ids local to each part.
 //
-// 3MF carries a unit (millimetre by default) that glTF does not. Coordinates
-// pass through unchanged in both directions, as they do for STL, so a file's
-// numbers survive a transcode; the unit is the user's to know.
+// A model part declares its unit (millimetre by default). Reading converts its
+// numbers to glTF's metres — vertices and the translation of every transform,
+// so each node's own placement is in metres, not only the world-space size —
+// and writing converts back to millimetres, the unit slicers expect.
 package main
 
 import (
@@ -39,6 +40,17 @@ const (
 	maxXML = 256 << 20
 	// maxDepth bounds component nesting (3MF forbids cycles; this enforces it).
 	maxDepth = 32
+)
+
+// unitMetres is metres per 3MF unit, as the core specification names them.
+var unitMetres = map[string]float64{
+	"micron": 1e-6, "millimeter": 0.001, "centimeter": 0.01, "inch": 0.0254, "foot": 0.3048, "meter": 1,
+}
+
+// The writer declares millimetres, 3MF's default and a slicer's: 10^-3 metres.
+const (
+	exportUnit  = 0.001
+	exportShift = 3 // decimal places from metres to millimetres
 )
 
 type model struct {
@@ -216,6 +228,7 @@ type matDef struct {
 // point into by path. Object and material ids are local to their part.
 type modelPart struct {
 	m       model
+	unit    float64 // metres per unit of this part's numbers
 	objects map[int]*object
 	groups  map[int][]matDef
 }
@@ -249,6 +262,14 @@ func (d *decoder) load(path string) (*modelPart, error) {
 	if err := xml.Unmarshal(data, &p.m); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
+	p.unit = unitMetres["millimeter"]
+	if u := strings.TrimSpace(p.m.Unit); u != "" {
+		k, ok := unitMetres[strings.ToLower(u)]
+		if !ok {
+			return nil, fmt.Errorf("%s: unknown unit %q", path, p.m.Unit)
+		}
+		p.unit = k
+	}
 	for i := range p.m.Resources.Objects {
 		o := &p.m.Resources.Objects[i]
 		p.objects[o.ID] = o
@@ -281,6 +302,12 @@ func (d *decoder) object(from, ref string, id int, transform string, depth int) 
 	if depth > maxDepth {
 		return nil, fmt.Errorf("components nest deeper than %d (a cycle?)", maxDepth)
 	}
+	// The transform is written in the referencing part, so in its unit; the
+	// object's own numbers are in the unit of the part that defines it.
+	fp, err := d.load(from)
+	if err != nil {
+		return nil, err
+	}
 	path := from
 	if ref != "" {
 		path = cleanPath(ref)
@@ -293,7 +320,7 @@ func (d *decoder) object(from, ref string, id int, transform string, depth int) 
 	if !ok {
 		return nil, fmt.Errorf("object %d is not defined in %s", id, path)
 	}
-	mat, err := parseTransform(transform)
+	mat, err := parseTransform(transform, fp.unit)
 	if err != nil {
 		return nil, fmt.Errorf("object %d: %w", id, err)
 	}
@@ -369,7 +396,7 @@ func (d *modelPart) prims(o *object) ([]*scene.FlatPrim, error) {
 					i = uint32(len(p.Positions))
 					remap[v] = i
 					vt := o.Vertices[v]
-					p.Positions = append(p.Positions, [3]float64{vt.X, vt.Y, vt.Z})
+					p.Positions = append(p.Positions, [3]float64{vt.X * d.unit, vt.Y * d.unit, vt.Z * d.unit})
 				}
 				p.Indices = append(p.Indices, i)
 			}
@@ -381,8 +408,9 @@ func (d *modelPart) prims(o *object) ([]*scene.FlatPrim, error) {
 
 // parseTransform reads 3MF's twelve-number affine (row-vector convention:
 // x' = m00·x + m10·y + m20·z + m30) as the column-major matrix glTF uses —
-// the same twelve numbers, in the same order, with the last row filled in.
-func parseTransform(s string) (*[16]float64, error) {
+// the same twelve numbers, in the same order, with the last row filled in —
+// and its translation from `unit` into metres. Rotation and scale have no unit.
+func parseTransform(s string, unit float64) (*[16]float64, error) {
 	f := strings.Fields(s)
 	if len(f) == 0 {
 		return nil, nil
@@ -402,7 +430,7 @@ func parseTransform(s string) (*[16]float64, error) {
 		v[0], v[1], v[2], 0,
 		v[3], v[4], v[5], 0,
 		v[6], v[7], v[8], 0,
-		v[9], v[10], v[11], 1,
+		v[9] * unit, v[10] * unit, v[11] * unit, 1,
 	}, nil
 }
 
@@ -455,9 +483,9 @@ func hexColor(c [4]float64) string {
 }
 
 // encode writes the scene as a 3MF package: one object per node that draws
-// triangles (world-space geometry, so no transforms to carry), one build item
-// each, and a basematerials group for the surfaces that name a material or
-// state a colour. Lines and points have no 3MF form and are dropped.
+// triangles (world-space geometry in millimetres, so no transforms to carry),
+// one build item each, and a basematerials group for the surfaces that name a
+// material or state a colour. Lines and points have no 3MF form and are dropped.
 func encode(roots []*scene.FlatNode, _ string) ([]byte, error) {
 	type mat struct {
 		name  string
@@ -501,7 +529,7 @@ func encode(roots []*scene.FlatNode, _ string) ([]byte, error) {
 			mi := matOf(p)
 			base := nv
 			for _, v := range p.Positions {
-				fmt.Fprintf(&vb, "     <vertex x=\"%s\" y=\"%s\" z=\"%s\"/>\n", num(v[0]), num(v[1]), num(v[2]))
+				fmt.Fprintf(&vb, "     <vertex x=\"%s\" y=\"%s\" z=\"%s\"/>\n", mm(v[0]), mm(v[1]), mm(v[2]))
 				nv++
 			}
 			for i := 0; i+2 < len(p.Indices); i += 3 {
@@ -579,10 +607,35 @@ func xmlEscape(s string) string {
 	return strings.ReplaceAll(b.String(), `"`, "&#34;")
 }
 
-func num(v float64) string {
-	f := float32(v)
-	if f == 0 {
-		f = 0
+// mm writes a coordinate, given in metres, as millimetres: the shortest decimal
+// the reader turns back into the same float32 metres. The plain product can fall
+// between float32s (20 in = 0.508 m is stored as 0.50800002, which is
+// 508.00002 mm), and writing that would make every import/export drift.
+func mm(metres float64) string {
+	want := float32(metres)
+	if want == 0 {
+		return "0"
 	}
-	return strconv.FormatFloat(float64(f), 'f', -1, 32)
+	back := func(s string) bool {
+		x, err := strconv.ParseFloat(s, 64)
+		return err == nil && float32(x*exportUnit) == want
+	}
+	// The float32's own shortest decimal with its point moved: exact, and almost
+	// always the answer. The search below is for the rare value it misses.
+	e := strconv.FormatFloat(float64(want), 'e', -1, 32)
+	if i := strings.IndexByte(e, 'e'); i > 0 {
+		if exp, err := strconv.Atoi(e[i+1:]); err == nil {
+			x, _ := strconv.ParseFloat(e[:i]+"e"+strconv.Itoa(exp+exportShift), 64)
+			if s := strconv.FormatFloat(x, 'f', -1, 64); back(s) {
+				return s
+			}
+		}
+	}
+	for prec := 1; prec <= 17; prec++ {
+		x, _ := strconv.ParseFloat(strconv.FormatFloat(metres/exportUnit, 'g', prec, 64), 64)
+		if s := strconv.FormatFloat(x, 'f', -1, 64); back(s) {
+			return s
+		}
+	}
+	return strconv.FormatFloat(metres/exportUnit, 'f', -1, 64)
 }

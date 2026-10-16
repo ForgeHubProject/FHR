@@ -28,6 +28,7 @@ import type { Overlay } from "./model-overlay.js";
 import { createFlyTo, DEFAULT_FLY_MS } from "./flyto.js";
 import { createAxisGizmo } from "./axis-gizmo.js";
 import { disposeTree } from "./dispose.js";
+import { DEFAULT_FLOOR, fitFloor, type Floor } from "./floor.js";
 import { createIsolator } from "./isolate.js";
 import { createCallout, projectToScreen } from "./callout.js";
 import { changeAtHits, isClickGesture, isVisibleInTree, ndcFromPointer } from "./pick.js";
@@ -112,6 +113,12 @@ type Viewport = {
   size(): { width: number; height: number };
   /** Register teardown work to run before the viewport itself is released. */
   onDispose(cb: () => void): void;
+  /**
+   * Stand the floor grid under `box` and size it to fit (FHR#86). The box is
+   * everything drawn — both versions in overlay and side-by-side — so the two
+   * panes share one floor. The model itself never moves.
+   */
+  fitFloor(box: THREE.Box3): void;
   dispose(): void;
 };
 
@@ -144,13 +151,19 @@ function createViewport(container: HTMLElement, theme: Theme): Viewport {
   key.position.set(6, 10, 8);
   scene.add(key);
 
-  const grid = new THREE.GridHelper(
-    40,
-    40,
+  const gridColors = [
     theme === "dark" ? 0x30363d : 0xd0d7de,
     theme === "dark" ? 0x21262d : 0xe6edf3,
-  );
+  ] as const;
+  let grid = new THREE.GridHelper(DEFAULT_FLOOR.size, DEFAULT_FLOOR.divisions, gridColors[0], gridColors[1]);
   scene.add(grid);
+  const setFloor = (floor: Floor): void => {
+    scene.remove(grid);
+    disposeTree(grid);
+    grid = new THREE.GridHelper(floor.size, floor.divisions, gridColors[0], gridColors[1]);
+    grid.position.set(floor.centerX, floor.y, floor.centerZ);
+    scene.add(grid);
+  };
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
@@ -215,6 +228,9 @@ function createViewport(container: HTMLElement, theme: Theme): Viewport {
     },
     onDispose(cb): void {
       disposeCallbacks.push(cb);
+    },
+    fitFloor(box): void {
+      setFloor(fitFloor(box));
     },
     dispose(): void {
       alive = false;
@@ -338,6 +354,7 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
   const theme = options.theme ?? "light";
   const viewport = createViewport(container, theme);
   viewport.scene.add(overlay.root);
+  viewport.fitFloor(overlay.sceneBox);
 
   const flyTo = createFlyTo(viewport.camera, viewport.controls);
   // Start on the whole model, then move to the changes: the reviewer sees what
@@ -947,6 +964,7 @@ export function mountBoxScene(
     bounds.expandByObject(mesh);
   }
   viewport.scene.add(group);
+  viewport.fitFloor(bounds);
 
   const flyTo = createFlyTo(viewport.camera, viewport.controls);
   flyTo.snap(bounds.isEmpty() ? unitBox() : bounds);
