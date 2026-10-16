@@ -38,7 +38,7 @@ write what the scene holds says so with an error.
 | Wavefront OBJ | `.obj` | ✓ | ✓ (no `.mtl`) | numbers pass through | Blender |
 | STL | `.stl` | ✓ ASCII + binary | ✓ binary | numbers pass through | Blender |
 | PLY | `.ply` | ✓ ASCII, binary LE/BE | ✓ binary LE | numbers pass through | Blender |
-| 3MF | `.3mf` | ✓ incl. multi-part | ✓ | **unit applied**; writes millimetres | hand-written |
+| 3MF | `.3mf` | ✓ incl. multi-part | ✓ | Z-up handled; **unit applied**; writes millimetres | hand-written |
 | OFF | `.off` | ✓ | ✓ | numbers pass through | hand-written |
 | Collada | `.dae` | ✓ | ✓ | Z-up handled; unit not applied | hand-written |
 | X3D (XML) | `.x3d` | ✓ | ✓ | Y-up, metres | hand-written |
