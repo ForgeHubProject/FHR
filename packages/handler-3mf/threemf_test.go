@@ -333,9 +333,10 @@ func TestMultiPartUnitsMix(t *testing.T) {
 		t.Fatalf("roots: %+v", m.Roots)
 	}
 	lo, hi := bounds(t, glb)
-	// Two plates, at 5 mm and 20 mm, each 10 cm wide.
-	if math.Abs(lo[0]-0.005) > 1e-7 || math.Abs(hi[0]-0.12) > 1e-7 || math.Abs(hi[1]-0.1) > 1e-7 {
-		t.Fatalf("bounds %v..%v, want x 0.005..0.12 and y up to 0.1", lo, hi)
+	// Two plates, at 5 mm and 20 mm, each 10 cm wide, lying flat: 3MF's y is
+	// glTF's −z.
+	if math.Abs(lo[0]-0.005) > 1e-7 || math.Abs(hi[0]-0.12) > 1e-7 || math.Abs(lo[2]+0.1) > 1e-7 || hi[1] != 0 || lo[1] != 0 {
+		t.Fatalf("bounds %v..%v, want x 0.005..0.12, z -0.1..0, flat at y 0", lo, hi)
 	}
 }
 
@@ -391,5 +392,117 @@ func TestUnitConversionIsStable(t *testing.T) {
 	}
 	if !bytes.Equal(out, back) {
 		t.Fatal("export is not stable across a second import/export")
+	}
+}
+
+// The bracket from FHR#118: a 60 × 40 × 5 mm plate lying on the build plate
+// with a 20 mm pin standing on it at (10, 10, 5). 3MF is Z-up; glTF is Y-up.
+const bracket = `<?xml version="1.0"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+ <resources>
+  <object id="1" name="Plate"><mesh><vertices>
+   <vertex x="0" y="0" z="0"/><vertex x="60" y="0" z="0"/><vertex x="0" y="40" z="0"/><vertex x="60" y="40" z="0"/>
+   <vertex x="0" y="0" z="5"/><vertex x="60" y="0" z="5"/><vertex x="0" y="40" z="5"/><vertex x="60" y="40" z="5"/>
+  </vertices><triangles>
+   <triangle v1="0" v2="2" v3="1"/><triangle v1="1" v2="2" v3="3"/><triangle v1="4" v2="5" v3="6"/><triangle v1="5" v2="7" v3="6"/>
+   <triangle v1="0" v2="1" v3="4"/><triangle v1="1" v2="5" v3="4"/><triangle v1="2" v2="6" v3="3"/><triangle v1="3" v2="6" v3="7"/>
+   <triangle v1="0" v2="4" v3="2"/><triangle v1="2" v2="4" v3="6"/><triangle v1="1" v2="3" v3="5"/><triangle v1="3" v2="7" v3="5"/>
+  </triangles></mesh></object>
+  <object id="2" name="Pin"><mesh><vertices>
+   <vertex x="0" y="0" z="0"/><vertex x="6" y="0" z="0"/><vertex x="0" y="6" z="0"/><vertex x="0" y="0" z="20"/>
+  </vertices><triangles>
+   <triangle v1="0" v2="2" v3="1"/><triangle v1="0" v2="1" v3="3"/><triangle v1="0" v2="3" v3="2"/><triangle v1="1" v2="2" v3="3"/>
+  </triangles></mesh></object>
+  <object id="3" name="Bracket"><components>
+   <component objectid="1"/>
+   <component objectid="2" transform="1 0 0 0 1 0 0 0 1 10 10 5"/>
+  </components></object>
+ </resources>
+ <build><item objectid="3"/></build>
+</model>`
+
+// FHR#118: the plate lies flat (its 5 mm is glTF's y), the pin stands up, and
+// the pin's own placement is in Y-up too, not only the world.
+func TestZUpBecomesYUp(t *testing.T) {
+	m, err := decode(pkg(t, bracket))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := m.Roots[0].Children[1]
+	if got := [3]float64{pin.Matrix[12], pin.Matrix[13], pin.Matrix[14]}; math.Abs(got[0]-0.01) > 1e-12 || math.Abs(got[1]-0.005) > 1e-12 || math.Abs(got[2]+0.01) > 1e-12 {
+		t.Fatalf("pin placed at %v, want (0.01, 0.005, -0.01)", got)
+	}
+	lo, hi := bounds(t, mustImport(t, pkg(t, bracket)))
+	// Plate: x 0..60, y (3MF z) 0..5, z (3MF −y) −40..0; the pin rises to 5 + 20 mm.
+	want := [2][3]float64{{0, 0, -0.04}, {0.06, 0.025, 0}}
+	for i := 0; i < 3; i++ {
+		if math.Abs(lo[i]-want[0][i]) > 1e-7 || math.Abs(hi[i]-want[1][i]) > 1e-7 {
+			t.Fatalf("bounds %v..%v, want %v..%v", lo, hi, want[0], want[1])
+		}
+	}
+	// A rotation keeps handedness, so every triangle of the closed plate still
+	// faces out of it.
+	plate := m.Roots[0].Children[0].Prims[0]
+	centre := [3]float64{0.03, 0.0025, -0.02}
+	for k := 0; k+2 < len(plate.Indices); k += 3 {
+		a, b, c := plate.Positions[plate.Indices[k]], plate.Positions[plate.Indices[k+1]], plate.Positions[plate.Indices[k+2]]
+		u := [3]float64{b[0] - a[0], b[1] - a[1], b[2] - a[2]}
+		v := [3]float64{c[0] - a[0], c[1] - a[1], c[2] - a[2]}
+		n := [3]float64{u[1]*v[2] - u[2]*v[1], u[2]*v[0] - u[0]*v[2], u[0]*v[1] - u[1]*v[0]}
+		d := [3]float64{(a[0]+b[0]+c[0])/3 - centre[0], (a[1]+b[1]+c[1])/3 - centre[1], (a[2]+b[2]+c[2])/3 - centre[2]}
+		if n[0]*d[0]+n[1]*d[1]+n[2]*d[2] <= 0 {
+			t.Fatalf("plate triangle %d faces inwards", k/3)
+		}
+	}
+}
+
+// Writing turns Y-up back into Z-up: the plate is written lying on the build
+// plate, 5 mm high in z, and reads back to the same scene.
+func TestExportWritesZUp(t *testing.T) {
+	glb := mustImport(t, pkg(t, bracket))
+	out, err := h().Export(glb, ".3mf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, _ := zip.NewReader(bytes.NewReader(out), int64(len(out)))
+	f, _ := modelFile(zr)
+	data, _ := readPart(f)
+	if !strings.Contains(string(data), `z="5"`) || !strings.Contains(string(data), `y="40"`) {
+		t.Fatalf("plate not written flat (5 mm in z, 40 mm in y):\n%s", data)
+	}
+	lo1, hi1 := bounds(t, glb)
+	lo2, hi2 := bounds(t, mustImport(t, out))
+	for i := 0; i < 3; i++ {
+		if math.Abs(lo1[i]-lo2[i]) > 1e-9 || math.Abs(hi1[i]-hi2[i]) > 1e-9 {
+			t.Fatalf("round trip moved the scene: %v..%v → %v..%v", lo1, hi1, lo2, hi2)
+		}
+	}
+	back, err := h().Export(mustImport(t, out), ".3mf")
+	if err != nil || !bytes.Equal(out, back) {
+		t.Fatalf("export is not stable across import/export (err=%v)", err)
+	}
+}
+
+// R·m·Rᵀ: a quarter turn about 3MF's z (up) is a quarter turn about glTF's y.
+func TestYUpMatrix(t *testing.T) {
+	// 3MF row-vector transform: x' = -y, y' = x (a +90° turn about z), then +7 up.
+	m, err := parseTransform("0 1 0 -1 0 0 0 0 1 0 0 7", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yUpMatrix(m)
+	p := func(v [3]float64) [3]float64 {
+		return [3]float64{m[0]*v[0] + m[4]*v[1] + m[8]*v[2] + m[12], m[1]*v[0] + m[5]*v[1] + m[9]*v[2] + m[13], m[2]*v[0] + m[6]*v[1] + m[10]*v[2] + m[14]}
+	}
+	// The same point, in either axes, must land on the same place.
+	src := [3]float64{2, 3, 4}
+	wantZ := [3]float64{-3, 2, 4 + 7}
+	if got, want := p(yUp(src)), yUp(wantZ); got != want {
+		t.Fatalf("turned point %v, want %v", got, want)
+	}
+	for _, v := range m {
+		if math.Signbit(v) && v == 0 {
+			t.Fatalf("negative zero in %v", m)
+		}
 	}
 }
