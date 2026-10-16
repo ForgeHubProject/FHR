@@ -1,4 +1,4 @@
-import { defineRenderer } from "@fhr/renderer-sdk";
+import { defineRenderer, type LengthUnit } from "@fhr/renderer-sdk";
 import type { MountProps, RendererBlobs } from "@fhr/types";
 import { createLiveView, type LiveView, type Scene3D, type SceneHooks } from "./live-view.js";
 
@@ -28,6 +28,13 @@ export type SceneRendererOptions = {
    * still renders, without the 3D view.
    */
   geometry?: (props: MountProps) => RendererBlobs | undefined;
+  /**
+   * What the format's lengths are in. Default "m": glTF's metre, which every
+   * format that states a unit is converted to by its handler. "none" for a
+   * format whose files state no unit (STL, OBJ, PLY, OFF, 3DS): its readouts
+   * show the file's own numbers rather than calling them metres (FHR#67).
+   */
+  lengthUnit?: LengthUnit;
 };
 
 /**
@@ -66,7 +73,7 @@ export function defineSceneRenderer(opts: SceneRendererOptions) {
               chunk.mount3d(host, { ...sceneProps, blobs: geometry(sceneProps) }, hooks),
             )
         : null;
-      const view = createLiveView(container, props, mountScene);
+      const view = createLiveView(container, props, mountScene, { lengthUnit: opts.lengthUnit });
       views.set(container, view);
       return () => {
         views.delete(container);

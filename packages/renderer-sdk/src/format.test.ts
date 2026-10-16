@@ -57,6 +57,42 @@ describe("trimNumber / formatLength", () => {
     expect(formatLength(1.5)).toBe("1.5 m");
     expect(formatLength(0)).toBe("0");
   });
+
+  it("shows a unitless format's lengths as the numbers they are (FHR#67)", () => {
+    // An STL drawn in millimetres: 60 is 60 of whatever it was drawn in, not 60 m.
+    expect(formatLength(60, "none")).toBe("60");
+    expect(formatLength(0.0015, "none")).toBe("0.0015");
+    expect(formatLength(-12.3456, "none")).toBe("-12.35");
+    expect(formatLength(123456, "none")).toBe("123500");
+    expect(formatLength(0, "none")).toBe("0");
+  });
+});
+
+describe("length precision and units in formatChange", () => {
+  it("keeps the precision the handler sent: a 1.5 mm move is not rounded to 0.002", () => {
+    const f = formatChange({
+      label: "centroid",
+      before: "[0.03 -0.0025 0.02]",
+      after: "[0.03 -0.004 0.02] (moved 0.0015)",
+    });
+    expect(f.before).toBe("(0.03, -0.0025, 0.02)");
+    expect(f.deltaText).toBe("Δ(0, -0.0015, 0)");
+    expect(f.magnitude).toBe("1.5 mm");
+  });
+
+  it("does not call a unitless format's numbers metres", () => {
+    const f = formatChange({ label: "translation", before: "[0 0 0]", after: "[60 0 80]" }, { lengthUnit: "none" });
+    expect(f.magnitude).toBe("100");
+    expect(f.deltaCell).toBe("Δ(60, 0, 80) = 100");
+    // One component moved: the magnitude would only repeat it.
+    const one = formatChange({ label: "translation", before: "[0 0 0]", after: "[0 3 0]" }, { lengthUnit: "none" });
+    expect(one.deltaCell).toBe("Δ(0, 3, 0)");
+  });
+
+  it("leaves non-length numbers at three decimals", () => {
+    const f = formatChange({ label: "metallicFactor", before: "0.123456", after: "0.5" });
+    expect(f.before).toBe("0.123");
+  });
 });
 
 describe("formatChange — translations", () => {

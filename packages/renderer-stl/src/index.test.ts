@@ -10,6 +10,10 @@ describe("stl renderer bundle", () => {
     expect(typeof bundle.mount).toBe("function");
   });
 
+  it("says its lengths have no unit, so readouts don't call them metres (FHR#67)", () => {
+    expect(sceneOptions.lengthUnit).toBe("none");
+  });
+
   it("draws the handler's GLB previews, never the STL bytes", () => {
     const blobs = { base: { url: "/a.stl", size: 10 }, head: { url: "/b.stl", size: 12 } };
     const previews = { base: { url: "/a.glb", size: 20 }, head: { url: "/b.glb", size: 24 } };

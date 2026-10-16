@@ -25,11 +25,12 @@ import {
   stepIndex,
   stepIntent,
   type DiffTreeHandle,
+  type LengthUnit,
   type ReviewStop,
 } from "@fhr/renderer-sdk";
 import type { MountProps } from "@fhr/types";
 import { changeTreeCss } from "./palette.js";
-import { entityStops, formatGltfChange, headline, headlines } from "./review.js";
+import { entityStops, headline, headlines, sceneFormatter } from "./review.js";
 import { buildQueue, type QueueEntry } from "./queue.js";
 import { viewportFillCss } from "./viewport-fill.js";
 
@@ -56,6 +57,8 @@ export type SceneHooks = {
   queue?: QueueEntry[];
   /** The queue's ‹ / › asked for the next (+1) or previous (-1) change. */
   onStep?: (delta: number) => void;
+  /** What the file's lengths are in, for the 3D chunk's own readouts (the heatmap). */
+  lengthUnit?: LengthUnit;
 };
 
 /** Mounts the 3D scene. Async because in production it is a lazy chunk import. */
@@ -104,6 +107,7 @@ export function createLiveView(
   container: HTMLElement,
   initial: MountProps,
   mountScene: SceneMounter | null,
+  options: { lengthUnit?: LengthUnit } = {},
 ): LiveView {
   const doc = container.ownerDocument;
   let props = initial;
@@ -116,7 +120,8 @@ export function createLiveView(
 
   const stopList: ReviewStop[] = props.mode === "view" ? [] : entityStops(props.diff);
   const stops = stopList.map((s) => s.row.path);
-  const lines = headlines(stopList);
+  const format = sceneFormatter(options.lengthUnit);
+  const lines = headlines(stopList, format);
   // Built on the first 3D mount, not here. `createLiveView` runs on *every* lite
   // mount — before the "View in 3D" button exists, and in "merge" mode, which
   // returns below without one — and building the queue re-formats every detail
@@ -124,7 +129,7 @@ export function createLiveView(
   // pay a second full formatting pass for a region it never sees.
   let queue: QueueEntry[] | null = null;
   const queueEntries = (): QueueEntry[] =>
-    (queue ??= buildQueue(stopList, formatGltfChange, headline));
+    (queue ??= buildQueue(stopList, format, (stop) => headline(stop, format)));
 
   const view: LiveView = {
     update(next: MountProps, prev: MountProps): boolean {
@@ -198,7 +203,7 @@ export function createLiveView(
   tree = renderDiffTree(container, props, {
     selectedPath: selected,
     stops: stopList,
-    format: formatGltfChange,
+    format,
     onSelect: (path) => view.select(path, "viewer"),
     onStep: (delta) => view.step(delta),
   });
@@ -267,6 +272,7 @@ export function createLiveView(
     host.appendChild(status);
     try {
       const handle = await mountScene(host, props, {
+        lengthUnit: options.lengthUnit,
         headlines: lines,
         queue: queueEntries(),
         onStep: (delta) => {
