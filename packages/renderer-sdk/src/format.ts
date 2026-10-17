@@ -4,9 +4,10 @@
 // no number. Three rules, from the prior-art survey in FHR #40/#45:
 //
 //   * before → after is not enough on its own. The quantity a reviewer judges is
-//     the *delta and its magnitude* — "Δ(0, 0.05, 0) = 50 mm" answers "did it
-//     move enough to matter?", while "[0 1 0] → [0 1.05 0]" makes them do
-//     arithmetic in their head.
+//     the *delta and its magnitude* — "Δ(30, 40, 0) mm = 50 mm" answers "did it
+//     move enough to matter?", while "[0 1 0] → [0.03 1.04 0]" makes them do
+//     arithmetic in their head. A delta's components read in the unit of its
+//     magnitude, so the two halves of the cell say the same thing.
 //   * a colour is a swatch, never a float tuple. Nobody reads
 //     "[0.8 0.1 0.1 1] → [0.1 0.1 0.8 1]" as "red became blue".
 //   * suppress noise: full float precision (2 decimals of trailing zeros from a
@@ -44,7 +45,7 @@ export type FormattedChange = {
   after: string;
   beforeSwatch?: Swatch;
   afterSwatch?: Swatch;
-  /** Per-component difference, e.g. "Δ(0, 0.05, 0)". */
+  /** Per-component difference, e.g. "Δ(0, 50, 0) mm" for a length, "Δ(0°, 45°, 0°)" for a turn. */
   deltaText?: string;
   /** The one number a reviewer judges, e.g. "50 mm", "45°", "×1.2", "+0.05". */
   magnitude?: string;
@@ -330,9 +331,14 @@ export function formatChange(
   const deltas = afterNum.values.map((v, i) => v - beforeNum.values[i]!);
   const unit = degrees ? "°" : "";
   const scalar = deltas.length === 1;
+  // A move reads in one unit, the one its magnitude is in: "Δ(10, -3, 0) mm =
+  // 10.4 mm", not metres on the left and millimetres on the right.
+  const shown = isLength && !scalar ? lengthDisplay(deltas, opts.lengthUnit) : null;
   const deltaText = scalar
     ? `Δ ${signed(deltas[0]!)}${unit}`
-    : `Δ(${deltas.map((d) => trimNumber(d, dp) + unit).join(", ")})`;
+    : shown
+      ? `Δ(${deltas.map((d) => trimNumber(d * shown.factor, shown.dp)).join(", ")})${shown.suffix}`
+      : `Δ(${deltas.map((d) => trimNumber(d, dp) + unit).join(", ")})`;
 
   const magnitude = magnitudeOf(label, deltas, beforeNum.values, afterNum.values, degrees, opts.lengthUnit);
   const dominant = deltas.reduce((m, d) => (Math.abs(d) > Math.abs(m) ? d : m), 0);
@@ -343,9 +349,29 @@ export function formatChange(
     after: numericText(afterNum, dp),
     deltaText,
     ...(magnitude ? { magnitude, dominantDelta: dominant } : {}),
-    deltaCell: deltaCell(deltaText, magnitude, deltas, unit),
+    deltaCell: shown
+      ? lengthDeltaCell(deltaText, magnitude, deltas)
+      : deltaCell(deltaText, magnitude, deltas, unit),
     noise: false,
   };
+}
+
+/**
+ * The unit a length delta's components are shown in: formatLength's choice for
+ * the distance they add up to, millimetres under a metre and metres above it,
+ * or the bare numbers of a format that states no unit.
+ */
+function lengthDisplay(deltas: number[], unit: LengthUnit = "m"): { factor: number; dp: number; suffix: string } | null {
+  const distance = Math.sqrt(deltas.reduce((sum, d) => sum + d * d, 0));
+  if (distance === 0) return null;
+  if (unit === "none") return { factor: 1, dp: LENGTH_DP, suffix: "" };
+  return distance < 1 ? { factor: 1000, dp: 3, suffix: " mm" } : { factor: 1, dp: LENGTH_DP, suffix: " m" };
+}
+
+/** A length delta and its distance; one moved component already is the distance. */
+function lengthDeltaCell(deltaText: string, magnitude: string | undefined, deltas: number[]): string {
+  if (!magnitude || deltas.filter((d) => d !== 0).length === 1) return deltaText;
+  return `${deltaText} = ${magnitude}`;
 }
 
 function signed(value: number): string {

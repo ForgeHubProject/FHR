@@ -76,7 +76,7 @@ describe("length precision and units in formatChange", () => {
       after: "[0.03 -0.004 0.02] (moved 0.0015)",
     });
     expect(f.before).toBe("(0.03, -0.0025, 0.02)");
-    expect(f.deltaText).toBe("Δ(0, -0.0015, 0)");
+    expect(f.deltaText).toBe("Δ(0, -1.5, 0) mm");
     expect(f.magnitude).toBe("1.5 mm");
   });
 
@@ -87,6 +87,13 @@ describe("length precision and units in formatChange", () => {
     // One component moved: the magnitude would only repeat it.
     const one = formatChange({ label: "translation", before: "[0 0 0]", after: "[0 3 0]" }, { lengthUnit: "none" });
     expect(one.deltaCell).toBe("Δ(0, 3, 0)");
+  });
+
+  it("reads a move in one unit, the one its distance is in", () => {
+    const mm = formatChange({ label: "translation", before: "[0.01 -0.005 0.01]", after: "[0.02 -0.008 0.01]" });
+    expect(mm.deltaCell).toBe("Δ(10, -3, 0) mm = 10.4 mm");
+    const m = formatChange({ label: "translation", before: "[0 0 0]", after: "[3 4 0.0005]" });
+    expect(m.deltaCell).toBe("Δ(3, 4, 0.0005) m = 5 m");
   });
 
   it("leaves non-length numbers at three decimals", () => {
@@ -105,9 +112,10 @@ describe("formatChange — translations", () => {
     expect(f.kind).toBe("vector");
     expect(f.before).toBe("(0, 0, 0)");
     expect(f.after).toBe("(0, 0.05, 0)");
-    expect(f.deltaText).toBe("Δ(0, 0.05, 0)");
+    expect(f.deltaText).toBe("Δ(0, 50, 0) mm");
     expect(f.magnitude).toBe("50 mm");
-    expect(f.deltaCell).toBe("Δ(0, 0.05, 0) = 50 mm");
+    // One component moved: the distance would only repeat it.
+    expect(f.deltaCell).toBe("Δ(0, 50, 0) mm");
     expect(f.noise).toBe(false);
   });
 
@@ -270,7 +278,7 @@ describe("formatChange — a pair is formatted as a pair", () => {
     expect(f.before).toBe("(4, 1.8, 1)");
     expect(f.after).toBe("(4, 1.8, 1.12) (+0.12 Z)");
     // Both sides parse, so the delta is real — and bounds are a length.
-    expect(f.deltaCell).toBe("Δ(0, 0, 0.12) = 120 mm");
+    expect(f.deltaCell).toBe("Δ(0, 0, 120) mm");
     expect(f.dominantDelta).toBeCloseTo(0.12, 6);
   });
 

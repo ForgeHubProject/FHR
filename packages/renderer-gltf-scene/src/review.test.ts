@@ -516,6 +516,6 @@ describe("mesh-level changes (the #50 shape)", () => {
     const f = formatGltfChange(bounds);
     expect(f.before).toBe("(4, 1.8, 1)");
     expect(f.after).toBe("(4, 1.8, 1.12) (+0.12 Z)");
-    expect(f.deltaCell).toBe("Δ(0, 0, 0.12) = 120 mm");
+    expect(f.deltaCell).toBe("Δ(0, 0, 120) mm");
   });
 });
