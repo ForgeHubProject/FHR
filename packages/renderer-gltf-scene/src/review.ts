@@ -9,15 +9,24 @@
 //
 // Pure: no three.js, no DOM. Lives in the lite bundle, beside the change tree.
 
-import { flattenDiff, formatChange, reviewStops, type DiffRow, type ReviewStop } from "@fhr/renderer-sdk";
+import { flattenDiff, formatChange, reviewStops, type DiffRow, type LengthUnit, type ReviewStop } from "@fhr/renderer-sdk";
 import type { StructuredDiff } from "@fhr/types";
 import { segmentCount } from "./change-path.js";
 
-/** Colour factors in glTF are linear; the panel has to say so to show them right. */
-const format = (row: DiffRow): ReturnType<typeof formatChange> =>
-  formatChange(row, { colorSpace: "linear" });
+export type Formatter = (row: DiffRow) => ReturnType<typeof formatChange>;
 
-export { format as formatGltfChange };
+/**
+ * The formatter for a 3D family member's diff. Colour factors in glTF are
+ * linear, so the panel has to say so to show them right; lengths are metres
+ * unless the source format states no unit (FormatOptions.lengthUnit).
+ */
+export function sceneFormatter(lengthUnit: LengthUnit = "m"): Formatter {
+  return (row) => formatChange(row, { colorSpace: "linear", lengthUnit });
+}
+
+const defaultFormat = sceneFormatter();
+
+export { defaultFormat as formatGltfChange };
 
 /**
  * The changes `n`/`p` steps through, in diff order: one stop per changed object,
@@ -65,7 +74,7 @@ function verbFor(label: string, dominantDelta: number | undefined): string {
  * grows into a table is a callout nobody reads, and the view-management
  * literature is clear that more than one label at a time occludes the model.
  */
-export function headline(stop: ReviewStop): string {
+export function headline(stop: ReviewStop, format: Formatter = defaultFormat): string {
   if (stop.row.kind === "removed") return "removed";
   if (stop.row.kind === "added") return "added";
   // A rename's own news is the pair of names. The evidence the handler matched on
@@ -117,8 +126,8 @@ function carriesValue(row: DiffRow): boolean {
 }
 
 /** Path → headline for every stop: the map the 3D view's callout reads. */
-export function headlines(stops: ReviewStop[]): Record<string, string> {
+export function headlines(stops: ReviewStop[], format: Formatter = defaultFormat): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const stop of stops) out[stop.row.path] = headline(stop);
+  for (const stop of stops) out[stop.row.path] = headline(stop, format);
   return out;
 }

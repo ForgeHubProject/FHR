@@ -168,6 +168,9 @@ function now(): number {
 describe("formatDeviation", () => {
   it("reports millimetre-scale edits in millimetres, which is the whole point", () => {
     expect(formatDeviation(0.012)).toBe("12.0 mm");
+    // A format whose files state no unit gets its own numbers back (FHR#67).
+    expect(formatDeviation(12.345, "none")).toBe("12.3");
+    expect(formatDeviation(0.000123, "none")).toBe("0.000123");
     expect(formatDeviation(0.0012)).toBe("1.20 mm");
     expect(formatDeviation(0.00004)).toBe("0.040 mm");
   });

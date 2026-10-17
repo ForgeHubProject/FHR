@@ -21,6 +21,7 @@
 // the mode ladder — lives in the pure modules this file calls, which are tested
 // headlessly.
 
+import type { LengthUnit } from "@fhr/renderer-sdk";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { SceneNode } from "./scene-graph.js";
@@ -258,6 +259,8 @@ function createViewport(container: HTMLElement, theme: Theme): Viewport {
 export type ModelSceneOptions = {
   overlay: Overlay;
   theme?: Theme;
+  /** What the file's lengths are in, for the heatmap legend (FormatOptions). */
+  lengthUnit?: LengthUnit;
   /** Presentation to open on (presentation.ts). Default: structural. */
   mode?: PresentationMode;
   /** Open with the diff's marks shown (default) or the model as it is (FHR#87). */
@@ -578,7 +581,7 @@ export function mountModelScene(container: HTMLElement, options: ModelSceneOptio
   // through side-by-side, so returning to overlay brings the colours back for the
   // cost of one pointer write per painted mesh.
   const heatmap = options.heatmap ?? null;
-  const legend = heatmap ? createHeatmapLegend(container, theme) : null;
+  const legend = heatmap ? createHeatmapLegend(container, theme, options.lengthUnit) : null;
   const heatTargets = heatmap ? heatmap.targets() : [];
   let heatmapWanted = false;
   /**
