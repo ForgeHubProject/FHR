@@ -5,7 +5,7 @@ export { flattenDiff, diffSummary, countKinds, formatValue, reviewStops, stepInd
 export type { DiffRow, DiffSummary, KindCounts, ReviewStop } from "./diff.js";
 
 export { formatChange, parseNumeric, formatLength, trimNumber } from "./format.js";
-export type { FormattedChange, FormatOptions, ValueClass, Swatch, Numeric } from "./format.js";
+export type { FormattedChange, FormatOptions, LengthUnit, ValueClass, Swatch, Numeric } from "./format.js";
 
 export { renderDiffTree, stepIntent } from "./dom.js";
 export { renderSourceView } from "./source.js";

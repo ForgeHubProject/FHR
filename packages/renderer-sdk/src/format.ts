@@ -4,9 +4,10 @@
 // no number. Three rules, from the prior-art survey in FHR #40/#45:
 //
 //   * before → after is not enough on its own. The quantity a reviewer judges is
-//     the *delta and its magnitude* — "Δ(0, 0.05, 0) = 50 mm" answers "did it
-//     move enough to matter?", while "[0 1 0] → [0 1.05 0]" makes them do
-//     arithmetic in their head.
+//     the *delta and its magnitude* — "Δ(30, 40, 0) mm = 50 mm" answers "did it
+//     move enough to matter?", while "[0 1 0] → [0.03 1.04 0]" makes them do
+//     arithmetic in their head. A delta's components read in the unit of its
+//     magnitude, so the two halves of the cell say the same thing.
 //   * a colour is a swatch, never a float tuple. Nobody reads
 //     "[0.8 0.1 0.1 1] → [0.1 0.1 0.8 1]" as "red became blue".
 //   * suppress noise: full float precision (2 decimals of trailing zeros from a
@@ -44,7 +45,7 @@ export type FormattedChange = {
   after: string;
   beforeSwatch?: Swatch;
   afterSwatch?: Swatch;
-  /** Per-component difference, e.g. "Δ(0, 0.05, 0)". */
+  /** Per-component difference, e.g. "Δ(0, 50, 0) mm" for a length, "Δ(0°, 45°, 0°)" for a turn. */
   deltaText?: string;
   /** The one number a reviewer judges, e.g. "50 mm", "45°", "×1.2", "+0.05". */
   magnitude?: string;
@@ -71,7 +72,26 @@ export type FormatOptions = {
    * Default "srgb": no conversion, because most formats' colours already are.
    */
   colorSpace?: "linear" | "srgb";
+  /**
+   * What a length's numbers are in. "m" (the default): glTF's metre, shown in
+   * the unit a reviewer thinks in, millimetres under a metre. "none": the source
+   * file states no unit (STL, OBJ, PLY, OFF and 3DS store bare numbers), so
+   * lengths are shown as the bare numbers they are. Calling them metres would
+   * invent a unit, and an STL drawn in millimetres would read "60 m".
+   */
+  lengthUnit?: LengthUnit;
 };
+
+/** The unit a format's lengths are in: glTF's metre, or none stated. */
+export type LengthUnit = "m" | "none";
+
+/**
+ * Decimals for a length's own numbers (a position, a size, a component of a
+ * move). The handler already wrote them at the precision it compares at; three
+ * decimals would round a 1.5 mm change in metres to 0.002, so this keeps what
+ * it was sent, and trimNumber drops the trailing zeros.
+ */
+const LENGTH_DP = 6;
 
 /**
  * Labels whose vectors are lengths in metres (glTF's unit convention) — either a
@@ -146,9 +166,11 @@ export function trimNumber(value: number, dp = 3): string {
  * in: sub-metre changes read as millimetres, because "50 mm" is a judgement and
  * "0.05" is a lookup.
  */
-export function formatLength(meters: number): string {
+export function formatLength(meters: number, unit: LengthUnit = "m"): string {
   const abs = Math.abs(meters);
   if (abs === 0) return "0";
+  // No unit: four significant digits of the number itself, whatever its size.
+  if (unit === "none") return String(Number(meters.toPrecision(4)));
   if (abs < 1) return `${trimNumber(meters * 1000, 1)} mm`;
   return `${trimNumber(meters, 3)} m`;
 }
@@ -176,12 +198,12 @@ function swatch(values: number[], opts: FormatOptions): Swatch {
  * Display text for a parsed value: a tuple in parens, a scalar bare, with the
  * handler's own annotation re-emitted after it.
  */
-function numericText(n: Numeric): string {
+function numericText(n: Numeric, dp = 3): string {
   const unit = n.degrees ? "°" : "";
   const numbers =
     n.values.length === 1
-      ? `${trimNumber(n.values[0]!)}${unit}`
-      : `(${n.values.map((v) => trimNumber(v) + unit).join(", ")})`;
+      ? `${trimNumber(n.values[0]!, dp)}${unit}`
+      : `(${n.values.map((v) => trimNumber(v, dp) + unit).join(", ")})`;
   return n.annotation === "" ? numbers : `${numbers} (${n.annotation})`;
 }
 
@@ -291,14 +313,16 @@ export function formatChange(
 
   const beforeNum = before?.numeric ?? null;
   const afterNum = after?.numeric ?? null;
+  const isLength = LENGTH_LABEL.test(label) && !(beforeNum?.degrees || afterNum?.degrees);
+  const dp = isLength ? LENGTH_DP : 3;
 
   // One side missing, unparseable on both sides, or two tuples of different
   // arity: display only — symmetric, but with nothing to subtract.
   if (!beforeNum || !afterNum || beforeNum.values.length !== afterNum.values.length) {
     return {
       kind: (before ?? after)!.klass,
-      before: beforeNum ? numericText(beforeNum) : beforeText,
-      after: afterNum ? numericText(afterNum) : afterText,
+      before: beforeNum ? numericText(beforeNum, dp) : beforeText,
+      after: afterNum ? numericText(afterNum, dp) : afterText,
       noise: false,
     };
   }
@@ -307,22 +331,47 @@ export function formatChange(
   const deltas = afterNum.values.map((v, i) => v - beforeNum.values[i]!);
   const unit = degrees ? "°" : "";
   const scalar = deltas.length === 1;
+  // A move reads in one unit, the one its magnitude is in: "Δ(10, -3, 0) mm =
+  // 10.4 mm", not metres on the left and millimetres on the right.
+  const shown = isLength && !scalar ? lengthDisplay(deltas, opts.lengthUnit) : null;
   const deltaText = scalar
     ? `Δ ${signed(deltas[0]!)}${unit}`
-    : `Δ(${deltas.map((d) => trimNumber(d) + unit).join(", ")})`;
+    : shown
+      ? `Δ(${deltas.map((d) => trimNumber(d * shown.factor, shown.dp)).join(", ")})${shown.suffix}`
+      : `Δ(${deltas.map((d) => trimNumber(d, dp) + unit).join(", ")})`;
 
-  const magnitude = magnitudeOf(label, deltas, beforeNum.values, afterNum.values, degrees);
+  const magnitude = magnitudeOf(label, deltas, beforeNum.values, afterNum.values, degrees, opts.lengthUnit);
   const dominant = deltas.reduce((m, d) => (Math.abs(d) > Math.abs(m) ? d : m), 0);
   const kind: ValueClass = degrees ? "angle" : scalar ? "number" : "vector";
   return {
     kind,
-    before: numericText(beforeNum),
-    after: numericText(afterNum),
+    before: numericText(beforeNum, dp),
+    after: numericText(afterNum, dp),
     deltaText,
     ...(magnitude ? { magnitude, dominantDelta: dominant } : {}),
-    deltaCell: deltaCell(deltaText, magnitude, deltas, unit),
+    deltaCell: shown
+      ? lengthDeltaCell(deltaText, magnitude, deltas)
+      : deltaCell(deltaText, magnitude, deltas, unit),
     noise: false,
   };
+}
+
+/**
+ * The unit a length delta's components are shown in: formatLength's choice for
+ * the distance they add up to, millimetres under a metre and metres above it,
+ * or the bare numbers of a format that states no unit.
+ */
+function lengthDisplay(deltas: number[], unit: LengthUnit = "m"): { factor: number; dp: number; suffix: string } | null {
+  const distance = Math.sqrt(deltas.reduce((sum, d) => sum + d * d, 0));
+  if (distance === 0) return null;
+  if (unit === "none") return { factor: 1, dp: LENGTH_DP, suffix: "" };
+  return distance < 1 ? { factor: 1000, dp: 3, suffix: " mm" } : { factor: 1, dp: LENGTH_DP, suffix: " m" };
+}
+
+/** A length delta and its distance; one moved component already is the distance. */
+function lengthDeltaCell(deltaText: string, magnitude: string | undefined, deltas: number[]): string {
+  if (!magnitude || deltas.filter((d) => d !== 0).length === 1) return deltaText;
+  return `${deltaText} = ${magnitude}`;
 }
 
 function signed(value: number): string {
@@ -340,12 +389,13 @@ function magnitudeOf(
   before: number[],
   after: number[],
   degrees: boolean,
+  lengthUnit: LengthUnit = "m",
 ): string | undefined {
   const largest = deltas.reduce((m, d) => (Math.abs(d) > Math.abs(m) ? d : m), 0);
   if (degrees) return largest === 0 ? undefined : `${trimNumber(Math.abs(largest), 2)}°`;
   if (LENGTH_LABEL.test(label)) {
     const distance = Math.sqrt(deltas.reduce((sum, d) => sum + d * d, 0));
-    return distance === 0 ? undefined : formatLength(distance);
+    return distance === 0 ? undefined : formatLength(distance, lengthUnit);
   }
   if (SCALE_LABEL.test(label)) {
     const ratio = uniformRatio(before, after);

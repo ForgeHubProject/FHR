@@ -14,6 +14,7 @@
 //
 // Pure numbers — no three.js, no DOM.
 
+import type { LengthUnit } from "@fhr/renderer-sdk";
 import type { SurfaceIndex } from "./closest-point.js";
 
 /**
@@ -113,8 +114,10 @@ function withRange(values: Float32Array): DeviationResult {
  * the headline number reads "0.000 m" — which is how "max deviation 12 mm", the
  * sentence this whole slice exists to produce, turns into nothing.
  */
-export function formatDeviation(metres: number): string {
+export function formatDeviation(metres: number, unit: LengthUnit = "m"): string {
   if (!Number.isFinite(metres)) return "—";
+  // A file with no unit gets its own numbers back, at three significant digits.
+  if (unit === "none") return String(Number(metres.toPrecision(3)));
   const mm = metres * 1000;
   if (mm < 1) return `${mm.toPrecision(2)} mm`;
   if (mm < 1000) return `${mm < 10 ? mm.toFixed(2) : mm.toFixed(1)} mm`;

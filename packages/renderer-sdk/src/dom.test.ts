@@ -321,7 +321,7 @@ describe("renderDiffTree — panel formatting", () => {
 
   it("puts the delta and its magnitude in a column of their own", () => {
     const { root } = mount();
-    expect(cell(root, "nodes/Wheel_FL/translation")).toBe("Δ(0, 0.05, 0) = 50 mm");
+    expect(cell(root, "nodes/Wheel_FL/translation")).toBe("Δ(0, 50, 0) mm");
   });
 
   it("draws colours as chips beside the hex, not as float tuples", () => {
