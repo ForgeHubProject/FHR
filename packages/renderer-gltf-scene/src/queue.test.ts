@@ -42,7 +42,7 @@ describe("buildQueue", () => {
     // vectors, with the delta the reviewer judges the change by beside them.
     expect(entry.details[0]!.before).toBe("(0.9, -1.4, 0.35)");
     expect(entry.details[0]!.after).toBe("(0.9, -1.4, 0.4)");
-    expect(entry.details[0]!.delta).toContain("50 mm");
+    expect(entry.details[0]!.delta).toBe("Δ(0, 0, 50) mm");
   });
 
   it("carries a removal with nothing under it", () => {

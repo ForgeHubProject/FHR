@@ -16,6 +16,7 @@
 // ratio, no texture memory, and it can't be occluded by the model it describes.
 // No three.js reaches this file, so its structure is tested headlessly.
 
+import type { LengthUnit } from "@fhr/renderer-sdk";
 import { formatDeviation } from "./deviation.js";
 import { rampGradientCss } from "./ramp.js";
 
@@ -54,7 +55,7 @@ const HOVER_PROMPT = "Point at coloured geometry for a reading";
  */
 const FLOOR_NOTE_FRACTION = 0.02;
 
-export function createHeatmapLegend(container: HTMLElement, theme: "light" | "dark"): Legend {
+export function createHeatmapLegend(container: HTMLElement, theme: "light" | "dark", unit: LengthUnit = "m"): Legend {
   const doc = container.ownerDocument;
   const dark = theme === "dark";
   const paper = dark ? "rgba(13,17,23,0.88)" : "rgba(255,255,255,0.92)";
@@ -120,14 +121,14 @@ export function createHeatmapLegend(container: HTMLElement, theme: "light" | "da
       // `min` there — the obvious reading of "show the measured range" — makes
       // every colour on the model decode to the wrong number, by `min`, and does
       // it silently, since the picture looks the same either way.
-      low.textContent = formatDeviation(0);
-      high.textContent = formatDeviation(max);
+      low.textContent = formatDeviation(0, unit);
+      high.textContent = formatDeviation(max, unit);
       // Zero is where the scale starts; nothing has to sit there. On a
       // re-tessellated surface every vertex has moved a little, and the foot of
       // the ramp then goes unused — worth one line, because a reviewer who reads
       // "0" as "some of this is unchanged" has drawn the wrong conclusion.
       const note = max > 0 && min > 0 && min / max >= FLOOR_NOTE_FRACTION;
-      floor.textContent = note ? `Smallest measured ${formatDeviation(min)}` : "";
+      floor.textContent = note ? `Smallest measured ${formatDeviation(min, unit)}` : "";
       floor.style.display = note ? "block" : "none";
     },
     setStatus(text: string | null): void {
@@ -135,7 +136,7 @@ export function createHeatmapLegend(container: HTMLElement, theme: "light" | "da
       status.style.display = text === null ? "none" : "block";
     },
     setReading(label: string, value: number): void {
-      reading.textContent = `${label} · ${formatDeviation(value)}`;
+      reading.textContent = `${label} · ${formatDeviation(value, unit)}`;
     },
     clearReading(): void {
       reading.textContent = HOVER_PROMPT;
