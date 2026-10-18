@@ -41,7 +41,7 @@ maintainer  = "ForgeHub Project"
 ".jpg"  = { handler = "jpeg", build = "fb9fd88" }
 ".jpeg" = { handler = "jpeg", build = "fb9fd88" }
 ".gif"  = { handler = "gif", build = "fb9fd88" }
-".toml" = { handler = "toml", build = "fb9fd88" }
+".toml" = { handler = "toml", build = "c7136ff" }
 ".json" = { handler = "json", build = "fb9fd88" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
