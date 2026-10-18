@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/qmuntal/gltf"
+	"github.com/qmuntal/gltf/modeler"
 )
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -766,4 +767,41 @@ func TestFmtLen(t *testing.T) {
 	if got := dominantAxisDelta([3]float64{0.06, 0.005, 0.04}, [3]float64{0.06, 0.008, 0.04}); got != "+0.003 Y" {
 		t.Errorf("a 3 mm growth: %q", got)
 	}
+}
+
+// A vertex duplicated where its UVs split — a seam, a pole — is one point of
+// the shape, not two: the centroid counts it once, so the duplicates can't pull
+// it towards wherever the splits happen to be.
+func TestCentroidCountsADuplicatedVertexOnce(t *testing.T) {
+	doc := &gltf.Document{}
+	acc := modeler.WritePosition(doc, [][3]float32{{0, 0, 0}, {3, 0, 0}, {0, 3, 0}, {0, 0, 0}, {0, 0, 0}})
+	c, ok := primitiveCentroid(doc, doc.Accessors[acc])
+	if !ok {
+		t.Fatal("centroid unreadable")
+	}
+	// (1, 1, 0) in glTF is (1, 0, 1) in Blender's axes.
+	if math.Abs(c[0]-1) > 1e-9 || math.Abs(c[1]) > 1e-9 || math.Abs(c[2]-1) > 1e-9 {
+		t.Fatalf("centroid %v, want (1, 0, 1)", c)
+	}
+}
+
+// The case that showed it: a generated sphere resized in place — seam and pole
+// vertices duplicated for the texture — read as "moved". It only grew.
+func TestResizedSphereDoesNotMove(t *testing.T) {
+	sphere := func(r float64) []byte {
+		doc, err := (&Model{Roots: []*Object{{Name: "Bulb", Prims: []*FlatPrim{x3dFirstUse(x3dSphere(r))}}}}).Document()
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := encodeBlob(doc, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	d := diffOf(t, sphere(0.03), sphere(0.04))
+	if c := findChange(d, "meshes/Bulb/primitives/0/centroid"); c != nil {
+		t.Errorf("a resized sphere reported a move: %s", valueOf(c))
+	}
+	mustChange(t, d, "meshes/Bulb/primitives/0/bounds")
 }
