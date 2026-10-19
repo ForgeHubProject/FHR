@@ -779,12 +779,12 @@ func TestApplyChoicesResolvesEscapedNames(t *testing.T) {
 	}
 }
 
-// Choices that add, remove or re-point a whole element move indices other
-// elements refer to, and nothing renumbers them yet: they must be refused by
-// name — a choice silently skipped would read as resolved.
-func TestApplyChoicesRefusesWholeElementsByName(t *testing.T) {
+// A choice the handler can't apply is refused by name — a choice silently
+// skipped would read as resolved. (Whole elements and a node's references are
+// takeable since the merge assembles its result: see merge3_test.go.)
+func TestApplyChoicesRefusesWhatItCannotTakeByName(t *testing.T) {
 	doc := nodesDoc(t, map[string]any{"name": "Cube", "translation": []float64{0, 0, 0}})
-	for _, p := range []string{"nodes/Cube", "materials/Paint", "meshes/Body", "animations/Spin", "nodes/Cube/mesh", "nodes/Cube/weights", "cameras/Main"} {
+	for _, p := range []string{"nodes/Cube/bogus", "lights/Sun", "nodes", "scenes/Main", "materials/Paint/emissiveTexture", "nodes/Ghost/translation"} {
 		_, err := (&Handler{}).ApplyChoices(doc, doc, []string{p})
 		if err == nil {
 			t.Errorf("%s: want an error", p)
