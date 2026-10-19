@@ -13,6 +13,7 @@ package scene
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
@@ -1608,10 +1609,17 @@ func primitiveExtent(acc *gltf.Accessor) ([3]float64, bool) {
 	return blenderScale(size), true
 }
 
-// primitiveCentroid averages a primitive's vertex positions, in Blender space —
-// the cheapest single number that answers "did the shape move, or only change
-// shape". It is the one metric that decodes typed vertex data, so callers run it
-// only for primitives already known to have changed POSITION bytes.
+// primitiveCentroid averages a primitive's distinct vertex positions, in
+// Blender space — the cheapest single number that answers "did the shape move,
+// or only change shape". It is the one metric that decodes typed vertex data,
+// so callers run it only for primitives already known to have changed POSITION
+// bytes.
+//
+// Distinct, because a vertex is duplicated wherever its other attributes split
+// — a UV seam, a hard edge, a pole — and the copies would pull a plain average
+// towards wherever the splits are: a sphere resized in place read as "moved".
+// The positions are sorted rather than hashed, so the extra memory is one flat
+// array however big the mesh.
 //
 // It decodes in place from the accessor's own span rather than materialising a
 // slice of vectors, and reports !ok rather than guessing whenever the data is
@@ -1626,17 +1634,30 @@ func primitiveCentroid(doc *gltf.Document, acc *gltf.Accessor) ([3]float64, bool
 		return [3]float64{}, false
 	}
 	const elem = 3 * 4 // VEC3 of float32; glTF buffers are little-endian by spec.
-	var sum [3]float64
+	verts := make([][3]uint32, acc.Count)
 	for i := range acc.Count {
 		v := data[i*stride:]
 		if len(v) < elem {
 			return [3]float64{}, false
 		}
-		sum[0] += float64(math.Float32frombits(binary.LittleEndian.Uint32(v[0:4])))
-		sum[1] += float64(math.Float32frombits(binary.LittleEndian.Uint32(v[4:8])))
-		sum[2] += float64(math.Float32frombits(binary.LittleEndian.Uint32(v[8:12])))
+		verts[i] = [3]uint32{binary.LittleEndian.Uint32(v[0:4]), binary.LittleEndian.Uint32(v[4:8]), binary.LittleEndian.Uint32(v[8:12])}
 	}
-	n := float64(acc.Count)
+	slices.SortFunc(verts, func(a, b [3]uint32) int {
+		for k := range 3 {
+			if a[k] != b[k] {
+				return cmp.Compare(a[k], b[k])
+			}
+		}
+		return 0
+	})
+	verts = slices.Compact(verts)
+	var sum [3]float64
+	for _, v := range verts {
+		for k := range 3 {
+			sum[k] += float64(math.Float32frombits(v[k]))
+		}
+	}
+	n := float64(len(verts))
 	return blenderTranslation([3]float64{sum[0] / n, sum[1] / n, sum[2] / n}), true
 }
 
