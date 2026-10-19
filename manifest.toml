@@ -24,7 +24,7 @@ maintainer  = "ForgeHub Project"
 ".off"  = { handler = "off", build = "c7136ff" }
 ".dae"  = { handler = "dae", build = "c7136ff" }
 ".x3d"  = { handler = "x3d", build = "c7136ff" }
-".fbx"  = { handler = "fbx", build = "c7136ff" }
+".fbx"  = { handler = "fbx", build = "8c32b06" }
 ".usd"  = { handler = "usd", build = "c7136ff" }
 ".usda" = { handler = "usd", build = "c7136ff" }
 ".usdc" = { handler = "usd", build = "c7136ff" }
