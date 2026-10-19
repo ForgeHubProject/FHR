@@ -34,7 +34,7 @@ maintainer  = "ForgeHub Project"
 ".amf"  = { handler = "amf", build = "c7136ff" }
 ".wrl"  = { handler = "vrml", build = "c7136ff" }
 ".dxf"  = { handler = "dxf", build = "c7136ff" }
-".svg"  = { handler = "svg", build = "c7136ff" }
+".svg"  = { handler = "svg", build = "8c32b06" }
 ".wav"  = { handler = "wav", build = "c7136ff" }
 ".geojson" = { handler = "geojson", build = "8c32b06" }
 ".png"  = { handler = "png", build = "8c32b06" }
