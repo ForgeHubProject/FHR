@@ -1,4 +1,6 @@
-import { defineRenderer, renderDiffTree } from "@fhr/renderer-sdk";
+import { defineRenderer } from "@fhr/renderer-sdk";
+import { renderImageDiff } from "@fhr/renderer-sdk/image";
+import { decodeGif } from "./gif.js";
 import type { MountProps } from "@fhr/types";
 
 // Replaced at bundle-build time with the release's short commit SHA (see
@@ -8,9 +10,11 @@ declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ !== "undefined" ? __BUILD__ : "dev";
 
 /**
- * Renderer for GIF images. A single file is the image itself; a diff is the
- * semantic change tree (dimensions / color model / byte size) produced by the
- * gif handler.
+ * Renderer for GIF images. A single file is the image itself. A diff is the
+ * image compare (@fhr/renderer-sdk/image): the new image, a before/after
+ * slider, or both side by side, with the changed pixels and the gif
+ * handler's metadata change tree on request. An animated GIF compares frame
+ * by frame, with a strip marking which frames changed.
  */
 export default defineRenderer({
   handlerId: "gif",
@@ -20,7 +24,7 @@ export default defineRenderer({
   modes: ["view", "diff"],
   render(container: HTMLElement, props: MountProps) {
     if (props.mode === "view") return renderImage(container, props);
-    renderDiffTree(container, props);
+    return renderImageDiff(container, props, { decodeAnimation: decodeGif });
   },
 });
 
