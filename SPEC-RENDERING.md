@@ -203,6 +203,33 @@ ladder is format-agnostic even where a rung is not. (The 3D-correct form of the
 same affordance is a world-space clipping plane, which survives orbiting because
 it is part of the scene. Noted, not scheduled.)
 
+**Raster images: `@fhr/renderer-sdk/image`.** The png, jpeg and gif renderers
+each bundle the SDK's image compare — one renderer per format, sharing a
+library, the way the 3D renderers share `renderer-gltf-scene`'s viewport. It
+draws three presentations: **Image** (the new image alone), **Slider** (a wipe)
+and **Side by side**; and two layers, both off by default: **Show differences**
+(an overlay tinting every changed pixel, with a jump to them) and **Show
+metadata** (the structural change tree the handler wrote). Images open at their
+true size, one image pixel to one CSS pixel; two of different sizes compare
+top-left aligned. It departs from the defaults here on purpose:
+
+- It opens on **Image**, whatever `capabilities` says. An image's structure —
+  dimensions, colour model, byte size — is rarely what its reviewer came for;
+  the picture is.
+- The differences paint starts **off** even with two versions, so the first
+  thing seen is the image as it is; the tint covers what it marks.
+- Side by side zooms and pans **each pane on its own**. A flat image has no
+  parallax to lie with (the reason 3D splits lock their cameras), and a reviewer
+  following something that moved needs two places at once. The slider is the
+  locked view.
+
+Switching presentation keeps the reviewer's place, per the chrome convention
+below: the new windows open on the image point and zoom of the window last
+moved. An animated format hands the compare a frame decoder (`decodeAnimation`):
+its diff gains a frame strip that marks which frames changed — pixels or timing
+— plays the animation, and draws every presentation, and the differences, for
+the frame on screen. An added or deleted file is just its image.
+
 #### Choosing the default: `capabilities`
 
 `HandlerCapabilities.semanticCompare` already existed on `ArtifactHandler` — the
