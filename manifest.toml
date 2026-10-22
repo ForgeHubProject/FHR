@@ -40,7 +40,7 @@ maintainer  = "ForgeHub Project"
 ".png"  = { handler = "png", build = "2e4a89f" }
 ".jpg"  = { handler = "jpeg", build = "2e4a89f" }
 ".jpeg" = { handler = "jpeg", build = "2e4a89f" }
-".gif"  = { handler = "gif", build = "2e4a89f" }
+".gif"  = { handler = "gif", build = "00f39c3" }
 ".toml" = { handler = "toml", build = "2e4a89f" }
 ".json" = { handler = "json", build = "00f39c3" }
 
