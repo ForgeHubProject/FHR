@@ -1,4 +1,5 @@
-import { defineRenderer, renderDiffTree } from "@fhr/renderer-sdk";
+import { defineRenderer } from "@fhr/renderer-sdk";
+import { renderImageDiff } from "@fhr/renderer-sdk/image";
 import type { MountProps } from "@fhr/types";
 
 // Replaced at bundle-build time with the release's short commit SHA (see
@@ -8,9 +9,10 @@ declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ !== "undefined" ? __BUILD__ : "dev";
 
 /**
- * Renderer for PNG images. A single file is the image itself; a diff is the
- * semantic change tree (dimensions / color model / byte size) produced by the
- * png handler.
+ * Renderer for PNG images. A single file is the image itself. A diff is the
+ * image compare (@fhr/renderer-sdk/image): the new image, a before/after
+ * slider, or both side by side, with the changed pixels and the png
+ * handler's metadata change tree on request.
  */
 export default defineRenderer({
   handlerId: "png",
@@ -20,7 +22,7 @@ export default defineRenderer({
   modes: ["view", "diff"],
   render(container: HTMLElement, props: MountProps) {
     if (props.mode === "view") return renderImage(container, props);
-    renderDiffTree(container, props);
+    return renderImageDiff(container, props);
   },
 });
 

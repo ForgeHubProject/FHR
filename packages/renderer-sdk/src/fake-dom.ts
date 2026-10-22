@@ -1,11 +1,12 @@
 // Test-only DOM stand-in. Not exported from the package entry.
 //
-// The DOM renderDiffTree touches is deliberately small (createElement, class and
-// style writes, textContent, append/appendChild/remove, get/setAttribute,
-// add/removeEventListener, focus, scrollIntoView), so a hundred lines of plain
-// objects cover it. That keeps the suite dependency-free — no jsdom in the
-// lockfile for a handful of element assertions — and keeps these tests honest
-// about what they prove: DOM structure, text and attributes, never layout.
+// The DOM that renderDiffTree and the image compare touch is deliberately small
+// (createElement, class and style writes, textContent, append/appendChild/remove,
+// get/setAttribute, add/removeEventListener, focus, scrollIntoView), so a
+// hundred lines of plain objects cover it. That keeps the suite dependency-free
+// — no jsdom in the lockfile for a handful of element assertions — and keeps
+// these tests honest about what they prove: DOM structure, text and
+// attributes, never layout.
 //
 // A near-twin of this file lives in renderer-gltf-scene (added with the real
 // renderer in FHR #44); the two are deliberately independent, because a package's
@@ -53,7 +54,7 @@ export function createFakeDocument(): FakeDocument {
       const el: FakeElement = {
         tagName: tagName.toUpperCase(),
         className: "",
-        style: { cssText: "" },
+        style: fakeStyle(),
         textContent: "",
         childNodes: [],
         parentNode: null,
@@ -122,6 +123,21 @@ export function createFakeDocument(): FakeDocument {
     },
   };
   return doc;
+}
+
+/**
+ * A style object: properties are plain writes, and setProperty (custom
+ * properties like --fhr-check) writes the same way. Non-enumerable, so it
+ * never shows up among the recorded styles.
+ */
+function fakeStyle(): FakeElement["style"] {
+  const style = { cssText: "" } as FakeElement["style"];
+  Object.defineProperty(style, "setProperty", {
+    value(name: string, value: string): void {
+      style[name] = value;
+    },
+  });
+  return style;
 }
 
 /** A container element, typed as an HTMLElement for functions that expect one. */
