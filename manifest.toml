@@ -55,10 +55,13 @@ maintainer  = "ForgeHub Project"
 "darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene_darwin-amd64"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene_windows-amd64.exe"
-# WASM build of the same handler — lets ForgeHub / forge --web compute diffs in
+# WASM builds of the same handler — let ForgeHub / forge --web compute diffs in
 # the browser (SPEC-RENDERING.md §2c, §4 Tier B). Same content-hash build as the
-# native binaries above.
+# native binaries above. "wasm-fhr1" is the module every host loads the same way
+# whatever language built it (fhr-wasm-1, SPEC.md §7); "wasm" is the older
+# Go-only build ForgeHub loads until it moves over. Every handler lists both.
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/gltf-scene-latest/forge-handler-gltf-scene.fhr1.wasm"
 
 # The csv handler — rolling release `csv-latest`, overwritten on each push to
 # main that touches packages/handler-csv/. CSV parses everywhere, so it ships
@@ -70,6 +73,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/forge-handler-csv_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/forge-handler-csv_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/forge-handler-csv.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/csv-latest/forge-handler-csv.fhr1.wasm"
 
 # The ipynb handler — rolling release `ipynb-latest`, overwritten on each push
 # to main that touches packages/handler-ipynb/. Notebooks are JSON, so it ships
@@ -81,6 +85,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/ipynb-latest/forge-handler-ipynb.fhr1.wasm"
 
 # The obj handler — rolling release `obj-latest`, overwritten on each push to
 # main that touches packages/handler-obj/ (or the shared packages/go it builds
@@ -93,6 +98,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/obj-latest/forge-handler-obj.fhr1.wasm"
 # The stl handler — rolling release `stl-latest`, overwritten on each push to
 # main that touches packages/handler-stl/ (or the shared packages/go it builds
 # on). STL is a triangle soup, diffed by geometry statistics. It ships the wasm build too (Tier B in-browser diff).
@@ -103,6 +109,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/stl-latest/forge-handler-stl.fhr1.wasm"
 
 # The ply handler — rolling release `ply-latest`, overwritten on each push to
 # main that touches packages/handler-ply/ (or the shared packages/go it builds
@@ -114,6 +121,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/ply-latest/forge-handler-ply.fhr1.wasm"
 
 # The 3mf handler — rolling release `3mf-latest`, overwritten on each push to
 # main that touches packages/handler-3mf/ (or the shared packages/go it builds
@@ -125,6 +133,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/3mf-latest/forge-handler-3mf.fhr1.wasm"
 
 # The off handler — rolling release `off-latest`, overwritten on each push to
 # main that touches packages/handler-off/ (or the shared packages/go it builds
@@ -136,6 +145,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/off-latest/forge-handler-off.fhr1.wasm"
 
 # The dae handler — rolling release `dae-latest`, overwritten on each push to
 # main that touches packages/handler-dae/ (or the shared packages/go it builds
@@ -147,6 +157,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/dae-latest/forge-handler-dae.fhr1.wasm"
 
 # The x3d handler — rolling release `x3d-latest`, overwritten on each push to
 # main that touches packages/handler-x3d/ (or the shared packages/go it builds
@@ -158,6 +169,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/x3d-latest/forge-handler-x3d.fhr1.wasm"
 
 # The fbx handler — rolling release `fbx-latest`, overwritten on each push to
 # main that touches packages/handler-fbx/ (or the shared packages/go it builds
@@ -169,6 +181,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/fbx-latest/forge-handler-fbx.fhr1.wasm"
 
 # The usd handler — rolling release `usd-latest`, overwritten on each push to
 # main that touches packages/handler-usd/ (or the shared packages/go it builds
@@ -180,6 +193,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/forge-handler-usd_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/forge-handler-usd_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/forge-handler-usd.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/usd-latest/forge-handler-usd.fhr1.wasm"
 
 # The 3ds handler — rolling release `3ds-latest`, overwritten on each push to
 # main that touches packages/handler-3ds/ (or the shared packages/go it builds
@@ -191,6 +205,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/3ds-latest/forge-handler-3ds.fhr1.wasm"
 
 # The blend handler — rolling release `blend-latest`, overwritten on each push to
 # main that touches packages/handler-blend/ (or the shared packages/go it builds
@@ -202,6 +217,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/forge-handler-blend_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/forge-handler-blend_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/forge-handler-blend.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/blend-latest/forge-handler-blend.fhr1.wasm"
 
 # The amf handler — rolling release `amf-latest`, overwritten on each push to
 # main that touches packages/handler-amf/ (or the shared packages/go it builds
@@ -213,6 +229,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/amf-latest/forge-handler-amf.fhr1.wasm"
 
 # The vrml handler — rolling release `vrml-latest`, overwritten on each push to
 # main that touches packages/handler-vrml/ (or the shared packages/go it builds
@@ -224,6 +241,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/vrml-latest/forge-handler-vrml.fhr1.wasm"
 
 # The dxf handler — rolling release `dxf-latest`, overwritten on each push to
 # main that touches packages/handler-dxf/ (or the shared packages/go it builds
@@ -235,6 +253,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/dxf-latest/forge-handler-dxf.fhr1.wasm"
 
 # The svg handler — rolling release `svg-latest`, overwritten on each push to
 # main that touches packages/handler-svg/. XML parses everywhere, so it ships
@@ -246,6 +265,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/svg-latest/forge-handler-svg.fhr1.wasm"
 
 # The wav handler — rolling release `wav-latest`, overwritten on each push to
 # main that touches packages/handler-wav/. The RIFF header parses with plain
@@ -257,6 +277,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/forge-handler-wav_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/forge-handler-wav_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/forge-handler-wav.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/wav-latest/forge-handler-wav.fhr1.wasm"
 
 # The geojson handler — rolling release `geojson-latest`, overwritten on each
 # push to main that touches packages/handler-geojson/. GeoJSON is plain JSON,
@@ -268,6 +289,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/forge-handler-geojson_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/forge-handler-geojson_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/forge-handler-geojson.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/geojson-latest/forge-handler-geojson.fhr1.wasm"
 
 # The png handler — rolling release `png-latest`, overwritten on each push to
 # main that touches packages/handler-png/. It reads only the PNG header
@@ -279,6 +301,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/png-latest/forge-handler-png_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/png-latest/forge-handler-png_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/png-latest/forge-handler-png.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/png-latest/forge-handler-png.fhr1.wasm"
 
 # The jpeg handler — rolling release `jpeg-latest`, overwritten on each push
 # to main that touches packages/handler-jpeg/. It reads only the JPEG header
@@ -290,6 +313,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/jpeg-latest/forge-handler-jpeg_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/jpeg-latest/forge-handler-jpeg_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/jpeg-latest/forge-handler-jpeg.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/jpeg-latest/forge-handler-jpeg.fhr1.wasm"
 
 # The gif handler — rolling release `gif-latest`, overwritten on each push to
 # main that touches packages/handler-gif/. It reads only the GIF header
@@ -301,6 +325,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/gif-latest/forge-handler-gif_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/gif-latest/forge-handler-gif_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/gif-latest/forge-handler-gif.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/gif-latest/forge-handler-gif.fhr1.wasm"
 
 # The toml handler — rolling release `toml-latest`, overwritten on each push
 # to main that touches packages/handler-toml/. TOML parses in pure Go
@@ -313,6 +338,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/forge-handler-toml_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/forge-handler-toml_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/forge-handler-toml.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/forge-handler-toml.fhr1.wasm"
 
 # The json handler — rolling release `json-latest`, overwritten on each push to
 # main that touches packages/handler-json/. JSON parses with the stdlib, so it
@@ -324,6 +350,7 @@ maintainer  = "ForgeHub Project"
 "darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json_darwin-arm64"
 "windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json_windows-amd64.exe"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json.wasm"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json.fhr1.wasm"
 
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a

@@ -21,6 +21,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # @fhr/wasm-host's tests build a real handler as an fhr-wasm-1 module
+      # (SPEC §7), and its exports need Go 1.24 or newer.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: packages/*/go.sum
+
       # Build in dependency order first: typecheck resolves @fhr/types and
       # @fhr/renderer-sdk through their built .d.ts, and this also proves the
       # 3D family's bundles still bundle within their budgets (renderer-obj
@@ -73,6 +80,16 @@ jobs:
         run: |
           export PATH="$PATH:$(go env GOROOT)/lib/wasm:$(go env GOROOT)/misc/wasm"
           go test ./...
+
+      # The fhr-wasm-1 entry points (run_wasip1.go) need Go 1.24 or newer, so
+      # this lane switches toolchains last. @fhr/wasm-host's tests run a real
+      # handler built this way.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+
+      - name: Vet (fhr-wasm-1)
+        run: GOOS=wasip1 GOARCH=wasm go vet ./...
 
   discover-handlers:
     name: Discover handler packages
@@ -175,3 +192,16 @@ jobs:
           # go test picks up go_js_wasm_exec from PATH.
           export PATH="$PATH:$(go env GOROOT)/lib/wasm:$(go env GOROOT)/misc/wasm"
           go test -mod=mod ./...
+
+      # The fhr-wasm-1 module (SPEC §7), the one every host loads the same way.
+      # Its exports need Go 1.24 or newer, so this lane switches toolchains last.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+
+      - name: Build (fhr-wasm-1)
+        env:
+          GOOS: wasip1
+          GOARCH: wasm
+          PACKAGE: ${{ matrix.package }}
+        run: go build -mod=mod -buildmode=c-shared -o "/tmp/$(basename "$PACKAGE").fhr1.wasm" .
