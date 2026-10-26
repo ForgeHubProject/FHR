@@ -1,0 +1,25 @@
+{
+  "name": "@fhr/wasm-host",
+  "version": "1.0.0",
+  "description": "Reference host for fhr-wasm-1 (SPEC §7): load a handler built in any language and call it, in Node or a browser",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^2.1.0"
+  }
+}

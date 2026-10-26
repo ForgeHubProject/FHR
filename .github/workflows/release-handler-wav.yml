@@ -51,12 +51,22 @@ jobs:
           - goos: js
             goarch: wasm
             asset: forge-handler-wav.wasm
+          # The language-neutral wasm build (fhr-wasm-1, SPEC §7): the one any host
+          # loads the same way, whatever language a handler is written in. Its
+          # exports need Go 1.24+; the builds above stay on the go.mod version.
+          - goos: wasip1
+            goarch: wasm
+            asset: forge-handler-wav.fhr1.wasm
+            flags: -buildmode=c-shared
+            go: '1.27.x'
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
+          # Set only for the fhr-wasm-1 build (Go 1.24+); the others follow go.mod.
+          go-version: ${{ matrix.go }}
           go-version-file: packages/handler-wav/go.mod
 
       - name: Build
@@ -65,7 +75,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-        run: go build -mod=mod -trimpath -ldflags="-s -w" -o ${{ matrix.asset }} .
+        run: go build -mod=mod -trimpath -ldflags="-s -w" ${{ matrix.flags }} -o ${{ matrix.asset }} .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -136,7 +146,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           title="wav (latest)"
-          notes="Rolling release — always points to the latest build from main. Includes native binaries, the wasm build, and the renderer bundle."
+          notes="Rolling release — always points to the latest build from main. Includes native binaries, both wasm builds (Go js and fhr-wasm-1), and the renderer bundle."
           if gh release view wav-latest >/dev/null 2>&1; then
             gh release upload wav-latest dist/* --clobber
             # --clobber only replaces same-named assets. Drop any this build no
