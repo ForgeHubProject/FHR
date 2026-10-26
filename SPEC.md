@@ -532,17 +532,71 @@ exit:   0 always
 `preview` call produces, and `capabilities.applyChoices` says the handler answers
 `apply-choices`; both appear only for handlers that implement them.
 
-Blobs are base64-encoded to keep the transport pure JSON. The same binary works as both a CLI subprocess and a WASM module.
+Blobs are base64-encoded to keep the transport pure JSON.
 
-**WASM entry points.** A `GOOS=js` build registers one global whose name starts
+**WASM: `fhr-wasm-1`, the contract for every language.** A host — ForgeHub's
+server, a browser tab — runs a handler as a WebAssembly module, and every
+module is called the same way whatever language built it. The module exports:
+
+| export | does |
+|---|---|
+| `memory` | its linear memory |
+| `fhr_alloc(size: i32) -> i32` | a buffer of `size` bytes for the host to write a request into |
+| `fhr_free(ptr: i32, size: i32)` | releases a request or response buffer |
+| `fhr_call(ptr: i32, size: i32) -> i64` | answers one request; returns `(ptr << 32) \| len` of the response |
+| `_initialize()` *(optional)* | the host calls it once, before anything else |
+
+A request and a response are both `[u32 header length, little-endian][JSON header][blobs, back to back]`:
+
+```
+request:  {"op": "diff", "blobs": [<base length>, <head length>]}           + base bytes + head bytes
+response: {"result": <StructuredDiff>}                                       (no blobs)
+          {"result": {"conflicts": [...]}, "blobs": [<merged length>]}       + merged bytes   (merge)
+          {"error": "…"}                                                     (any call that failed)
+```
+
+| `op` | blobs in | other request fields | `result` | blobs out |
+|---|---|---|---|---|
+| `info` | — | | the `info` object above | — |
+| `match` | — | `path` | `true` / `false` | — |
+| `diff` | base, head | | a `StructuredDiff` | — |
+| `merge` | base, ours, theirs | | `{ "conflicts"?: […] }` | the merged blob |
+| `preview` | blob | | `{ "mediaType": "…" }` | the preview |
+| `applyChoices` | merged, theirs | `take` | `{}` | the resolved blob |
+| `import` | blob | | `{ "mediaType": "model/gltf-binary" }` | the GLB |
+| `export` | glb | `format` (optional, as above) | `{}` | the file |
+
+The calls and their JSON are exactly the subprocess protocol's; only the
+transport differs, and blobs never pass through base64. A call the handler
+doesn't implement, a malformed request and a crash inside the handler all
+answer `{"error": …}`, and the module stays usable afterwards.
+
+A module may import nothing, or a sandboxed **WASI preview 1**
+(`wasi_snapshot_preview1`), which hosts provide with no files (no preopened
+directories), no network, an empty environment and no arguments: clocks,
+randomness and stdout/stderr for diagnostics, every other function answering
+`ENOSYS`. Go's runtime needs that much; a plain Rust module needs nothing. A
+host refuses a module that imports anything else.
+
+The manifest lists the module as the handler's `"wasm-fhr1"` asset, beside the
+platform binaries. `packages/wasm-host` is the reference host (Node 20+ and
+browsers alike), and Go handlers get the module for free: built with
+`GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared` (Go 1.24 or newer),
+`packages/go/fhr` serves the same `Handler` through `fhr_call`, running the
+handler's `main` once on the first call so its `fhr.Run` line registers it.
+
+**WASM, the older Go-only entry points.** Until ForgeHub loads `fhr-wasm-1`
+everywhere, handlers also ship the `GOOS=js` build it loads today (the
+manifest's `"wasm"` asset), which registers one global whose name starts
 with `__forgeHandler` (`__forgeHandlerGltfScene`) holding the same calls:
 `diff(base, head)`, `merge(base, ours, theirs)` and `info()` take `Uint8Array`s
 and return a JSON string (`{"error": "…"}` on failure), as does
 `applyChoices(merged, theirs, takeJSON)` when present; `preview(blob)`, when
 present, returns an object — `{ mediaType, blob: Uint8Array }` or `{ error }` —
 so a large preview never round-trips through base64. `import(blob)` answers the
-same shape, and `export(glb, format)` answers `{ blob: Uint8Array }` or `{ error }`. Go handlers get all of
-this, and the subprocess protocol above, from `packages/go/fhr`.
+same shape, and `export(glb, format)` answers `{ blob: Uint8Array }` or `{ error }`.
+A host needs Go's own `wasm_exec` glue to start one, which is why it is being
+retired. Go handlers get it, and the subprocess protocol above, from `packages/go/fhr`.
 
 ---
 
@@ -701,15 +755,18 @@ Exact version pinning only in v1 (no ranges).
 
 ### Step 1 — Backend (any language)
 
-Implement the subprocess protocol (§7). See `packages/example-handler-native/` for a Go skeleton.
+Implement the subprocess protocol and the `fhr-wasm-1` module (§7). See
+`packages/example-handler-native/` for a Go skeleton; in Go, `packages/go/fhr`
+provides both from one `Handler`.
 
 ```bash
 # Native binaries
 GOOS=linux   GOARCH=amd64 go build -o forge-handler-myformat_linux-amd64 .
 GOOS=darwin  GOARCH=arm64 go build -o forge-handler-myformat_darwin-arm64 .
 GOOS=windows GOARCH=amd64 go build -o forge-handler-myformat_windows-amd64.exe .
-# WASM
-GOOS=wasip1 GOARCH=wasm  go build -o forge-handler-myformat.wasm .
+# WASM: fhr-wasm-1 (Go 1.24+), and the older Go-only build ForgeHub loads until it moves over
+GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o forge-handler-myformat.fhr1.wasm .
+GOOS=js     GOARCH=wasm go build -o forge-handler-myformat.wasm .
 ```
 
 ### Step 2 — Frontend renderer (TypeScript + React)
