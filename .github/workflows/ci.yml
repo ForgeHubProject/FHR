@@ -21,12 +21,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # @fhr/wasm-host's tests build a real handler as an fhr-wasm-1 module
-      # (SPEC §7), and its exports need Go 1.24 or newer.
+      # @fhr/wasm-host's tests build real handlers as fhr-wasm-1 modules (SPEC
+      # §7): a Go one, whose exports need Go 1.24 or newer, and a Rust one,
+      # which needs the wasm32 target (rustup is preinstalled on the runner).
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.x'
           cache-dependency-path: packages/*/go.sum
+
+      - name: Rust wasm32 target
+        run: rustup target add wasm32-unknown-unknown
 
       # Build in dependency order first: typecheck resolves @fhr/types and
       # @fhr/renderer-sdk through their built .d.ts, and this also proves the
@@ -90,6 +94,35 @@ jobs:
 
       - name: Vet (fhr-wasm-1)
         run: GOOS=wasip1 GOARCH=wasm go vet ./...
+
+  # The Rust workspace: the handler SDK (packages/rust/fhr) and the handlers
+  # written in Rust. Each must build both ways — natively (the subprocess
+  # protocol forge runs) and for wasm32 (the fhr-wasm-1 module ForgeHub runs).
+  rust:
+    name: Rust SDK and handlers (native + fhr-wasm-1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint (native + wasm32)
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --workspace --lib --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build (fhr-wasm-1)
+        run: cargo build --locked --release --workspace --lib --target wasm32-unknown-unknown
 
   discover-handlers:
     name: Discover handler packages
