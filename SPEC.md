@@ -755,9 +755,10 @@ Exact version pinning only in v1 (no ranges).
 
 ### Step 1 — Backend (any language)
 
-Implement the subprocess protocol and the `fhr-wasm-1` module (§7). See
-`packages/example-handler-native/` for a Go skeleton; in Go, `packages/go/fhr`
-provides both from one `Handler`.
+Implement the subprocess protocol and the `fhr-wasm-1` module (§7). The SDKs
+provide both from one handler: `packages/go/fhr` in Go, `packages/rust/fhr` in
+Rust (`packages/example-handler-rust` is a complete one). See
+`packages/example-handler-native/` for a Go skeleton without an SDK.
 
 ```bash
 # Native binaries
@@ -767,6 +768,10 @@ GOOS=windows GOARCH=amd64 go build -o forge-handler-myformat_windows-amd64.exe .
 # WASM: fhr-wasm-1 (Go 1.24+), and the older Go-only build ForgeHub loads until it moves over
 GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o forge-handler-myformat.fhr1.wasm .
 GOOS=js     GOARCH=wasm go build -o forge-handler-myformat.wasm .
+
+# Rust: the binary and the fhr-wasm-1 module (no GOOS=js build — hosts take fhr-wasm-1 alone)
+cargo build --release -p my-handler
+cargo build --release -p my-handler --lib --target wasm32-unknown-unknown
 ```
 
 ### Step 2 — Frontend renderer (TypeScript + React)

@@ -114,3 +114,41 @@ describe("the envelope", () => {
     expect(() => decodeResponse(resp)).toThrow(new HandlerError("csv: bad header"));
   });
 });
+
+// The same parity for a handler written in Rust with the fhr SDK
+// (packages/example-handler-rust): its fhr-wasm-1 module through this host and
+// its native binary through the subprocess protocol answer alike. Building it
+// needs cargo with the wasm32-unknown-unknown target; CI installs both.
+describe("fhr-wasm-1 host, with the kv handler written in Rust", () => {
+  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  let kv: WasmHandler;
+  let kvNative: string;
+
+  beforeAll(async () => {
+    const cargo = (args: string[]) => execFileSync("cargo", ["build", "--release", "-p", "example-handler-rust", ...args], { cwd: repo, stdio: "pipe" });
+    cargo(["--lib", "--target", "wasm32-unknown-unknown"]);
+    cargo(["--bin", "forge-handler-kv"]);
+    kv = await loadHandler(readFileSync(join(repo, "target/wasm32-unknown-unknown/release/example_handler_rust.wasm")));
+    kvNative = join(repo, "target/release/forge-handler-kv");
+  }, 300_000);
+
+  const kvCall = (sub: string, input?: object): unknown =>
+    JSON.parse(execFileSync(kvNative, [sub], { input: input ? JSON.stringify(input) : "", stdio: ["pipe", "pipe", "pipe"] }).toString());
+
+  it("answers info and diff as its native binary does", () => {
+    expect(kv.call("info").result).toEqual(kvCall("info"));
+    const base = enc("a = 1\nb = 2\n");
+    const head = enc("a = 1\nb = 3\nc = 4\n");
+    expect(kv.call("diff", [base, head]).result).toEqual(kvCall("diff", { base: b64(base), head: b64(head) }));
+  });
+
+  it("merges with the blob raw, as its native binary does in base64", () => {
+    const [base, ours, theirs] = [enc("a = 1\nb = 2\n"), enc("a = 10\nb = 2\n"), enc("a = 11\nb = 20\n")];
+    const { result, blobs } = kv.call("merge", [base, ours, theirs]);
+    const native = kvCall("merge", { base: b64(base), ours: b64(ours), theirs: b64(theirs) }) as { blob: string; conflicts: unknown };
+    expect(result).toEqual({ conflicts: native.conflicts });
+    expect(Buffer.from(blobs[0]!).toString("base64")).toBe(native.blob);
+    const resolved = kv.call("applyChoices", [blobs[0]!, theirs], { take: ["keys/a"] }).blobs[0]!;
+    expect(new TextDecoder().decode(resolved)).toBe("a = 11\nb = 20\n");
+  });
+});
