@@ -42,7 +42,7 @@ maintainer  = "ForgeHub Project"
 ".jpeg" = { handler = "jpeg", build = "00f39c3" }
 ".gif"  = { handler = "gif", build = "9164e86" }
 ".toml" = { handler = "toml", build = "00f39c3" }
-".json" = { handler = "json", build = "00f39c3" }
+".json" = { handler = "json", build = "9164e86" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
