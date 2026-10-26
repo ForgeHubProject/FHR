@@ -32,7 +32,7 @@ maintainer  = "ForgeHub Project"
 ".3ds"  = { handler = "3ds", build = "9164e86" }
 ".blend"  = { handler = "blend", build = "9164e86" }
 ".amf"  = { handler = "amf", build = "9164e86" }
-".wrl"  = { handler = "vrml", build = "00f39c3" }
+".wrl"  = { handler = "vrml", build = "9164e86" }
 ".dxf"  = { handler = "dxf", build = "00f39c3" }
 ".svg"  = { handler = "svg", build = "9164e86" }
 ".wav"  = { handler = "wav", build = "00f39c3" }
