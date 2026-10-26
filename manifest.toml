@@ -19,7 +19,7 @@ maintainer  = "ForgeHub Project"
 ".ipynb" = { handler = "ipynb", build = "00f39c3" }
 ".obj"  = { handler = "obj", build = "9164e86" }
 ".stl"  = { handler = "stl", build = "00f39c3" }
-".ply"  = { handler = "ply", build = "00f39c3" }
+".ply"  = { handler = "ply", build = "9164e86" }
 ".3mf"  = { handler = "3mf", build = "00f39c3" }
 ".off"  = { handler = "off", build = "00f39c3" }
 ".dae"  = { handler = "dae", build = "00f39c3" }
