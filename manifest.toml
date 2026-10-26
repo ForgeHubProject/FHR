@@ -36,7 +36,7 @@ maintainer  = "ForgeHub Project"
 ".dxf"  = { handler = "dxf", build = "00f39c3" }
 ".svg"  = { handler = "svg", build = "9164e86" }
 ".wav"  = { handler = "wav", build = "9164e86" }
-".geojson" = { handler = "geojson", build = "00f39c3" }
+".geojson" = { handler = "geojson", build = "9164e86" }
 ".png"  = { handler = "png", build = "9164e86" }
 ".jpg"  = { handler = "jpeg", build = "9164e86" }
 ".jpeg" = { handler = "jpeg", build = "9164e86" }
