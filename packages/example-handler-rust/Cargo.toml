@@ -1,0 +1,22 @@
+[package]
+name = "example-handler-rust"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Example FHR handler written in Rust with the fhr SDK: key = value files, diffed and merged per key"
+
+# The library is the handler, and as a cdylib for wasm32 it is the fhr-wasm-1
+# module ForgeHub runs. The binary is the subprocess protocol forge runs.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "forge-handler-kv"
+path = "src/main.rs"
+
+[dependencies]
+fhr = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

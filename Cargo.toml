@@ -1,0 +1,22 @@
+# Rust packages of the FHR repo: the handler SDK (packages/rust/fhr) and the
+# handlers written in Rust. Go handlers keep their own go.mod each.
+[workspace]
+resolver = "2"
+members = ["packages/rust/fhr", "packages/example-handler-rust"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.82"
+
+[workspace.dependencies]
+fhr = { path = "packages/rust/fhr" }
+serde = { version = "1", features = ["derive"] }
+# preserve_order: answers keep their struct field order, as the Go SDK writes them.
+serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.22"
+
+[profile.release]
+lto = true
+codegen-units = 1
+# A panic in a wasm module traps (the host then starts a fresh instance); natively
+# the SDK catches it and answers {"error": …}, so unwinding stays on there.
