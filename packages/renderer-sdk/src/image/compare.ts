@@ -13,6 +13,11 @@
 // changed (in whichever view is open) and offers to zoom to them; "Show
 // metadata" adds the handler's change tree (dimensions, colour model, size).
 //
+// A structured format knows what changed and where (a design's layers), so it
+// hands in marks instead: "Show differences" then outlines them — yellow for a
+// change, green for an addition, red for a removal — rather than tinting
+// pixels, and the caller can link them to its own list of changes.
+//
 // An animated format hands in a decoder (`decodeAnimation`). Its diff then
 // gets a frame strip that marks which frames changed, plays the animation, and
 // draws every view — and the differences — for the frame on screen.
@@ -45,6 +50,31 @@ export type AnimatedImage = {
   frame(index: number): Uint8ClampedArray;
 };
 
+/** What a mark outlines. "layout" is a change nobody made: auto layout moved it. */
+export type ImageMarkKind = "modified" | "added" | "removed" | "layout";
+
+/** One thing that changed, outlined on one side's image (image pixels). */
+export type ImageMark = {
+  /** One change's outlines share a key (the same layer before and after); it names the change to the caller. */
+  key: string;
+  side: "base" | "head";
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  kind: ImageMarkKind;
+  /** What hovering the outline says. */
+  label?: string;
+};
+
+/** Live controls over a compare drawn with marks. */
+export type ImageDiffControl = {
+  /** Replace the marks; the view, zoom and pan stay. */
+  setMarks(marks: ImageMark[]): void;
+  /** Light up the outlines of `key` (null: none), as pointing at them does. */
+  highlight(key: string | null): void;
+};
+
 export type ImageDiffOptions = {
   /**
    * Decodes an animated format's frames for the per-frame compare. Return null
@@ -53,6 +83,12 @@ export type ImageDiffOptions = {
   decodeAnimation?: (bytes: Uint8Array) => AnimatedImage | null;
   /** The view to open in. Default "image". */
   view?: ImageViewId;
+  /** Outline these instead of comparing pixels (see the header). */
+  marks?: ImageMark[];
+  /** The reviewer pointed at a mark (`picked`: clicked it), or away from it (null). */
+  onMark?: (key: string | null, picked: boolean) => void;
+  /** Hands over the live controls, once the compare is drawn. */
+  onReady?: (control: ImageDiffControl) => void;
 };
 
 type Side = "base" | "head";
@@ -68,6 +104,7 @@ const SCAN_SLICE = 4_000_000;
 
 type Port = { vp: ViewportHandle; sides: Side[] };
 type Overlay = { canvas: HTMLCanvasElement; bounds: HTMLElement; vp: ViewportHandle };
+type MarkLayer = { el: HTMLElement; vp: ViewportHandle; sides: Side[] };
 
 export function renderImageDiff(container: HTMLElement, props: MountProps, opts: ImageDiffOptions = {}): RenderCleanup {
   const doc = container.ownerDocument;
@@ -112,6 +149,8 @@ export function renderImageDiff(container: HTMLElement, props: MountProps, opts:
 
   let view: ImageViewId = both ? opts.view ?? "image" : "image";
   let showDiff = false;
+  let marks: ImageMark[] | null = opts.marks ?? null;
+  let hot: string | null = null;
 
   // ---- toolbar ----
   const bar = make("div", "fhr-img__bar");
@@ -146,13 +185,15 @@ export function renderImageDiff(container: HTMLElement, props: MountProps, opts:
       toggle("Show differences", (on) => {
         // On the windows already open, so the zoom, pan and divider stay put.
         showDiff = on;
-        if (on) for (const p of ports) attachOverlay(p.vp);
+        if (on) for (const p of ports) attachOverlay(p.vp, p.sides);
         else {
           for (const o of overlays) {
             o.canvas.remove();
             o.bounds.remove();
           }
           overlays = [];
+          for (const m of markLayers) m.el.remove();
+          markLayers = [];
         }
         for (const p of ports) p.vp.setContent(contentOf(p.sides));
         refreshDiff();
@@ -199,6 +240,7 @@ export function renderImageDiff(container: HTMLElement, props: MountProps, opts:
   let sliderAt = 0.5;
   let painters: { side: Side; canvas: HTMLCanvasElement }[] = [];
   let overlays: Overlay[] = [];
+  let markLayers: MarkLayer[] = [];
   let dimLabels: { side: Side; el: HTMLElement }[] = [];
 
   const sized = (side: Side, w: number, h: number): void => {
@@ -281,7 +323,7 @@ export function renderImageDiff(container: HTMLElement, props: MountProps, opts:
       layers.set(s, l);
       vp.stage.appendChild(l);
     }
-    if (showDiff) attachOverlay(vp);
+    if (showDiff) attachOverlay(vp, sides);
     vp.setContent(contentOf(sides));
     // Capture phase: the zoom controls stop their own presses from reaching
     // the window (so they don't start a pan), but they still count as a move.
@@ -290,8 +332,18 @@ export function renderImageDiff(container: HTMLElement, props: MountProps, opts:
     return { vp, layers };
   };
 
-  /** The differences layer: a tint over the stage, and a box around the changes. */
-  const attachOverlay = (vp: ViewportHandle): void => {
+  /** The differences layer: a tint over the stage, and a box around the changes — or the marks. */
+  const attachOverlay = (vp: ViewportHandle, sides: Side[]): void => {
+    if (marks) {
+      // In window space, like the bounds box: two pixels wide at any zoom.
+      const el = make("div", "fhr-img__marks");
+      vp.el.appendChild(el);
+      const layer = { el, vp, sides };
+      markLayers.push(layer);
+      fillMarks(layer);
+      vp.onChange(() => placeMarks(layer));
+      return;
+    }
     const canvas = make("canvas", "fhr-img__overlay");
     canvas.width = 0;
     canvas.height = 0;
@@ -318,6 +370,7 @@ export function renderImageDiff(container: HTMLElement, props: MountProps, opts:
     ports = [];
     painters = [];
     overlays = [];
+    markLayers = [];
     dimLabels = [];
     clear(body);
     root.setAttribute("data-view", view);
@@ -440,6 +493,10 @@ export function renderImageDiff(container: HTMLElement, props: MountProps, opts:
   };
 
   const refreshDiff = (): void => {
+    if (marks) {
+      writeNote();
+      return;
+    }
     if (!showDiff || !both) {
       writeNote();
       return;
@@ -502,10 +559,93 @@ export function renderImageDiff(container: HTMLElement, props: MountProps, opts:
     o.bounds.style.height = `${b.h * v.zoom}px`;
   };
 
+  // ---- marks ----
+  /** The marks a window shows: its own side's, side by side; else the after
+   *  image's, plus where the removed things were on the before image. */
+  const marksFor = (sides: Side[]): ImageMark[] => {
+    if (!marks) return [];
+    const own = (s: Side): ImageMark[] => marks!.filter((m) => m.side === s);
+    if (view === "side-by-side" && both) return own(sides[0]!);
+    const primary: Side = shown.includes("head") ? "head" : "base";
+    const keys = new Set(own(primary).map((m) => m.key));
+    return [...own(primary), ...marks.filter((m) => m.side !== primary && !keys.has(m.key) && shown.includes(m.side))];
+  };
+
+  const fillMarks = (layer: MarkLayer): void => {
+    clear(layer.el);
+    for (const m of marksFor(layer.sides)) {
+      const box = make("div", `fhr-img__mark fhr-img__mark--${m.kind}`);
+      box.setAttribute("data-key", m.key);
+      if (m.label) box.setAttribute("title", m.label);
+      if (m.key === hot) box.className += " fhr-img__mark--hot";
+      (box as unknown as { _mark: ImageMark })._mark = m;
+      box.addEventListener("pointerenter", () => {
+        light(m.key);
+        opts.onMark?.(m.key, false);
+      });
+      box.addEventListener("pointerleave", () => {
+        light(null);
+        opts.onMark?.(null, false);
+      });
+      box.addEventListener("click", () => opts.onMark?.(m.key, true));
+      layer.el.appendChild(box);
+    }
+    placeMarks(layer);
+  };
+
+  const placeMarks = (layer: MarkLayer): void => {
+    if (!markLayers.includes(layer)) return; // detached by the toggle
+    const v = layer.vp.view;
+    for (const box of Array.from(layer.el.childNodes) as HTMLElement[]) {
+      const m = (box as unknown as { _mark: ImageMark })._mark;
+      box.style.left = `${v.x + m.x * v.zoom - 2}px`;
+      box.style.top = `${v.y + m.y * v.zoom - 2}px`;
+      box.style.width = `${m.w * v.zoom + 4}px`;
+      box.style.height = `${m.h * v.zoom + 4}px`;
+    }
+  };
+
+  const light = (key: string | null): void => {
+    hot = key;
+    for (const layer of markLayers) {
+      for (const box of Array.from(layer.el.childNodes) as HTMLElement[]) {
+        const on = key !== null && box.getAttribute("data-key") === key;
+        box.className = box.className.replace(/ fhr-img__mark--hot/g, "") + (on ? " fhr-img__mark--hot" : "");
+      }
+    }
+  };
+
+  /** The union of the marks on screen, for "Zoom to them". */
+  const marksBounds = (): { x: number; y: number; w: number; h: number } | null => {
+    const all = marksFor(shown);
+    if (!all.length) return null;
+    const x0 = Math.min(...all.map((m) => m.x));
+    const y0 = Math.min(...all.map((m) => m.y));
+    const x1 = Math.max(...all.map((m) => m.x + m.w));
+    const y1 = Math.max(...all.map((m) => m.y + m.h));
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  };
+
   const writeNote = (status?: string): void => {
     clear(note);
     const problems = [...failed].map((s) => `The browser can't display the ${s === "base" ? "before" : "after"} image.`);
     if (problems.length) note.append(problems.join(" "));
+    if (marks) {
+      if (!showDiff) return;
+      const n = new Set(marks.map((m) => m.key)).size;
+      note.append(n === 0 ? "Nothing is outlined: no layer here changed." : n === 1 ? "1 change outlined." : `${n} changes outlined.`);
+      const bounds = marksBounds();
+      if (bounds) {
+        const zoom = make("button", "fhr-img__link", n === 1 ? "Zoom to it" : "Zoom to them");
+        zoom.setAttribute("type", "button");
+        zoom.addEventListener("click", () => {
+          for (const p of ports) p.vp.focus(bounds);
+          moved = ports[0]?.vp ?? null;
+        });
+        note.appendChild(zoom);
+      }
+      return;
+    }
     if (!showDiff || !both) return;
     if (status) return note.append(status);
     if (diffProblem) return note.append(diffProblem);
@@ -665,6 +805,15 @@ export function renderImageDiff(container: HTMLElement, props: MountProps, opts:
       return false;
     }
   };
+
+  opts.onReady?.({
+    setMarks(next: ImageMark[]): void {
+      marks = next;
+      for (const layer of markLayers) fillMarks(layer);
+      writeNote();
+    },
+    highlight: light,
+  });
 
   if (both && opts.decodeAnimation) {
     void loadAnimations().then((animated) => {

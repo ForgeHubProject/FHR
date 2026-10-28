@@ -306,3 +306,4 @@ Cargo.lock
 # and the release workflow builds forge-handler-<id>_<os>-<arch> there too.
 packages/handler-*/handler-*
 packages/handler-*/forge-handler-*
+.figcraft-fonts/

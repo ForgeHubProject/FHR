@@ -67,6 +67,19 @@ export const IMAGE_STYLE = `
 .fhr-img__cell[aria-current="true"] { border-color: var(--fhr-accent); background: rgba(9,105,218,0.16); }
 .fhr-img__frameinfo { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; margin-top: 4px;
   font-size: 12px; color: var(--fhr-muted); }
+.fhr-img__marks { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 1; }
+.fhr-img__zoom, .fhr-img__divider, .fhr-img__badge { z-index: 2; }
+.fhr-img__mark { position: absolute; box-sizing: border-box; border: 2px solid; border-radius: 3px; pointer-events: auto; cursor: pointer; }
+.fhr-img__mark--modified { border-color: #d4a72c; }
+.fhr-img__mark--added { border-color: #1a7f37; }
+.fhr-img__mark--removed { border-color: #cf222e; }
+.fhr-img__mark--layout { border-color: #8c959f; border-style: dashed; }
+.fhr-img[data-theme="dark"] .fhr-img__mark--modified { border-color: #e3b341; }
+.fhr-img[data-theme="dark"] .fhr-img__mark--added { border-color: #3fb950; }
+.fhr-img[data-theme="dark"] .fhr-img__mark--removed { border-color: #f85149; }
+.fhr-img__mark--hot { border-width: 3px; background: rgba(212,167,44,0.16); }
+.fhr-img__mark--added.fhr-img__mark--hot { background: rgba(26,127,55,0.16); }
+.fhr-img__mark--removed.fhr-img__mark--hot { background: rgba(207,34,46,0.16); }
 .fhr-img__meta { margin-top: 12px; }
 .fhr-img__meta:empty { display: none; }
 `;
