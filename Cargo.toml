@@ -2,7 +2,7 @@
 # handlers written in Rust. Go handlers keep their own go.mod each.
 [workspace]
 resolver = "2"
-members = ["packages/rust/fhr", "packages/example-handler-rust"]
+members = ["packages/rust/fhr", "packages/example-handler-rust", "packages/handler-figcraft"]
 
 [workspace.package]
 edition = "2021"
