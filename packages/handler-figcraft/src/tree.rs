@@ -206,6 +206,21 @@ pub(crate) fn changes(base: &Loaded, head: &Loaded) -> Result<Vec<DiffChange>, S
     Ok(out)
 }
 
+/// The screen layer `id` is on: the outermost frame holding it (past any
+/// sections), else the page's own layer that holds it. A page is on no screen.
+/// The preview draws the same screens the diff groups by.
+pub(crate) fn screen_of(doc: &Document, id: NodeId) -> Option<NodeId> {
+    let page = doc.page_of(id)?;
+    if page == id {
+        return None;
+    }
+    doc.top_level_frame(id).or_else(|| {
+        std::iter::once(id)
+            .chain(doc.ancestors(id))
+            .find(|c| doc.node(*c).and_then(|n| n.parent) == Some(page))
+    })
+}
+
 /// Rows being placed.
 struct Tree<'a> {
     b: &'a Document,
@@ -228,15 +243,7 @@ impl Tree<'_> {
         if page == id || self.created.contains(&page) || self.deleted.contains(&page) {
             return Place::Top;
         }
-        let mut chain = vec![id];
-        chain.extend(doc.ancestors(id));
-        let screen = doc.top_level_frame(id).or_else(|| {
-            chain
-                .iter()
-                .copied()
-                .find(|c| doc.node(*c).and_then(|n| n.parent) == Some(page))
-        });
-        match screen {
+        match screen_of(doc, id) {
             Some(s) if !self.created.contains(&s) && !self.deleted.contains(&s) && s != id => {
                 Place::Screen(page, s)
             }
