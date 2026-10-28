@@ -23,7 +23,7 @@ export const IMAGE_STYLE = `
 .fhr-img__link { padding: 0; border: 0; background: none; color: var(--fhr-accent); cursor: pointer; font-size: 12px; }
 .fhr-img__link:hover { text-decoration: underline; }
 .fhr-img__panes { display: flex; flex-wrap: wrap; gap: 12px; }
-.fhr-img__pane { flex: 1 1 280px; min-width: 0; }
+.fhr-img__pane { flex: 1 1 160px; min-width: 0; }
 .fhr-img__label { display: flex; gap: 8px; font-size: 12px; color: var(--fhr-muted); margin-bottom: 4px; }
 .fhr-img__label strong { color: inherit; font-weight: 600; }
 .fhr-img__port { position: relative; overflow: hidden; border: 1px solid var(--fhr-line); border-radius: 6px;
