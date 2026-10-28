@@ -16,11 +16,14 @@
 //!   cargo build --release -p handler-figcraft                                  # forge-handler-figcraft
 //!   cargo build --release -p handler-figcraft --lib --target wasm32-unknown-unknown
 
+mod preview;
 mod tree;
 mod values;
 
 use fhr::{Capabilities, Handler, Info, StructuredDiff};
+
 use figcraft_format::Loaded;
+pub use preview::CHUNK_KEYWORD;
 
 /// The handler id, also the `format` of every diff it answers.
 pub const ID: &str = "figcraft";
@@ -32,10 +35,19 @@ fhr::export_wasm!(FigCraft, FigCraft);
 
 impl Handler for FigCraft {
     fn info(&self) -> Info {
-        Info::new(ID, [".figcraft"]).capabilities(Capabilities {
-            semantic_compare: true,
-            ..Capabilities::default()
-        })
+        Info::new(ID, [".figcraft"])
+            .capabilities(Capabilities {
+                semantic_compare: true,
+                ..Capabilities::default()
+            })
+            .preview("image/png")
+    }
+
+    /// Every screen drawn on one PNG sheet, with where each screen and each of
+    /// its layers is (see preview.rs): what the renderer compares.
+    fn preview(&self, blob: &[u8]) -> Result<Vec<u8>, String> {
+        let file = load(blob)?;
+        preview::sheet(&file.doc)
     }
 
     fn diff(&self, base: &[u8], head: &[u8]) -> Result<StructuredDiff, String> {

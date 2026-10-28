@@ -84,6 +84,31 @@ jobs:
           rustup default stable
           rustup target add ${{ matrix.target }}
 
+      # The fonts the preview draws text with (packages/handler-figcraft/fonts.sh):
+      # Inter from craft-fonts, at one pinned commit like FigCraft's crates.
+      - name: Fonts
+        uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-fonts
+          ref: aced4137c022f1f587624d48e81ec77e1914a9cc
+          path: craft-fonts
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            fonts/inter/
+            fonts/noto-sans-georgian/
+            fonts/manifest.txt
+            fonts/latin-manifest.txt
+
+      - name: Font set
+        shell: bash
+        run: |
+          out="$PWD/.figcraft-fonts"
+          sh packages/handler-figcraft/fonts.sh craft-fonts "$out"
+          # Windows: cargo reads the path natively, so give it C:/… rather than /c/….
+          if command -v cygpath >/dev/null; then out="$(cygpath -m "$out")"; fi
+          echo "CRAFT_FONTS_DIR=$out" >> "$GITHUB_ENV"
+          echo "CRAFT_FONTS_REQUIRED=1" >> "$GITHUB_ENV"
+
       - name: Build
         shell: bash
         env:

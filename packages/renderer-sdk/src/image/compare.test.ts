@@ -325,3 +325,63 @@ describe("animated images", () => {
     expect(m.layers().map((l) => l.attributes["src"])).toEqual(["blob:head"]);
   });
 });
+
+describe("image compare marks (a structured format's outlines)", () => {
+  const marks = [
+    { key: "layers/4", side: "base" as const, x: 10, y: 20, w: 30, h: 40, kind: "modified" as const, label: "Sun" },
+    { key: "layers/4", side: "head" as const, x: 12, y: 20, w: 30, h: 40, kind: "modified" as const, label: "Sun" },
+    { key: "layers/9", side: "head" as const, x: 0, y: 0, w: 5, h: 5, kind: "added" as const },
+    { key: "layers/7", side: "base" as const, x: 50, y: 50, w: 10, h: 10, kind: "removed" as const },
+  ];
+  const keysOf = (m: ReturnType<typeof mount>) => m.all("fhr-img__mark").map((b) => `${b.attributes["data-key"]}:${b.className.split(" ")[1]}`);
+
+  it("outlines instead of tinting pixels, only once differences are shown", () => {
+    const m = mount(both, { marks });
+    expect(m.all("fhr-img__mark")).toEqual([]);
+    m.flip("Show differences", true);
+    // The after image: its own marks, and where the removed layer was.
+    expect(keysOf(m)).toEqual(["layers/4:fhr-img__mark--modified", "layers/9:fhr-img__mark--added", "layers/7:fhr-img__mark--removed"]);
+    expect(m.all("fhr-img__overlay")).toEqual([]);
+    expect(m.all("fhr-img__note")[0]!.allText()).toContain("3 changes outlined.");
+    m.flip("Show differences", false);
+    expect(m.all("fhr-img__mark")).toEqual([]);
+  });
+
+  it("gives each side-by-side pane its own side's marks", () => {
+    const m = mount(both, { marks, view: "side-by-side" });
+    m.flip("Show differences", true);
+    const panes = m.all("fhr-img__pane");
+    const keys = (p: FakeElement) => p.byClass("fhr-img__mark").map((b) => b.attributes["data-key"]);
+    expect(keys(panes[0]!)).toEqual(["layers/4", "layers/7"]);
+    expect(keys(panes[1]!)).toEqual(["layers/4", "layers/9"]);
+  });
+
+  it("places an outline in window space around its box", () => {
+    const m = mount(both, { marks: [marks[1]!] });
+    m.flip("Show differences", true);
+    const box = m.all("fhr-img__mark")[0]!;
+    // Zoom 1 before anything loads: the box, grown by the 2 px border.
+    expect([box.style["left"], box.style["top"], box.style["width"], box.style["height"]]).toEqual(["10px", "18px", "34px", "44px"]);
+    expect(box.attributes["title"]).toBe("Sun");
+  });
+
+  it("reports pointing and picking, lights a change's outlines on both sides, and takes new marks", () => {
+    const seen: [string | null, boolean][] = [];
+    let control: { setMarks(m: typeof marks): void; highlight(k: string | null): void } | undefined;
+    const m = mount(both, { marks, view: "side-by-side", onMark: (k, p) => seen.push([k, p]), onReady: (c) => (control = c) });
+    m.flip("Show differences", true);
+    const sun = () => m.all("fhr-img__mark").filter((b) => b.attributes["data-key"] === "layers/4");
+    sun()[0]!.fire("pointerenter");
+    expect(sun().every((b) => b.className.includes("fhr-img__mark--hot"))).toBe(true);
+    sun()[0]!.fire("click");
+    sun()[0]!.fire("pointerleave");
+    expect(seen).toEqual([["layers/4", false], ["layers/4", true], [null, false]]);
+    expect(sun().some((b) => b.className.includes("fhr-img__mark--hot"))).toBe(false);
+
+    control!.highlight("layers/7");
+    expect(m.all("fhr-img__mark--hot").map((b) => b.attributes["data-key"])).toEqual(["layers/7"]);
+    control!.setMarks([marks[2]!]);
+    expect(keysOf(m)).toEqual(["layers/9:fhr-img__mark--added"]);
+    expect(m.all("fhr-img__note")[0]!.allText()).toContain("1 change outlined.");
+  });
+});

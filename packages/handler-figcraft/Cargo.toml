@@ -21,7 +21,10 @@ fhr = { workspace = true }
 serde_json = { workspace = true }
 # FigCraft reads its own files: the document model, the .figcraft archive, and
 # the property-level diff its real-time collaboration syncs. One pinned commit
-# for all three; bump them together.
+# for all of its crates; bump them together.
 figcraft-doc = { git = "https://github.com/storytold/figcraft", rev = "43af145a12eacd1e87f5f5e6984c49b7da040288" }
 figcraft-format = { git = "https://github.com/storytold/figcraft", rev = "43af145a12eacd1e87f5f5e6984c49b7da040288" }
 figcraft-collab = { git = "https://github.com/storytold/figcraft", rev = "43af145a12eacd1e87f5f5e6984c49b7da040288" }
+# The preview draws the screens with FigCraft's own renderer and text layout.
+figcraft-render = { git = "https://github.com/storytold/figcraft", rev = "43af145a12eacd1e87f5f5e6984c49b7da040288" }
+figcraft-text = { git = "https://github.com/storytold/figcraft", rev = "43af145a12eacd1e87f5f5e6984c49b7da040288" }
