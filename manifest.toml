@@ -23,7 +23,7 @@ maintainer  = "ForgeHub Project"
 ".3mf"  = { handler = "3mf", build = "9164e86" }
 ".off"  = { handler = "off", build = "9164e86" }
 ".dae"  = { handler = "dae", build = "9164e86" }
-".x3d"  = { handler = "x3d", build = "9164e86" }
+".x3d"  = { handler = "x3d", build = "9778ef3" }
 ".fbx"  = { handler = "fbx", build = "9164e86" }
 ".usd"  = { handler = "usd", build = "9164e86" }
 ".usda" = { handler = "usd", build = "9164e86" }
