@@ -1,0 +1,233 @@
+name: Release figcraft handler
+
+on:
+  # Manual trigger — rerun the rolling release without a code change.
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - 'packages/handler-figcraft/**'
+      # The shared Rust SDK and the workspace's pinned dependencies are
+      # compiled into this handler's binaries.
+      - 'packages/rust/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'packages/renderer-figcraft/**'
+      - 'packages/renderer-sdk/**'
+      - 'packages/types/**'
+      # Include this workflow so changes to how the release is built/published
+      # actually trigger a rebuild.
+      - '.github/workflows/release-handler-figcraft.yml'
+  # The builds also run on pull requests: CI's Rust lane builds Linux and
+  # wasm only, and a Rust handler can break on macOS or Windows alone.
+  # Nothing is published from a pull request.
+  pull_request:
+    paths:
+      - 'packages/handler-figcraft/**'
+      # The shared Rust SDK and the workspace's pinned dependencies are
+      # compiled into this handler's binaries.
+      - 'packages/rust/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'packages/renderer-figcraft/**'
+      - 'packages/renderer-sdk/**'
+      - 'packages/types/**'
+      - '.github/workflows/release-handler-figcraft.yml'
+
+permissions:
+  contents: write
+
+# One release run per handler at a time, so two pushes can't interleave
+# their tag moves and uploads on figcraft-latest.
+concurrency:
+  group: release-handler-figcraft-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Static Linux binaries (musl): they run on any distribution.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset: forge-handler-figcraft_linux-amd64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: forge-handler-figcraft_linux-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: forge-handler-figcraft_darwin-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: forge-handler-figcraft_darwin-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: forge-handler-figcraft_windows-amd64.exe
+          # The language-neutral wasm build (fhr-wasm-1, SPEC §7): the library
+          # as a wasm32 module, the one ForgeHub loads. There is no Go js
+          # build of a Rust handler.
+          - os: ubuntu-latest
+            target: wasm32-unknown-unknown
+            asset: forge-handler-figcraft.fhr1.wasm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: symbols
+        run: |
+          case "${{ matrix.target }}" in
+            wasm32-*)
+              cargo build --locked --release -p handler-figcraft --lib --target ${{ matrix.target }}
+              out=handler_figcraft.wasm ;;
+            *windows*)
+              cargo build --locked --release -p handler-figcraft --bin forge-handler-figcraft --target ${{ matrix.target }}
+              out=forge-handler-figcraft.exe ;;
+            *)
+              cargo build --locked --release -p handler-figcraft --bin forge-handler-figcraft --target ${{ matrix.target }}
+              out=forge-handler-figcraft ;;
+          esac
+          cp "target/${{ matrix.target }}/release/$out" "${{ matrix.asset }}"
+
+      # A handler binary that starts and answers is the check worth having on
+      # every platform: the subprocess protocol's `info`. (Cross-built targets
+      # that this runner can't execute skip it.)
+      - name: Smoke test
+        if: matrix.target != 'wasm32-unknown-unknown' && matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: ./${{ matrix.asset }} info
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  build-renderer:
+    name: Build renderer bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install workspace deps
+        run: npm ci
+
+      - name: Build renderer (types → sdk → renderer)
+        run: |
+          npm run build --workspace @fhr/types
+          npm run build --workspace @fhr/renderer-sdk
+          BUILD_SHA="$(git rev-parse --short HEAD)" npm run build --workspace @fhr/renderer-figcraft
+          cp packages/renderer-figcraft/dist/renderer.js renderer-figcraft.js
+
+      - name: Upload renderer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderer-figcraft.js
+          path: renderer-figcraft.js
+
+  release:
+    name: Publish rolling release
+    if: github.event_name != 'pull_request'
+    needs: [build, build-renderer]
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.short }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Update the rolling release in place; never delete it (see
+      # release-handler-toml.yml and #84 for the race deleting it caused).
+      - name: Move the rolling tag to this commit
+        run: |
+          git tag -f figcraft-latest
+          git push -f origin refs/tags/figcraft-latest
+
+      - name: Create or update the rolling release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="figcraft (latest)"
+          notes="Rolling release — always points to the latest build from main. Includes native binaries, the fhr-wasm-1 module, and the renderer bundle."
+          if gh release view figcraft-latest >/dev/null 2>&1; then
+            gh release upload figcraft-latest dist/* --clobber
+            # --clobber only replaces same-named assets. Drop any this build no
+            # longer produces, after the upload so a current asset is never
+            # missing, and the release mirrors dist/.
+            gh release view figcraft-latest --json assets --jq '.assets[].name' |
+              while IFS= read -r asset; do
+                [ -e "dist/$asset" ] || gh release delete-asset figcraft-latest "$asset" --yes
+              done
+            gh release edit figcraft-latest --title "$title" --notes "$notes" --draft=false
+          else
+            gh release create figcraft-latest dist/* --title "$title" --notes "$notes" --verify-tag
+          fi
+
+      - name: Check the release matches the build exactly
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          want=$(ls dist | sort)
+          have=$(gh release view figcraft-latest --json assets --jq '.assets[].name' | sort)
+          if [ "$want" != "$have" ]; then
+            echo "figcraft-latest does not match this build (< built, > on the release):" >&2
+            diff <(echo "$want") <(echo "$have") >&2 || true
+            exit 1
+          fi
+
+  update-manifest:
+    name: Update manifest build SHA
+    if: github.event_name != 'pull_request'
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Re-applied from scratch on every attempt: other handlers' releases bump
+      # this same file (see release-handler-toml.yml).
+      - name: Bump build SHA in manifest.toml
+        env:
+          SHA: ${{ needs.release.outputs.sha }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git fetch --quiet origin main
+            git reset --quiet --hard origin/main
+            sed -i 's/\(handler = "figcraft", build = "\)[^"]*"/\1'"$SHA"'"/' manifest.toml
+            git add manifest.toml
+            git diff --cached --quiet && exit 0
+            git commit --quiet -m "chore: update figcraft build SHA to $SHA"
+            git push --quiet origin HEAD:main && exit 0
+            sleep $((attempt * 5))
+          done
+          echo "could not push the manifest bump after 5 attempts" >&2
+          exit 1

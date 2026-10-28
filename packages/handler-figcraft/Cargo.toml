@@ -1,0 +1,27 @@
+[package]
+name = "handler-figcraft"
+version = "0.1.0"
+edition.workspace = true
+# FigCraft's own crates need Rust 1.95 (edition 2024).
+rust-version = "1.95"
+publish = false
+description = "FHR handler for FigCraft design files (.figcraft): what changed, page by page and screen by screen, read with FigCraft's own libraries"
+
+# The library is the handler, and as a cdylib for wasm32 it is the fhr-wasm-1
+# module ForgeHub runs. The binary is the subprocess protocol forge runs.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "forge-handler-figcraft"
+path = "src/main.rs"
+
+[dependencies]
+fhr = { workspace = true }
+serde_json = { workspace = true }
+# FigCraft reads its own files: the document model, the .figcraft archive, and
+# the property-level diff its real-time collaboration syncs. One pinned commit
+# for all three; bump them together.
+figcraft-doc = { git = "https://github.com/storytold/figcraft", rev = "43af145a12eacd1e87f5f5e6984c49b7da040288" }
+figcraft-format = { git = "https://github.com/storytold/figcraft", rev = "43af145a12eacd1e87f5f5e6984c49b7da040288" }
+figcraft-collab = { git = "https://github.com/storytold/figcraft", rev = "43af145a12eacd1e87f5f5e6984c49b7da040288" }

@@ -43,6 +43,7 @@ maintainer  = "ForgeHub Project"
 ".gif"  = { handler = "gif", build = "9164e86" }
 ".toml" = { handler = "toml", build = "9164e86" }
 ".json" = { handler = "json", build = "9164e86" }
+".figcraft" = { handler = "figcraft", build = "0000000" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
@@ -352,6 +353,18 @@ maintainer  = "ForgeHub Project"
 "wasm"          = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json.wasm"
 "wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/json-latest/forge-handler-json.fhr1.wasm"
 
+# The figcraft handler — rolling release `figcraft-latest`, overwritten on each
+# push to main that touches packages/handler-figcraft/. Written in Rust on the
+# fhr SDK with FigCraft's own libraries, so it ships no Go js build: ForgeHub
+# runs the fhr-wasm-1 module.
+[assets.handlers."figcraft"]
+"linux-amd64"   = "https://github.com/forgehubproject/fhr/releases/download/figcraft-latest/forge-handler-figcraft_linux-amd64"
+"linux-arm64"   = "https://github.com/forgehubproject/fhr/releases/download/figcraft-latest/forge-handler-figcraft_linux-arm64"
+"darwin-amd64"  = "https://github.com/forgehubproject/fhr/releases/download/figcraft-latest/forge-handler-figcraft_darwin-amd64"
+"darwin-arm64"  = "https://github.com/forgehubproject/fhr/releases/download/figcraft-latest/forge-handler-figcraft_darwin-arm64"
+"windows-amd64" = "https://github.com/forgehubproject/fhr/releases/download/figcraft-latest/forge-handler-figcraft_windows-amd64.exe"
+"wasm-fhr1"     = "https://github.com/forgehubproject/fhr/releases/download/figcraft-latest/forge-handler-figcraft.fhr1.wasm"
+
 # ── Renderers ─────────────────────────────────────────────────────────────────
 # Self-contained ESM bundles (one per handler, not platform-keyed) that render a
 # StructuredDiff in the browser. Consumed by ForgeHub web and forge's local
@@ -383,3 +396,4 @@ maintainer  = "ForgeHub Project"
 "gif"        = "https://github.com/forgehubproject/fhr/releases/download/gif-latest/renderer-gif.js"
 "toml"       = "https://github.com/forgehubproject/fhr/releases/download/toml-latest/renderer-toml.js"
 "json"       = "https://github.com/forgehubproject/fhr/releases/download/json-latest/renderer-json.js"
+"figcraft"   = "https://github.com/forgehubproject/fhr/releases/download/figcraft-latest/renderer-figcraft.js"
