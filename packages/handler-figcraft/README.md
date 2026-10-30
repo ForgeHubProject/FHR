@@ -59,11 +59,38 @@ looks the same previewed on the server, in a browser or by forge: Inter
 as `CRAFT_FONTS_DIR`, and without it text isn't drawn. The release workflow
 fetches the fonts at a pinned commit.
 
-## Not yet
+## Merge: two branches of a design
 
-- **merge**: FigCraft's core can three-way merge (`figcraft_collab::merge`),
-  but layers added on both branches get the same new id, so the merge refuses
-  them. Giving each branch its own id space first is the open question.
+`merge` runs FigCraft's own three-way merge (`figcraft_collab::merge`, the one
+its in-app branches use). Each side's changes since the common version are
+kept, property by property; lists whose items stand on their own (fills,
+strokes, effects…) merge item by item. A conflict is the same property changed
+both ways, or a layer deleted on one side and edited on the other. The result
+holds ours at every conflict, and each conflict is reported with its path in
+the diff (`layers/18/kind`, `layers/23`, `document/styles/S:4`) and both
+values. The merged file keeps ours' name, page to open on and in-file history,
+and has no thumbnail until FigCraft next saves it.
+
+Outside a live session FigCraft numbers a new layer one above the highest in
+the file, so two branches made from the same commit number their new layers
+alike: layer 144 is a screen on one branch and a button on the other. Before
+merging, theirs' new layers and comments that clash with ours get numbers
+nobody uses, and everything that points at them follows: the tree, instances
+and the layers that mirror a component, component properties, prototype links
+and flows, measurements, board connectors, pattern fills, comments, dev
+snapshots, votes and library copies. Ours, the branch merged into, keeps its
+numbers. The renumbering names every field of FigCraft's layer model, so a
+FigCraft update that adds one doesn't compile until it is looked at.
+
+Limits:
+
+- A layer theirs added keeps its new number only in the merged file. A branch
+  that keeps going after the merge still has the old one, so merge the target
+  back into it before its next round of edits (or start a fresh branch).
+- Styles, variables and variable collections added on both sides get the same
+  id too, and are reported as a conflict rather than renumbered.
+- `apply-choices` isn't answered yet: taking theirs at a conflict needs the
+  renumbering, which only the merge knows.
 
 ## Building
 

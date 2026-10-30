@@ -7,6 +7,10 @@
 //! Layers keep persistent ids across saves, so a renamed, moved or restyled
 //! layer is the same layer on both sides.
 //!
+//! Two branches of a design merge with FigCraft's own three-way merge
+//! (merge.rs): both sides' edits are kept, and the same property changed both
+//! ways is reported as a conflict.
+//!
 //! The answer reads the way a designer looks at a file: page, then screen (the
 //! top-level frame), then layer, then property — "Text: Sign up → Create
 //! account", a fill as a colour chip, a move as a position delta. What auto
@@ -16,11 +20,13 @@
 //!   cargo build --release -p handler-figcraft                                  # forge-handler-figcraft
 //!   cargo build --release -p handler-figcraft --lib --target wasm32-unknown-unknown
 
+mod merge;
 mod preview;
+mod renumber;
 mod tree;
 mod values;
 
-use fhr::{Capabilities, Handler, Info, StructuredDiff};
+use fhr::{Capabilities, Handler, Info, Merged, StructuredDiff};
 
 use figcraft_format::Loaded;
 pub use preview::CHUNK_KEYWORD;
@@ -38,6 +44,7 @@ impl Handler for FigCraft {
         Info::new(ID, [".figcraft"])
             .capabilities(Capabilities {
                 semantic_compare: true,
+                semantic_merge: true,
                 ..Capabilities::default()
             })
             .preview("image/png")
@@ -48,6 +55,10 @@ impl Handler for FigCraft {
     fn preview(&self, blob: &[u8]) -> Result<Vec<u8>, String> {
         let file = load(blob)?;
         preview::sheet(&file.doc)
+    }
+
+    fn merge(&self, base: &[u8], ours: &[u8], theirs: &[u8]) -> Result<Merged, String> {
+        merge::merge(base, ours, theirs)
     }
 
     fn diff(&self, base: &[u8], head: &[u8]) -> Result<StructuredDiff, String> {
