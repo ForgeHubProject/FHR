@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 fhr = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 # FigCraft reads its own files: the document model, the .figcraft archive, and
 # the property-level diff its real-time collaboration syncs. One pinned commit

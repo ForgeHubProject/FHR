@@ -429,6 +429,19 @@ fn doc_prop_leaves(prop: DocProp, before: Option<&Value>, after: &Value) -> Vec<
     }
 }
 
+/// The path of a document entry's row (and of a merge conflict on it).
+pub(crate) fn entry_path(entry: &Entry) -> String {
+    match entry {
+        Entry::Style(id) => format!("document/styles/{id}"),
+        Entry::Collection(id) => format!("document/collections/{id}"),
+        Entry::Variable(id) => format!("document/variables/{id}"),
+        Entry::Comment(n) => format!("document/comments/{n}"),
+        Entry::Image(hash) => format!("document/images/{hash}"),
+        Entry::DevSnapshot(id) => format!("document/devSnapshots/{id}"),
+        Entry::Ballot(voter) => format!("document/ballots/{voter}"),
+    }
+}
+
 /// A style, variable, collection, comment or image added, changed or removed.
 fn entry_row(entry: &Entry, before: Option<&Value>, after: Option<&Value>) -> Option<DiffChange> {
     let either = after.or(before);
@@ -436,28 +449,17 @@ fn entry_row(entry: &Entry, before: Option<&Value>, after: Option<&Value>) -> Op
         .and_then(|v| v.get("name"))
         .and_then(Value::as_str)
         .map(|n| format!("\"{n}\""));
-    let (path, label) = match entry {
-        Entry::Style(id) => (
-            format!("document/styles/{id}"),
-            format!("Style {}", name.unwrap_or_default()),
-        ),
-        Entry::Collection(id) => (
-            format!("document/collections/{id}"),
-            format!("Variable collection {}", name.unwrap_or_default()),
-        ),
-        Entry::Variable(id) => (
-            format!("document/variables/{id}"),
-            format!("Variable {}", name.unwrap_or_default()),
-        ),
-        Entry::Comment(n) => (format!("document/comments/{n}"), format!("Comment #{n}")),
-        Entry::Image(hash) => (
-            format!("document/images/{hash}"),
-            format!("Image {}", values::clip(hash, 8).trim_end_matches('…')),
-        ),
+    let label = match entry {
+        Entry::Style(_) => format!("Style {}", name.unwrap_or_default()),
+        Entry::Collection(_) => format!("Variable collection {}", name.unwrap_or_default()),
+        Entry::Variable(_) => format!("Variable {}", name.unwrap_or_default()),
+        Entry::Comment(n) => format!("Comment #{n}"),
+        Entry::Image(hash) => format!("Image {}", values::clip(hash, 8).trim_end_matches('…')),
         // What a ready-for-dev layer looked like, and a board's vote: kept
         // for FigCraft's own views, not design changes.
         Entry::DevSnapshot(_) | Entry::Ballot(_) => return None,
     };
+    let path = entry_path(entry);
     let label = label.trim_end().to_string();
     Some(match (before, after) {
         (None, Some(v)) => {

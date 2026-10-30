@@ -88,12 +88,12 @@ fn paths(changes: &[DiffChange]) -> Vec<&str> {
 }
 
 #[test]
-fn info_declares_figcraft_files_and_a_semantic_compare() {
+fn info_declares_figcraft_files_a_semantic_compare_and_merge() {
     let info = serde_json::to_value(FigCraft.info()).unwrap();
     assert_eq!(info["id"], "figcraft");
     assert_eq!(info["formats"], json!([".figcraft"]));
     assert_eq!(info["capabilities"]["semanticCompare"], true);
-    assert_eq!(info["capabilities"]["semanticMerge"], false);
+    assert_eq!(info["capabilities"]["semanticMerge"], true);
 }
 
 #[test]
