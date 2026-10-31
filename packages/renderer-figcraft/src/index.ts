@@ -111,9 +111,15 @@ async function sheetOf(url: string | undefined): Promise<Loaded | null> {
     const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
     const sheet = readSheet(bytes);
     if (!sheet) return null;
+    // Loaded, not decode()d: Chromium holds decode() back while the page isn't
+    // drawn (a background tab), and drawing a loaded image decodes it anyway.
     const image = new Image();
+    const loaded = new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("the preview did not load as an image"));
+    });
     image.src = url;
-    await image.decode();
+    await loaded;
     return { sheet, image };
   } catch {
     return null;
