@@ -570,6 +570,7 @@ dependencies = [
  "figcraft-format",
  "figcraft-render",
  "figcraft-text",
+ "serde",
  "serde_json",
 ]
 
