@@ -103,3 +103,52 @@ describe("the diff, by screen", () => {
     expect(markKey("document/styles/S:1")).toBeNull();
   });
 });
+
+describe("a page added or removed whole", () => {
+  // A new file: its page is one added row, and the document's styles another.
+  const added: StructuredDiff = {
+    version: "1.0",
+    format: "figcraft",
+    changes: [
+      { path: "pages/1", kind: "added", label: 'Page "Foundations"', after: "362 layers" },
+      { path: "document", kind: "modified", label: "Document", children: [{ path: "document/styles/S:1", kind: "added", label: 'Style "Pine/50"' }] },
+    ],
+  };
+  const sheet: Sheet = {
+    v: 1, scale: 1,
+    screens: [
+      { ...screen(2, "Foundations", { "2": [0, 0, 1440, 3008], "3": [40, 40, 200, 40] }), w: 1440, h: 3008 },
+      { ...screen(363, "Export/Colour ramps", { "363": [0, 0, 1392, 549] }), x: 1440, w: 1392, h: 549 },
+      { ...screen(400, "Elsewhere", { "400": [0, 0, 10, 10] }), page: 9 },
+    ],
+  };
+
+  it("shows each of its screens, new and whole", () => {
+    const { screens, other } = screenViews(added, null, sheet);
+    expect(screens.map((s) => [s.name, s.status, s.marks.length])).toEqual([
+      ["Foundations", "added", 0],
+      ["Export/Colour ramps", "added", 0],
+    ]);
+    expect(screens[0]!.changes).toEqual([{ path: "layers/2", kind: "added", label: 'Screen "Foundations"', after: "2 layers" }]);
+    expect(screens[0]!.head).toBe(sheet.screens[0]);
+    expect(screens[0]!.base).toBeNull();
+    expect(other.map((c) => c.path)).toEqual(["document"]);
+  });
+
+  it("shows a deleted page's screens as removed, from the sheet before", () => {
+    const removed: StructuredDiff = { ...added, changes: [{ path: "pages/1", kind: "removed", label: 'Page "Foundations"', before: "362 layers" }] };
+    const { screens, other } = screenViews(removed, sheet, null);
+    expect(screens.map((s) => [s.name, s.status])).toEqual([
+      ["Foundations", "removed"],
+      ["Export/Colour ramps", "removed"],
+    ]);
+    expect(screens[1]!.changes[0]).toMatchObject({ kind: "removed", before: "1 layer" });
+    expect(other).toEqual([]);
+  });
+
+  it("keeps a page with nothing drawn on the sheet as a row", () => {
+    const { screens, other } = screenViews(added, null, { v: 1, scale: 1, screens: [] });
+    expect(screens).toEqual([]);
+    expect(other.map((c) => c.path)).toEqual(["pages/1", "document"]);
+  });
+});

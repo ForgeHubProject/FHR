@@ -2,6 +2,7 @@
 // screen, and where each change is on the screen's before and after images.
 //
 // The handler groups its tree page → screen → layer, with stable paths:
+// `pages/<id>` for a page (one row for a page added or removed whole),
 // `screens/<id>` for a screen's group, `layers/<id>` for a layer's changes (or
 // a layer added or removed), `layout/<id>` for what auto layout moved. The
 // preview sheets say which screen each layer id is on, and where.
@@ -25,6 +26,7 @@ export type ScreenView = {
   head: SheetScreen | null;
 };
 
+const PAGE = /^pages\/(\d+)$/;
 const SCREEN = /^screens\/(\d+)$/;
 const LAYER = /^(layers|layout)\/(\d+)$/;
 
@@ -53,10 +55,23 @@ export function screenViews(diff: StructuredDiff, base: Sheet | null, head: Shee
     list.push(...nodes);
     assigned.set(sid, list);
   };
+  // A page added or removed whole (every page of a new or deleted file) is one
+  // row; its screens are on one sheet, each new or removed as a whole.
+  const wholePage = (n: DiffChange): SheetScreen[] => {
+    const page = PAGE.exec(n.path);
+    if (!page || (n.kind !== "added" && n.kind !== "removed")) return [];
+    const sheet = n.kind === "added" ? head : base;
+    return (sheet?.screens ?? []).filter((s) => s.page === Number(page[1]));
+  };
   const onScreens = (n: DiffChange): boolean =>
     SCREEN.test(n.path) || LAYER.test(n.path) || (n.children ?? []).some(onScreens);
   const walk = (nodes: DiffChange[]): void => {
     for (const n of nodes) {
+      const whole = wholePage(n);
+      if (whole.length) {
+        for (const s of whole) assign(s.id, [screenRow(s, n.kind)]);
+        continue;
+      }
       const screen = SCREEN.exec(n.path);
       if (screen) {
         // A screen neither preview drew has no images to show its changes on.
@@ -96,6 +111,13 @@ export function screenViews(diff: StructuredDiff, base: Sheet | null, head: Shee
     });
   }
   return { screens, other };
+}
+
+/** The row of a screen added or removed with its page: "Screen "Foundations" → 361 layers". */
+function screenRow(s: SheetScreen, kind: DiffChange["kind"]): DiffChange {
+  const layers = Object.keys(s.layers).length;
+  const size = `${layers} layer${layers === 1 ? "" : "s"}`;
+  return { path: `layers/${s.id}`, kind, label: `Screen "${s.name}"`, ...(kind === "added" ? { after: size } : { before: size }) };
 }
 
 /** A screen's outlines: every layer row in its changes, on each side it is on. */
