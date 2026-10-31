@@ -9,7 +9,7 @@
 //! machine's own: the same file draws the same on the server, in a browser and
 //! in forge.
 
-use figcraft_doc::{Document, ExportFormat, NodeId};
+use figcraft_doc::{Document, ExportFormat, NodeId, NodeKind};
 use figcraft_render::Pixmap;
 use serde_json::{json, Map, Value};
 
@@ -132,6 +132,13 @@ fn screens(doc: &Document) -> Vec<Screen> {
             let Some(screen) = screen_of(doc, id) else {
                 continue;
             };
+            // A slice marks an area to export and draws nothing of its own.
+            if doc
+                .node(screen)
+                .is_some_and(|n| matches!(n.kind, NodeKind::Slice))
+            {
+                continue;
+            }
             match out.iter_mut().find(|s| s.id == screen) {
                 Some(s) => s.layers.push(id),
                 None => out.push(Screen {

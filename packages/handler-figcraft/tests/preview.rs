@@ -117,6 +117,34 @@ fn every_screen_is_drawn_side_by_side_with_its_layers_boxes() {
 }
 
 #[test]
+fn a_slice_is_not_a_screen() {
+    let mut doc = Document::new("Foundations");
+    let page = doc.pages[0];
+    add(&mut doc, page, NodeKind::Frame, "Colours", 200.0, 100.0);
+    add(
+        &mut doc,
+        page,
+        NodeKind::Slice,
+        "Export/Colours",
+        200.0,
+        100.0,
+    );
+    let (size, layout) = read(
+        &FigCraft
+            .preview(&figcraft_format::save_bytes(&doc, None).unwrap())
+            .unwrap(),
+    );
+    let names: Vec<&str> = layout["screens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Colours"]);
+    assert_eq!(size, (200, 100));
+}
+
+#[test]
 fn a_file_without_screens_previews_as_an_empty_sheet() {
     let bytes = figcraft_format::save_bytes(&Document::new("Empty"), None).unwrap();
     let ((w, h), layout) = read(&FigCraft.preview(&bytes).unwrap());
