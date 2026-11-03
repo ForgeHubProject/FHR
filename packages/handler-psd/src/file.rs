@@ -149,7 +149,6 @@ pub(crate) struct Layer {
 }
 
 pub(crate) struct Mask {
-    pub rect: Rect,
     pub disabled: bool,
     pub pixels: u64,
 }
@@ -445,22 +444,17 @@ fn record(r: &mut Reader, doc: &Document, index: usize) -> Result<Record> {
         settings: None,
     };
     if channels.iter().any(|(id, _)| *id <= -2) && mask_data.left() >= 18 {
-        let top = mask_data.i32()?;
-        let left = mask_data.i32()?;
-        let bottom = mask_data.i32()?;
-        let right = mask_data.i32()?;
+        mask_data.skip(16)?; // its bounds
         let _default = mask_data.u8()?;
         let flags = mask_data.u8()?;
-        layer.mask = Some(Mask {
-            rect: Rect {
-                left: f64::from(left),
-                top: f64::from(top),
-                right: f64::from(right),
-                bottom: f64::from(bottom),
-            },
-            disabled: flags & 2 != 0,
-            pixels: 0,
-        });
+        // Bit 3: drawn from other data (a shape's vector mask, rendered):
+        // not a mask of its own, and it moves with the layer.
+        if flags & 8 == 0 {
+            layer.mask = Some(Mask {
+                disabled: flags & 2 != 0,
+                pixels: 0,
+            });
+        }
     }
 
     let mut section = 0;

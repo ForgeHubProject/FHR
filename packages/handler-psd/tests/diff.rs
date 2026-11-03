@@ -336,6 +336,44 @@ fn a_pixel_layer_moved_and_repainted_inside_its_group() {
 }
 
 #[test]
+fn a_new_effect_reads_with_its_settings() {
+    let mut head = poster();
+    head[3] = head[3].clone().drop_shadow([0.0, 0.0, 0.0], 75.0);
+    let d = diff(poster(), head);
+    assert_eq!(
+        labels(&d, "layers/6"),
+        [
+            "Drop Shadow",
+            "Drop Shadow colour",
+            "Drop Shadow opacity",
+            "Drop Shadow blend mode",
+            "Drop Shadow size",
+            "Drop Shadow distance",
+            "Drop Shadow angle"
+        ]
+    );
+    assert_eq!(
+        pair(at(&d, "layers/6/drop-shadow")),
+        (json!("none"), json!("on"))
+    );
+    assert_eq!(
+        pair(at(&d, "layers/6/drop-shadow-colour")),
+        (Value::Null, json!([0.0, 0.0, 0.0, 1.0]))
+    );
+    assert_eq!(
+        pair(at(&d, "layers/6/drop-shadow-opacity")),
+        (Value::Null, json!("75%"))
+    );
+    // Turned up later: just what changed.
+    let mut later = poster();
+    later[3] = later[3].clone().drop_shadow([0.0, 0.0, 0.0], 40.0);
+    let mut before = poster();
+    before[3] = before[3].clone().drop_shadow([0.0, 0.0, 0.0], 75.0);
+    let d = diff(before, later);
+    assert_eq!(labels(&d, "layers/6"), ["Drop Shadow opacity"]);
+}
+
+#[test]
 fn hidden_blended_and_renamed() {
     let mut head = poster();
     head[3] = head[3].clone().hidden().blend(b"mul ");

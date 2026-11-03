@@ -435,7 +435,8 @@ fn mask_leaves(out: &mut Vec<Leaf>, b: &Layer, h: &Layer) {
                 on_off(!bm.disabled),
                 on_off(!hm.disabled),
             );
-            if bm.pixels != hm.pixels || bm.rect != hm.rect {
+            // Moved with its layer is no edit of its own: its pixels say.
+            if bm.pixels != hm.pixels {
                 out.push(Leaf::new("Layer mask pixels", "before", "edited"));
             }
         }
@@ -491,38 +492,16 @@ fn effect_leaves(out: &mut Vec<Leaf>, b: Option<&Value>, h: Option<&Value>) {
         }
         let on = |d: &Value| d.get("enab").and_then(Value::as_bool).unwrap_or(true);
         match (find(&be, name), find(&he, name)) {
-            (None, Some(e)) => out.push(Leaf::new(name.clone(), "none", on_off(on(e)))),
+            // A new effect: on, and the settings it was given.
+            (None, Some(e)) => {
+                out.push(Leaf::new(name.clone(), "none", on_off(on(e))));
+                effect_settings(out, name, None, Some(e));
+            }
             (Some(e), None) => out.push(Leaf::new(name.clone(), on_off(on(e)), "removed")),
             (Some(x), Some(y)) if x != y => {
                 let before = out.len();
                 diff(out, name, on_off(on(x)), on_off(on(y)));
-                let chip = |d: &Value| {
-                    d.get("Clr ")
-                        .and_then(colour)
-                        .map_or(Value::Null, |c| json!(c.map(round3)))
-                };
-                diff(out, &format!("{name} colour"), chip(x), chip(y));
-                let pct = |d: &Value| {
-                    dnum(d, "Opct").map_or(Value::Null, |v| json!(format!("{}%", text(&num(v)))))
-                };
-                diff(out, &format!("{name} opacity"), pct(x), pct(y));
-                let mode = |d: &Value| {
-                    d.get("Md  ")
-                        .and_then(Value::as_str)
-                        .map_or(Value::Null, |m| json!(effect_blend(m)))
-                };
-                diff(out, &format!("{name} blend mode"), mode(x), mode(y));
-                for (key, what) in [
-                    ("blur", "size"),
-                    ("Sz  ", "size"),
-                    ("Dstn", "distance"),
-                    ("Ckmt", "spread"),
-                ] {
-                    let v = |d: &Value| dnum(d, key).map_or(Value::Null, num);
-                    diff(out, &format!("{name} {what}"), v(x), v(y));
-                }
-                let angle = |d: &Value| dnum(d, "lagl").map_or(Value::Null, degrees);
-                diff(out, &format!("{name} angle"), angle(x), angle(y));
+                effect_settings(out, name, Some(x), Some(y));
                 if out.len() == before {
                     out.push(Leaf::new(format!("{name} settings"), "before", "edited"));
                 }
@@ -530,6 +509,56 @@ fn effect_leaves(out: &mut Vec<Leaf>, b: Option<&Value>, h: Option<&Value>) {
             _ => {}
         }
     }
+}
+
+/// The settings the Layer Style dialog leads with, where they differ: colour,
+/// opacity, blend mode, size, distance, spread, angle. A side without the
+/// effect reads as none.
+fn effect_settings(out: &mut Vec<Leaf>, name: &str, x: Option<&Value>, y: Option<&Value>) {
+    let side = |d: Option<&Value>, f: &dyn Fn(&Value) -> Option<Value>| {
+        d.and_then(f).unwrap_or(Value::Null)
+    };
+    let chip = |d: &Value| d.get("Clr ").and_then(colour).map(|c| json!(c.map(round3)));
+    diff(
+        out,
+        &format!("{name} colour"),
+        side(x, &chip),
+        side(y, &chip),
+    );
+    let pct = |d: &Value| dnum(d, "Opct").map(|v| json!(format!("{}%", text(&num(v)))));
+    diff(
+        out,
+        &format!("{name} opacity"),
+        side(x, &pct),
+        side(y, &pct),
+    );
+    let mode = |d: &Value| {
+        d.get("Md  ")
+            .and_then(Value::as_str)
+            .map(|m| json!(effect_blend(m)))
+    };
+    diff(
+        out,
+        &format!("{name} blend mode"),
+        side(x, &mode),
+        side(y, &mode),
+    );
+    for (key, what) in [
+        ("blur", "size"),
+        ("Sz  ", "size"),
+        ("Dstn", "distance"),
+        ("Ckmt", "spread"),
+    ] {
+        let v = |d: &Value| dnum(d, key).map(num);
+        diff(out, &format!("{name} {what}"), side(x, &v), side(y, &v));
+    }
+    let angle = |d: &Value| dnum(d, "lagl").map(degrees);
+    diff(
+        out,
+        &format!("{name} angle"),
+        side(x, &angle),
+        side(y, &angle),
+    );
 }
 
 /// Each effect in a layer style, named the way the Layer Style dialog names

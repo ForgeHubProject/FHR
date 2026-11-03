@@ -159,6 +159,35 @@ impl Layer {
         self
     }
 
+    /// A drop shadow in `rgb`, at `opacity` percent.
+    pub fn drop_shadow(mut self, rgb: [f64; 3], opacity: f64) -> Layer {
+        let mut b = 0u32.to_be_bytes().to_vec();
+        b.extend(16u32.to_be_bytes());
+        b.extend(descriptor(
+            "null",
+            vec![
+                ("masterFXSwitch", Item::Bool(true)),
+                (
+                    "DrSh",
+                    Item::Obj(
+                        "DrSh",
+                        vec![
+                            ("enab", Item::Bool(true)),
+                            ("Md  ", Item::Enum("BlnM", "Mltp")),
+                            ("Clr ", colour(rgb)),
+                            ("Opct", Item::Unit("#Prc", opacity)),
+                            ("lagl", Item::Unit("#Ang", 120.0)),
+                            ("Dstn", Item::Unit("#Pxl", 5.0)),
+                            ("blur", Item::Unit("#Pxl", 10.0)),
+                        ],
+                    ),
+                ),
+            ],
+        ));
+        self.blocks.push((*b"lfx2", b));
+        self
+    }
+
     pub fn named(mut self, name: &str) -> Layer {
         self.name = name.into();
         self
@@ -174,6 +203,7 @@ pub enum Item {
     List(Vec<Item>),
     Data(Vec<u8>),
     Enum(&'static str, &'static str),
+    Unit(&'static str, f64),
 }
 
 pub fn colour(rgb: [f64; 3]) -> Item {
@@ -254,6 +284,11 @@ fn write_item(out: &mut Vec<u8>, item: Item) {
             out.extend(b"enum");
             id(out, ty);
             id(out, v);
+        }
+        Item::Unit(unit, v) => {
+            out.extend(b"UntF");
+            out.extend(unit.as_bytes());
+            out.extend(v.to_be_bytes());
         }
     }
 }
