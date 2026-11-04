@@ -44,8 +44,8 @@ maintainer  = "ForgeHub Project"
 ".toml" = { handler = "toml", build = "9778ef3" }
 ".json" = { handler = "json", build = "9778ef3" }
 ".figcraft" = { handler = "figcraft", build = "9c217c8" }
-".psd"  = { handler = "psd", build = "0000000" }
-".psb"  = { handler = "psd", build = "0000000" }
+".psd"  = { handler = "psd", build = "ac5a9b6" }
+".psb"  = { handler = "psd", build = "ac5a9b6" }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Full download URLs for handler binaries.
