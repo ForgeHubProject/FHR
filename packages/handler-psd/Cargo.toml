@@ -1,0 +1,27 @@
+[package]
+name = "handler-psd"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "FHR handler for Photoshop documents (.psd, .psb): what changed, layer by layer, read from Adobe's published file format"
+
+# The library is the handler, and as a cdylib for wasm32 it is the fhr-wasm-1
+# module ForgeHub runs. The binary is the subprocess protocol forge runs.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "forge-handler-psd"
+path = "src/main.rs"
+
+[dependencies]
+fhr = { workspace = true }
+serde_json = { workspace = true }
+# Layer channels Photoshop saved ZIP-compressed.
+miniz_oxide = "0.8"
+# The preview's PNG.
+png = "0.18"
+
+[dev-dependencies]
+png = "0.18"

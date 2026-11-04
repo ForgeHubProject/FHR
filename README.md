@@ -47,7 +47,7 @@ fhr/
 │   │                                #   and scene/ — the shared 3D engine (diff, flatten, Codec)
 │   ├── rust/fhr/                    # Rust SDK: the same entry points (subprocess + fhr-wasm-1)
 │   ├── handler-*/                   # one package per format (csv, ipynb, gltf-scene, the 3D family;
-│   │                                #   Go modules, and Rust crates such as handler-figcraft)
+│   │                                #   Go modules, and Rust crates such as handler-figcraft, handler-psd)
 │   ├── renderer-*/                  # one renderer bundle per format
 │   ├── example-handler-ts/          # skeleton: TypeScript handler (direct import)
 │   └── example-handler-native/      # skeleton: any-language handler (subprocess)
