@@ -575,6 +575,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "handler-psd"
+version = "0.1.0"
+dependencies = [
+ "fhr",
+ "miniz_oxide 0.8.9",
+ "png",
+ "serde_json",
+]
+
+[[package]]
 name = "harfrust"
 version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
