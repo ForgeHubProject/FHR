@@ -450,6 +450,55 @@ fn a_layer_moved_into_a_group_says_which() {
 }
 
 #[test]
+fn layers_moved_into_a_new_group_are_listed_with_it() {
+    // The two texts put in a new group (with a new layer), their order swapped.
+    let mut head = poster();
+    let title = head.remove(0);
+    let caption = head.remove(0);
+    head.insert(
+        0,
+        Layer::group(
+            30,
+            "text group",
+            vec![
+                Layer::pixel(31, "Layer 1", (0, 0, 0, 0), [0, 0, 0, 0]),
+                caption,
+                title,
+            ],
+        ),
+    );
+    let d = diff(poster(), head);
+    let top: Vec<_> = d
+        .changes
+        .iter()
+        .map(|c| (c.path.as_str(), c.kind))
+        .collect();
+    assert_eq!(
+        top,
+        [
+            ("layers/30", ChangeKind::Added),
+            ("layers/8", ChangeKind::Modified),
+            ("layers/10", ChangeKind::Modified),
+        ]
+    );
+    assert_eq!(at(&d, "layers/30").after, Some(json!("3 layers")));
+    assert_eq!(
+        pair(at(&d, "layers/10/group")),
+        (json!("—"), json!("text group"))
+    );
+    assert_eq!(
+        pair(at(&d, "layers/8/group")),
+        (json!("—"), json!("text group"))
+    );
+    // One of the two swapped texts moved; the other kept its place.
+    let moved: Vec<&str> = ["layers/8", "layers/10"]
+        .into_iter()
+        .filter(|p| find(&d.changes, &format!("{p}/stack-order")).is_some())
+        .collect();
+    assert_eq!(moved.len(), 1, "{d:?}");
+}
+
+#[test]
 fn moving_one_layer_up_names_that_layer_alone() {
     let mut head = poster();
     let photo = head.remove(4);
@@ -458,7 +507,7 @@ fn moving_one_layer_up_names_that_layer_alone() {
     assert_eq!(d.changes.len(), 1, "{:?}", d.changes);
     assert_eq!(
         pair(at(&d, "layers/5/stack-order")),
-        (json!("6 of 6 from the top"), json!("1 of 6 from the top"))
+        (json!("below \"Strip\""), json!("at the top"))
     );
 }
 

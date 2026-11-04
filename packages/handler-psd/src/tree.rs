@@ -45,6 +45,22 @@ pub(crate) fn changes(base: Option<&Document>, head: Option<&Document>) -> Vec<D
     let moved = moved(h, &bi);
 
     // Each row, under the group it's in (on the side it's on), in stack order.
+    // A group that is only on that side (a new group, say) has no row of its
+    // own to hold it: the row goes to the nearest group on both sides.
+    let shown_in = |d: &Document,
+                    at: &HashMap<u32, usize>,
+                    other: &HashMap<u32, usize>,
+                    mut parent: Option<u32>| {
+        for _ in 0..MAX_DEPTH {
+            match parent {
+                Some(p) if !other.contains_key(&p) => {
+                    parent = at.get(&p).and_then(|i| d.layers[*i].parent)
+                }
+                _ => break,
+            }
+        }
+        parent
+    };
     let mut rows: BTreeMap<Option<u32>, Vec<(usize, DiffChange)>> = BTreeMap::new();
     let mut own: HashMap<u32, DiffChange> = HashMap::new();
     for (i, hl) in h.layers.iter().enumerate() {
@@ -65,7 +81,9 @@ pub(crate) fn changes(base: Option<&Document>, head: Option<&Document>) -> Vec<D
                 if hl.kind == Kind::Group {
                     own.insert(hl.id, row);
                 } else {
-                    rows.entry(hl.parent).or_default().push((i, row));
+                    rows.entry(shown_in(h, &hi, &bi, hl.parent))
+                        .or_default()
+                        .push((i, row));
                 }
             }
             // Only the root of what was added: its layers come with it.
@@ -93,7 +111,9 @@ pub(crate) fn changes(base: Option<&Document>, head: Option<&Document>) -> Vec<D
             .rev()
             .find_map(|x| hi.get(&x.id).copied())
             .map_or(0, |k| k + 1);
-        rows.entry(bl.parent).or_default().push((at, row));
+        rows.entry(shown_in(b, &bi, &hi, bl.parent))
+            .or_default()
+            .push((at, row));
     }
 
     let groups: Vec<&Layer> = h
