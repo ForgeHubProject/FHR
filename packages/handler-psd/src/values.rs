@@ -194,11 +194,15 @@ pub(crate) fn layer_leaves(
     };
     diff(&mut out, "Group", group(bd, b), group(hd, h));
     if moved {
-        let place = |d: &Document, l: &Layer| {
-            let i = d.layers.iter().position(|x| x.id == l.id).unwrap_or(0) + 1;
-            format!("{i} of {} from the top", d.layers.len())
+        let (before, after) = (stacked(bd, hd, b), stacked(hd, bd, h));
+        // Said by the layer above it, or where that is the same on both
+        // sides, by the one below.
+        let (b_text, h_text) = if before.0 != after.0 {
+            (before.0, after.0)
+        } else {
+            (before.1, after.1)
         };
-        out.push(Leaf::new("Stack order", place(bd, b), place(hd, h)));
+        out.push(Leaf::new("Stack order", b_text, h_text));
     }
 
     match (&b.text, &h.text, &b.placed, &h.placed) {
@@ -242,6 +246,28 @@ pub(crate) fn layer_leaves(
     mask_leaves(&mut out, b, h);
     effect_leaves(&mut out, b.effects.as_ref(), h.effects.as_ref());
     out
+}
+
+/// Where `l` is in `d`'s stack, by its neighbours that are in `other` too
+/// (layers added or removed around it say nothing): `below "Title"` or
+/// `at the top`, and `above "Photo"` or `at the bottom`.
+fn stacked(d: &Document, other: &Document, l: &Layer) -> (String, String) {
+    let i = d.layers.iter().position(|x| x.id == l.id).unwrap_or(0);
+    let common = |x: &&Layer| other.layers.iter().any(|o| o.id == x.id);
+    let above = d.layers[..i]
+        .iter()
+        .rev()
+        .find(common)
+        .map_or("at the top".to_string(), |x| {
+            format!("below \"{}\"", clip(&x.name, 40))
+        });
+    let below = d.layers[i + 1..]
+        .iter()
+        .find(common)
+        .map_or("at the bottom".to_string(), |x| {
+            format!("above \"{}\"", clip(&x.name, 40))
+        });
+    (above, below)
 }
 
 fn text_leaves(out: &mut Vec<Leaf>, b: &Text, h: &Text) {
